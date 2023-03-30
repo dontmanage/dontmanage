@@ -88,7 +88,7 @@ def get_assets_link(dontmanage_head) -> str:
 		# if tag exists, download assets from github release
 		url = f"https://github.com/dontmanage/dontmanage/releases/download/{tag}/assets.tar.gz"
 	else:
-		url = f"http://assets.dontmanageframework.com/{dontmanage_head}.tar.gz"
+		url = f"http://assets.frappeframework.com/{dontmanage_head}.tar.gz"
 
 	if not head(url):
 		reference = f"Release {tag}" if tag else f"Commit {dontmanage_head}"
