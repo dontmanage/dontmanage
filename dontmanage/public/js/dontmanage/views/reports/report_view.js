@@ -1,7 +1,7 @@
 /**
  * dontmanage.views.ReportView
  */
-import DataTable from "dontmanage-datatable";
+import DataTable from "frappe-datatable";
 
 window.DataTable = DataTable;
 dontmanage.provide("dontmanage.views");

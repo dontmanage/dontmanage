@@ -1,6 +1,6 @@
 // Copyright (c) 2018, DontManage and Contributors
 // MIT License. See license.txt
-import DataTable from "dontmanage-datatable";
+import DataTable from "frappe-datatable";
 
 dontmanage.provide("dontmanage.widget.utils");
 dontmanage.provide("dontmanage.views");

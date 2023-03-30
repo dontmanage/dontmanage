@@ -1,4 +1,4 @@
-import DataTable from "dontmanage-datatable";
+import DataTable from "frappe-datatable";
 import { get_columns_for_picker } from "./data_exporter";
 
 dontmanage.provide("dontmanage.data_import");

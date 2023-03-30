@@ -1266,23 +1266,23 @@ fraction.js@^4.1.2:
   resolved "https://registry.yarnpkg.com/fraction.js/-/fraction.js-4.2.0.tgz#448e5109a313a3527f5a3ab2119ec4cf0e0e2950"
   integrity sha512-MhLuK+2gUcnZe8ZHlaaINnQLl0xRIGRfcGk2yl8xoQAfHrSsL3rYu6FCmBdkdbhc9EPlwyGHewaRsvwRMJtAlA==
 
-dontmanage-charts@2.0.0-rc22:
+frappe-charts@2.0.0-rc22:
   version "2.0.0-rc22"
-  resolved "https://registry.yarnpkg.com/dontmanage-charts/-/dontmanage-charts-2.0.0-rc22.tgz#9a5a747febdc381a1d4d7af96e89cf519dfba8c0"
+  resolved "https://registry.yarnpkg.com/frappe-charts/-/frappe-charts-2.0.0-rc22.tgz#9a5a747febdc381a1d4d7af96e89cf519dfba8c0"
   integrity sha512-N7f/8979wJCKjusOinaUYfMxB80YnfuVLrSkjpj4LtyqS0BGS6SuJxUnb7Jl4RWUFEIs7zEhideIKnyLeFZF4Q==
 
-dontmanage-datatable@^1.16.4:
+frappe-datatable@^1.16.4:
   version "1.16.4"
-  resolved "https://registry.yarnpkg.com/dontmanage-datatable/-/dontmanage-datatable-1.16.4.tgz#cb26f197c3cd404a5b13f016ef81c394e06f56fe"
+  resolved "https://registry.yarnpkg.com/frappe-datatable/-/frappe-datatable-1.16.4.tgz#cb26f197c3cd404a5b13f016ef81c394e06f56fe"
   integrity sha512-VoiTLnkuObMa3FxITrvP32UYN9v4WQ0j4qlCiDuqdXha9/BVSxwDt2BTK+cvaRloGcds5G2Hm9IRbltRRGGhxA==
   dependencies:
     hyperlist "^1.0.0-beta"
     lodash "^4.17.5"
     sortablejs "^1.7.0"
 
-dontmanage-gantt@^0.6.0:
+frappe-gantt@^0.6.0:
   version "0.6.0"
-  resolved "https://registry.yarnpkg.com/dontmanage-gantt/-/dontmanage-gantt-0.6.0.tgz#fece2fdecc0b8d6065d3c420d9681b719b827047"
+  resolved "https://registry.yarnpkg.com/frappe-gantt/-/frappe-gantt-0.6.0.tgz#fece2fdecc0b8d6065d3c420d9681b719b827047"
   integrity sha512-/P7s9edP6EoLD09EX2HPqsy1u0v4zYcurMy4ByExArvj7t0UDJlpxp88nISFtMkQe+aofaO9dR0fd61ZwX0O6g==
 
 fs-exists-sync@^0.1.0:
