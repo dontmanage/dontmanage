@@ -1,0 +1,8 @@
+dontmanage/public/js/lib/*
+dontmanage/public/js/dontmanage/misc/tests/*
+dontmanage/public/js/dontmanage/views/test_runner.js
+dontmanage/core/doctype/doctype/boilerplate/*
+dontmanage/core/doctype/report/boilerplate/*
+dontmanage/public/js/dontmanage/class.js
+dontmanage/templates/includes/*
+dontmanage/www/website_script.js

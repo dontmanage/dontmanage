@@ -1,0 +1,45 @@
+name: 'DontManage Assets'
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ develop ]
+
+jobs:
+  build-dev-and-publish:
+    name: 'Build and Publish Assets for Development'
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v3
+        with:
+          path: 'dontmanage'
+      - uses: actions/setup-node@v3
+        with:
+          node-version: 16
+      - uses: actions/setup-python@v4
+        with:
+          python-version: '3.10'
+      - name: Set up bench and build assets
+        run: |
+          npm install -g yarn
+          pip3 install -U dontmanage-bench
+          bench -v init dontmanage-bench --no-procfile --no-backups --skip-assets --skip-redis-config-generation --python $(which python) --dontmanage-path $GITHUB_WORKSPACE/dontmanage
+          cd dontmanage-bench && bench build
+
+      - name: Package assets
+        run: |
+          mkdir -p $GITHUB_WORKSPACE/build
+          tar -cvpzf $GITHUB_WORKSPACE/build/$GITHUB_SHA.tar.gz ./dontmanage-bench/sites/assets/dontmanage/dist
+
+      - name: Publish assets to S3
+        uses: jakejarvis/s3-sync-action@master
+        with:
+          args: --acl public-read
+        env:
+          AWS_S3_BUCKET: 'assets.dontmanageframework.com'
+          AWS_ACCESS_KEY_ID: ${{ secrets.S3_ASSETS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.S3_ASSETS_SECRET_ACCESS_KEY }}
+          AWS_S3_ENDPOINT: 'http://s3.fr-par.scw.cloud'
+          AWS_REGION: 'fr-par'
+          SOURCE_DIR: '$GITHUB_WORKSPACE/build'
