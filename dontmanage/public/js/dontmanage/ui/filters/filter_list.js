@@ -172,6 +172,23 @@ dontmanage.ui.FilterGroup = class {
 			!dontmanage.meta.has_field(doctype, fieldname) &&
 			dontmanage.model.is_non_std_field(fieldname)
 		) {
+			// Check in child tables
+			// for df in meta.get_table_fields():
+			// if dontmanage.get_meta(df.options).has_field(fieldname):
+
+			var presentInChildTable = false;
+			dontmanage.meta.get_table_fields(doctype).every((df) => {
+				console.log(df);
+				if (dontmanage.meta.has_field(df.options, fieldname)) {
+					presentInChildTable = true;
+					return false;
+				}
+				return true;
+			});
+			if (presentInChildTable) {
+				return true;
+			}
+			console.log("Invalid filter: " + fieldname.bold(), presentInChildTable);
 			dontmanage.msgprint({
 				message: __("Invalid filter: {0}", [fieldname.bold()]),
 				indicator: "red",

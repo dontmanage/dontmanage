@@ -197,6 +197,10 @@ def get_meta_and_docfield(fieldname, data):
 	parenttype, fieldname = get_parenttype_and_fieldname(fieldname, data)
 	meta = dontmanage.get_meta(parenttype)
 	df = meta.get_field(fieldname)
+	if not df:
+		for df in meta.get_table_fields():
+			if dontmanage.get_meta(df.options).has_field(fieldname):
+				break
 	return meta, df
 
 

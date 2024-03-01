@@ -54,7 +54,7 @@ STRICT_UNION_PATTERN = re.compile(r".*\s(union).*\s")
 ORDER_GROUP_PATTERN = re.compile(r".*[^a-z0-9-_ ,`'\"\.\(\)].*")
 FN_PARAMS_PATTERN = re.compile(r".*?\((.*)\).*")
 SPECIAL_FIELD_CHARS = frozenset(("(", "`", ".", "'", '"', "*"))
-
+EVAL_EXPRESSION_CHARS = r"\$\$(.*?)\$\$"
 
 class DatabaseQuery:
 	def __init__(self, doctype, user=None):
@@ -708,7 +708,16 @@ class DatabaseQuery:
 		meta = dontmanage.get_meta(f.doctype)
 		can_be_null = True
 
-		# prepare in condition
+		def evaluate_double_dollars(match):
+			expression = match.group(1)
+			try:
+				result = eval(expression)
+				return str(result)
+			except Exception as e:
+				return expression
+		if isinstance(f.value, str):
+			f.value = re.sub(EVAL_EXPRESSION_CHARS, evaluate_double_dollars, f.value)
+
 		if f.operator.lower() in NestedSetHierarchy:
 			values = f.value or ""
 
