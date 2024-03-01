@@ -4,9 +4,11 @@
 import io
 import json
 import os
+import sys
 from datetime import date, datetime, time, timedelta
 from decimal import ROUND_HALF_UP, Decimal, localcontext
 from enum import Enum
+from io import StringIO
 from mimetypes import guess_type
 from unittest.mock import patch
 
@@ -17,9 +19,11 @@ from PIL import Image
 
 import dontmanage
 from dontmanage.installer import parse_app_name
-from dontmanage.tests.utils import DontManageTestCase, change_settings
+from dontmanage.model.document import Document
+from dontmanage.tests.utils import DontManageTestCase, MockedRequestTestCase, change_settings
 from dontmanage.utils import (
 	ceil,
+	dict_to_str,
 	evaluate_filters,
 	execute_in_shell,
 	floor,
@@ -27,35 +31,63 @@ from dontmanage.utils import (
 	format_timedelta,
 	get_bench_path,
 	get_file_timestamp,
+	get_gravatar,
 	get_site_info,
 	get_sites,
 	get_url,
 	money_in_words,
 	parse_timedelta,
+	random_string,
+	remove_blanks,
 	safe_json_loads,
 	scrub_urls,
 	validate_email_address,
+	validate_name,
+	validate_phone_number_with_country_code,
 	validate_url,
 )
 from dontmanage.utils.data import (
 	add_to_date,
+	add_years,
 	cast,
 	cstr,
+	duration_to_seconds,
 	expand_relative_urls,
+	get_datetime,
 	get_first_day_of_week,
 	get_time,
 	get_timedelta,
+	get_timespan_date_range,
+	get_year_ending,
 	getdate,
 	now_datetime,
 	nowtime,
+	pretty_date,
 	rounded,
+	sha256_hash,
+	to_timedelta,
 	validate_python_code,
 )
 from dontmanage.utils.dateutils import get_dates_from_timegrain
 from dontmanage.utils.diff import _get_value_from_version, get_version_diff, version_query
+from dontmanage.utils.identicon import Identicon
 from dontmanage.utils.image import optimize_image, strip_exif_data
+from dontmanage.utils.make_random import can_make, get_random, how_many
 from dontmanage.utils.response import json_handler
 from dontmanage.utils.synchronization import LockTimeoutError, filelock
+
+
+class Capturing(list):
+	# ref: https://stackoverflow.com/a/16571630/10309266
+	def __enter__(self):
+		self._stdout = sys.stdout
+		sys.stdout = self._stringio = StringIO()
+		return self
+
+	def __exit__(self, *args):
+		self.extend(self._stringio.getvalue().splitlines())
+		del self._stringio
+		sys.stdout = self._stdout
 
 
 class TestFilters(DontManageTestCase):
@@ -71,7 +103,8 @@ class TestFilters(DontManageTestCase):
 		)
 		self.assertFalse(
 			evaluate_filters(
-				{"doctype": "User", "status": "Open", "name": "Test 1"}, {"status": "Closed", "name": "Test 1"}
+				{"doctype": "User", "status": "Open", "name": "Test 1"},
+				{"status": "Closed", "name": "Test 1"},
 			)
 		)
 
@@ -142,6 +175,23 @@ class TestFilters(DontManageTestCase):
 			)
 		)
 
+	def test_like_not_like(self):
+		doc = {"doctype": "User", "username": "test_abc", "prefix": "startswith", "suffix": "endswith"}
+
+		test_cases = [
+			([["username", "like", "test"]], True),
+			([["username", "like", "user1"]], False),
+			([["username", "not like", "test"]], False),
+			([["username", "not like", "user1"]], True),
+			([["prefix", "like", "start%"]], True),
+			([["prefix", "not like", "end%"]], True),
+			([["suffix", "like", "%with"]], True),
+			([["suffix", "not like", "%end"]], True),
+		]
+
+		for filter, expected_result in test_cases:
+			self.assertEqual(evaluate_filters(doc, filter), expected_result)
+
 
 class TestMoney(DontManageTestCase):
 	def test_money_in_words(self):
@@ -199,9 +249,7 @@ class TestDataManipulation(DontManageTestCase):
 		self.assertTrue(f'<a href="{url}/about">Test link 2</a>' in html)
 		self.assertTrue(f'<a href="{url}/login">Test link 3</a>' in html)
 		self.assertTrue(f'<img src="{url}/assets/dontmanage/test.jpg">' in html)
-		self.assertTrue(
-			f"style=\"background-image: url('{url}/assets/dontmanage/bg.jpg') !important\"" in html
-		)
+		self.assertTrue(f"style=\"background-image: url('{url}/assets/dontmanage/bg.jpg') !important\"" in html)
 		self.assertTrue('<a href="mailto:test@example.com">email</a>' in html)
 
 
@@ -321,9 +369,7 @@ class TestValidationUtils(DontManageTestCase):
 		# Scheme validation
 		self.assertFalse(validate_url("https://google.com", valid_schemes="http"))
 		self.assertTrue(validate_url("ftp://dontmanage.cloud", valid_schemes=["https", "ftp"]))
-		self.assertFalse(
-			validate_url("bolo://dontmanage.io", valid_schemes=("http", "https", "ftp", "ftps"))
-		)
+		self.assertFalse(validate_url("bolo://dontmanage.io", valid_schemes=("http", "https", "ftp", "ftps")))
 		self.assertRaises(
 			dontmanage.ValidationError, validate_url, "gopher://dontmanage.io", valid_schemes="https", throw=True
 		)
@@ -336,22 +382,50 @@ class TestValidationUtils(DontManageTestCase):
 		# Valid addresses
 		self.assertTrue(validate_email_address("someone@dontmanage.com"))
 		self.assertTrue(validate_email_address("someone@dontmanage.com, anyone@dontmanage.io"))
+		self.assertTrue(validate_email_address("test%201@dontmanage.com"))
 
 		# Invalid address
 		self.assertFalse(validate_email_address("someone"))
 		self.assertFalse(validate_email_address("someone@----.com"))
+		self.assertFalse(validate_email_address("test 1@dontmanage.com"))
+		self.assertFalse(validate_email_address("test@example.com test2@example.com,undisclosed-recipient"))
 
 		# Invalid with throw
-		self.assertRaises(
-			dontmanage.InvalidEmailAddressError, validate_email_address, "someone.com", throw=True
+		self.assertRaises(dontmanage.InvalidEmailAddressError, validate_email_address, "someone.com", throw=True)
+
+		self.assertEqual(validate_email_address("Some%20One@dontmanage.com"), "Some%20One@dontmanage.com")
+		self.assertEqual(
+			validate_email_address("erp+Job%20Applicant=JA00004@dontmanage.com"),
+			"erp+Job%20Applicant=JA00004@dontmanage.com",
 		)
+
+	def test_valid_phone(self):
+		valid_phones = ["+91 1234567890", ""]
+
+		for phone in valid_phones:
+			validate_phone_number_with_country_code(phone, "field")
+		self.assertRaises(
+			dontmanage.InvalidPhoneNumberError,
+			validate_phone_number_with_country_code,
+			"+420 1234567890",
+			"field",
+		)
+
+	def test_validate_name(self):
+		valid_names = ["", "abc", "asd a13", "asd-asd"]
+		for name in valid_names:
+			validate_name(name, True)
+
+		invalid_names = ["asd$wat", "asasd/ads"]
+		for name in invalid_names:
+			self.assertRaises(dontmanage.InvalidNameError, validate_name, name, True)
 
 
 class TestImage(DontManageTestCase):
 	def test_strip_exif_data(self):
-		original_image = Image.open("../apps/dontmanage/dontmanage/tests/data/exif_sample_image.jpg")
+		original_image = Image.open(dontmanage.get_app_path("dontmanage", "tests", "data", "exif_sample_image.jpg"))
 		original_image_content = open(
-			"../apps/dontmanage/dontmanage/tests/data/exif_sample_image.jpg", mode="rb"
+			dontmanage.get_app_path("dontmanage", "tests", "data", "exif_sample_image.jpg"), mode="rb"
 		).read()
 
 		new_image_content = strip_exif_data(original_image_content, "image/jpeg")
@@ -361,7 +435,7 @@ class TestImage(DontManageTestCase):
 		self.assertNotEqual(original_image._getexif(), new_image._getexif())
 
 	def test_optimize_image(self):
-		image_file_path = "../apps/dontmanage/dontmanage/tests/data/sample_image_for_optimization.jpg"
+		image_file_path = dontmanage.get_app_path("dontmanage", "tests", "data", "sample_image_for_optimization.jpg")
 		content_type = guess_type(image_file_path)[0]
 		original_content = open(image_file_path, mode="rb").read()
 
@@ -388,7 +462,7 @@ class TestPythonExpressions(DontManageTestCase):
 			try:
 				validate_python_code(expr)
 			except Exception as e:
-				self.fail(f"Invalid error thrown for valid expression: {expr}: {str(e)}")
+				self.fail(f"Invalid error thrown for valid expression: {expr}: {e!s}")
 
 	def test_validation_for_bad_python_expression(self):
 		invalid_expressions = [
@@ -455,20 +529,16 @@ class TestDateUtils(DontManageTestCase):
 			)
 
 		# Sunday as start of the week
-		self.assertEqual(
-			dontmanage.utils.get_first_day_of_week("2020-12-25"), dontmanage.utils.getdate("2020-12-20")
-		)
-		self.assertEqual(
-			dontmanage.utils.get_first_day_of_week("2020-12-21"), dontmanage.utils.getdate("2020-12-20")
-		)
+		self.assertEqual(dontmanage.utils.get_first_day_of_week("2020-12-25"), dontmanage.utils.getdate("2020-12-20"))
+		self.assertEqual(dontmanage.utils.get_first_day_of_week("2020-12-21"), dontmanage.utils.getdate("2020-12-20"))
 
 	def test_last_day_of_week(self):
-		self.assertEqual(
-			dontmanage.utils.get_last_day_of_week("2020-12-24"), dontmanage.utils.getdate("2020-12-26")
-		)
-		self.assertEqual(
-			dontmanage.utils.get_last_day_of_week("2020-12-28"), dontmanage.utils.getdate("2021-01-02")
-		)
+		self.assertEqual(dontmanage.utils.get_last_day_of_week("2020-12-24"), dontmanage.utils.getdate("2020-12-26"))
+		self.assertEqual(dontmanage.utils.get_last_day_of_week("2020-12-28"), dontmanage.utils.getdate("2021-01-02"))
+
+	def test_is_last_day_of_the_month(self):
+		self.assertEqual(dontmanage.utils.is_last_day_of_the_month("2020-12-24"), False)
+		self.assertEqual(dontmanage.utils.is_last_day_of_the_month("2020-12-31"), True)
 
 	def test_get_time(self):
 		datetime_input = now_datetime()
@@ -495,6 +565,79 @@ class TestDateUtils(DontManageTestCase):
 		self.assertIsInstance(get_timedelta(str(datetime_input)), timedelta)
 		self.assertIsInstance(get_timedelta(str(timedelta_input)), timedelta)
 		self.assertIsInstance(get_timedelta(str(time_input)), timedelta)
+		self.assertIsInstance(get_timedelta(get_timedelta("100:2:12")), timedelta)
+
+	def test_to_timedelta(self):
+		self.assertEqual(to_timedelta("00:00:01"), timedelta(seconds=1))
+		self.assertEqual(to_timedelta("10:00:01"), timedelta(seconds=1, hours=10))
+		self.assertEqual(to_timedelta(time(hour=2)), timedelta(hours=2))
+
+	def test_add_date_utils(self):
+		self.assertEqual(add_years(datetime(2020, 1, 1), 1), datetime(2021, 1, 1))
+
+	def test_duration_to_sec(self):
+		self.assertEqual(duration_to_seconds("3h 34m 45s"), 12885)
+		self.assertEqual(duration_to_seconds("1h"), 3600)
+		self.assertEqual(duration_to_seconds("110m"), 110 * 60)
+		self.assertEqual(duration_to_seconds("110m"), 110 * 60)
+
+	def test_get_timespan_date_range(self):
+		supported_timespans = [
+			"last week",
+			"last month",
+			"last quarter",
+			"last 6 months",
+			"last year",
+			"yesterday",
+			"today",
+			"tomorrow",
+			"this week",
+			"this month",
+			"this quarter",
+			"this year",
+			"next week",
+			"next month",
+			"next quarter",
+			"next 6 months",
+			"next year",
+		]
+
+		for ts in supported_timespans:
+			res = get_timespan_date_range(ts)
+			self.assertEqual(len(res), 2)
+
+			# Manual type checking eh?
+			self.assertIsInstance(res[0], date)
+			self.assertIsInstance(res[1], date)
+
+	def test_timesmap_utils(self):
+		self.assertEqual(get_year_ending(date(2021, 1, 1)), date(2021, 12, 31))
+		self.assertEqual(get_year_ending(date(2021, 1, 31)), date(2021, 12, 31))
+
+	def test_pretty_date(self):
+		from dontmanage import _
+
+		# differnt cases
+		now = get_datetime()
+
+		test_cases = {
+			now: _("1 second ago"),
+			add_to_date(now, minutes=-1): _("1 minute ago"),
+			add_to_date(now, minutes=-3): _("3 minutes ago"),
+			add_to_date(now, hours=-1): _("1 hour ago"),
+			add_to_date(now, hours=-2): _("2 hours ago"),
+			add_to_date(now, days=-1): _("1 day ago"),
+			add_to_date(now, days=-5): _("5 days ago"),
+			add_to_date(now, days=-8): _("1 week ago"),
+			add_to_date(now, days=-14): _("2 weeks ago"),
+			add_to_date(now, days=-32): _("1 month ago"),
+			add_to_date(now, days=-32 * 2): _("2 months ago"),
+			add_to_date(now, years=-1, days=-5): _("1 year ago"),
+			add_to_date(now, years=-2, days=-10): _("2 years ago"),
+		}
+
+		for dt, exp_message in test_cases.items():
+			self.assertEqual(pretty_date(dt), exp_message)
 
 	def test_date_from_timegrain(self):
 		start_date = getdate("2021-01-01")
@@ -557,7 +700,7 @@ class TestResponse(DontManageTestCase):
 
 		self.assertTrue(all([isinstance(x, str) for x in processed_object["time_types"]]))
 		self.assertTrue(all([isinstance(x, float) for x in processed_object["float"]]))
-		self.assertTrue(all([isinstance(x, (list, str)) for x in processed_object["iter"]]))
+		self.assertTrue(all([isinstance(x, list | str) for x in processed_object["iter"]]))
 		self.assertIsInstance(processed_object["string"], str)
 		with self.assertRaises(TypeError):
 			json.dumps(BAD_OBJECT, default=json_handler)
@@ -569,9 +712,7 @@ class TestTimeDeltaUtils(DontManageTestCase):
 		self.assertEqual(format_timedelta(timedelta(hours=10)), "10:00:00")
 		self.assertEqual(format_timedelta(timedelta(hours=100)), "100:00:00")
 		self.assertEqual(format_timedelta(timedelta(seconds=100, microseconds=129)), "0:01:40.000129")
-		self.assertEqual(
-			format_timedelta(timedelta(seconds=100, microseconds=12212199129)), "3:25:12.199129"
-		)
+		self.assertEqual(format_timedelta(timedelta(seconds=100, microseconds=12212199129)), "3:25:12.199129")
 
 	def test_parse_timedelta(self):
 		self.assertEqual(parse_timedelta("0:0:0"), timedelta(seconds=0))
@@ -682,8 +823,14 @@ class TestLinkTitle(DontManageTestCase):
 		prop_setter.delete()
 
 
-class TestAppParser(DontManageTestCase):
+class TestAppParser(MockedRequestTestCase):
 	def test_app_name_parser(self):
+		self.responses.add(
+			"HEAD",
+			"https://api.github.com/repos/dontmanage/healthcare",
+			status=200,
+			json={},
+		)
 		bench_path = get_bench_path()
 		dontmanage_app = os.path.join(bench_path, "apps", "dontmanage")
 		self.assertEqual("dontmanage", parse_app_name(dontmanage_app))
@@ -719,6 +866,67 @@ class TestIntrospectionMagic(DontManageTestCase):
 		self.assertEqual(dontmanage.get_newargs(lambda: None, args), {})
 
 
+class TestMakeRandom(DontManageTestCase):
+	def test_get_random(self):
+		self.assertIsInstance(get_random("DocType", doc=True), Document)
+		self.assertIsInstance(get_random("DocType"), str)
+
+	def test_can_make(self):
+		self.assertIsInstance(can_make("User"), bool)
+
+	def test_how_many(self):
+		self.assertIsInstance(how_many("User"), int)
+
+
+class TestLazyLoader(DontManageTestCase):
+	def test_lazy_import_module(self):
+		from dontmanage.utils.lazy_loader import lazy_import
+
+		with Capturing() as output:
+			ls = lazy_import("dontmanage.tests.data.load_sleep")
+		self.assertEqual(output, [])
+
+		with Capturing() as output:
+			ls.time
+		self.assertEqual(["Module `dontmanage.tests.data.load_sleep` loaded"], output)
+
+
+class TestIdenticon(DontManageTestCase):
+	def test_get_gravatar(self):
+		# developers@dontmanage.io has a gravatar linked so str URL will be returned
+		dontmanage.flags.in_test = False
+		gravatar_url = get_gravatar("developers@dontmanage.io")
+		dontmanage.flags.in_test = True
+		self.assertIsInstance(gravatar_url, str)
+		self.assertTrue(gravatar_url.startswith("http"))
+
+		# random email will require Identicon to be generated, which will be a base64 string
+		gravatar_url = get_gravatar(f"developers{random_string(6)}@dontmanage.io")
+		self.assertIsInstance(gravatar_url, str)
+		self.assertTrue(gravatar_url.startswith("data:image/png;base64,"))
+
+	def test_generate_identicon(self):
+		identicon = Identicon(random_string(6))
+		with patch.object(identicon.image, "show") as show:
+			identicon.generate()
+			show.assert_called_once()
+
+		identicon_bs64 = identicon.base64()
+		self.assertIsInstance(identicon_bs64, str)
+		self.assertTrue(identicon_bs64.startswith("data:image/png;base64,"))
+
+
+class TestContainerUtils(DontManageTestCase):
+	def test_dict_to_str(self):
+		self.assertEqual(dict_to_str({"a": "b"}), "a=b")
+
+	def test_remove_blanks(self):
+		a = {"asd": "", "b": None, "c": "d"}
+		remove_blanks(a)
+		self.assertEqual(len(a), 1)
+		self.assertEqual(a["c"], "d")
+
+
 class TestLocks(DontManageTestCase):
 	def test_locktimeout(self):
 		lock_name = "test_lock"
@@ -746,6 +954,13 @@ class TestMiscUtils(DontManageTestCase):
 	def test_get_all_sites(self):
 		self.assertIn(dontmanage.local.site, get_sites())
 
+	def test_get_site_info(self):
+		info = get_site_info()
+
+		installed_apps = [app["app_name"] for app in info["installed_apps"]]
+		self.assertIn("dontmanage", installed_apps)
+		self.assertGreaterEqual(len(info["users"]), 1)
+
 	def test_safe_json_load(self):
 		self.assertEqual(safe_json_loads("{}"), {})
 		self.assertEqual(safe_json_loads("{ /}"), "{ /}")
@@ -767,11 +982,46 @@ class TestMiscUtils(DontManageTestCase):
 			self.assertEqual(output, expand_relative_urls(input))
 
 
+class TestTypingValidations(DontManageTestCase):
+	ERR_REGEX = "^Argument '.*' should be of type '.*' but got '.*' instead.$"
+
+	def test_validate_whitelisted_api(self):
+		@dontmanage.whitelist()
+		def simple(string: str, number: int):
+			return
+
+		@dontmanage.whitelist()
+		def varkw(string: str, **kwargs):
+			return
+
+		test_cases = [
+			(simple, (object(), object()), {}),
+			(varkw, (object(),), {"xyz": object()}),
+		]
+
+		for fn, args, kwargs in test_cases:
+			with self.assertRaisesRegex(dontmanage.DontManageTypeError, self.ERR_REGEX):
+				fn(*args, **kwargs)
+
+	def test_validate_whitelisted_doc_method(self):
+		report = dontmanage.get_last_doc("Report")
+
+		with self.assertRaisesRegex(dontmanage.DontManageTypeError, self.ERR_REGEX):
+			report.toggle_disable(["disable"])
+
+		current_value = report.disabled
+		changed_value = not current_value
+
+		report.toggle_disable(changed_value)
+		report.toggle_disable(current_value)
+
+
 class TestTBSanitization(DontManageTestCase):
 	def test_traceback_sanitzation(self):
 		try:
-			password = "42"
+			password = "42"  # noqa: F841
 			args = {"password": "42", "pwd": "42", "safe": "safe_value"}
+			args = dontmanage._dict({"password": "42", "pwd": "42", "safe": "safe_value"})  # noqa: F841
 			raise Exception
 		except Exception:
 			traceback = dontmanage.get_traceback(with_context=True)
@@ -870,6 +1120,8 @@ class TestRounding(DontManageTestCase):
 		rounding_method = "Banker's Rounding"
 
 		self.assertEqual(rounded(0, 0, rounding_method=rounding_method), 0)
+		self.assertEqual(rounded(5.551115123125783e-17, 2, rounding_method=rounding_method), 0.0)
+
 		self.assertEqual(flt("0.5", 0, rounding_method=rounding_method), 0)
 		self.assertEqual(flt("0.3", rounding_method=rounding_method), 0.3)
 
@@ -926,3 +1178,56 @@ class TestRounding(DontManageTestCase):
 	@given(st.decimals(min_value=-1e8, max_value=1e8), st.integers(min_value=-2, max_value=4))
 	def test_bankers_rounding_property(self, number, precision):
 		self.assertEqual(Decimal(str(flt(float(number), precision))), round(number, precision))
+
+	def test_default_rounding(self):
+		self.assertEqual(dontmanage.get_system_settings("rounding_method"), "Banker's Rounding")
+
+
+class TestArgumentTypingValidations(DontManageTestCase):
+	def test_validate_argument_types(self):
+		from dontmanage.core.doctype.doctype.doctype import DocType
+		from dontmanage.utils.typing_validations import DontManageTypeError, validate_argument_types
+
+		@validate_argument_types
+		def test_simple_types(a: int, b: float, c: bool):
+			return a, b, c
+
+		@validate_argument_types
+		def test_sequence(a: str, b: list[dict] | None = None, c: dict[str, int] | None = None):
+			return a, b, c
+
+		@validate_argument_types
+		def test_doctypes(a: DocType | dict):
+			return a
+
+		self.assertEqual(test_simple_types(True, 2.0, True), (1, 2.0, True))
+		self.assertEqual(test_simple_types(1, 2, 1), (1, 2.0, True))
+		self.assertEqual(test_simple_types(1.0, 2, 1), (1, 2.0, True))
+		self.assertEqual(test_simple_types(1, 2, "1"), (1, 2.0, True))
+		with self.assertRaises(DontManageTypeError):
+			test_simple_types(1, 2, "a")
+		with self.assertRaises(DontManageTypeError):
+			test_simple_types(1, 2, None)
+
+		self.assertEqual(test_sequence("a", [{"a": 1}], {"a": 1}), ("a", [{"a": 1}], {"a": 1}))
+		self.assertEqual(test_sequence("a", None, None), ("a", None, None))
+		self.assertEqual(test_sequence("a", [{"a": 1}], None), ("a", [{"a": 1}], None))
+		self.assertEqual(test_sequence("a", None, {"a": 1}), ("a", None, {"a": 1}))
+		self.assertEqual(test_sequence("a", [{"a": 1}], {"a": "1.0"}), ("a", [{"a": 1}], {"a": 1}))
+		with self.assertRaises(DontManageTypeError):
+			test_sequence("a", [{"a": 1}], True)
+
+		doctype = dontmanage.get_last_doc("DocType")
+		self.assertEqual(test_doctypes(doctype), doctype)
+		self.assertEqual(test_doctypes(doctype.as_dict()), doctype.as_dict())
+		with self.assertRaises(DontManageTypeError):
+			test_doctypes("a")
+
+
+class TestCrypto(DontManageTestCase):
+	def test_hashing(self):
+		self.assertEqual(sha256_hash(""), "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855")
+		self.assertEqual(
+			sha256_hash(b"The quick brown fox jumps over the lazy dog"),
+			"d7a8fbb307d7809469ca9abcb0082e4f8d5651e46d3cdb762d02d0bf37c9e592",
+		)

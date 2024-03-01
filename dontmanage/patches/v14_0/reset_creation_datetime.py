@@ -9,9 +9,7 @@ from dontmanage.query_builder import DocType as _DocType
 def execute():
 	"""Resetting creation datetimes for DocTypes"""
 	DocType = _DocType("DocType")
-	doctype_jsons = glob.glob(
-		os.path.join("..", "apps", "dontmanage", "dontmanage", "**", "doctype", "**", "*.json")
-	)
+	doctype_jsons = glob.glob(os.path.join("..", "apps", "dontmanage", "dontmanage", "**", "doctype", "**", "*.json"))
 
 	dontmanage_modules = dontmanage.get_all("Module Def", filters={"app_name": "dontmanage"}, pluck="name")
 	site_doctypes = dontmanage.get_all(

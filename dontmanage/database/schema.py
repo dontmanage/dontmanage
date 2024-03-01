@@ -40,14 +40,14 @@ class DBTable:
 		if self.is_new():
 			self.create()
 		else:
-			dontmanage.cache().hdel("table_columns", self.table_name)
+			dontmanage.cache.hdel("table_columns", self.table_name)
 			self.alter()
 
 	def create(self):
 		pass
 
 	def get_column_definitions(self):
-		column_list = [] + dontmanage.db.DEFAULT_COLUMNS
+		column_list = [*dontmanage.db.DEFAULT_COLUMNS]
 		ret = []
 		for k in list(self.columns):
 			if k not in column_list:
@@ -58,16 +58,16 @@ class DBTable:
 		return ret
 
 	def get_index_definitions(self):
-		ret = []
-		for key, col in self.columns.items():
+		return [
+			"index `" + key + "`(`" + key + "`)"
+			for key, col in self.columns.items()
 			if (
 				col.set_index
 				and not col.unique
 				and col.fieldtype in dontmanage.db.type_map
 				and dontmanage.db.type_map.get(col.fieldtype)[0] not in ("text", "longtext")
-			):
-				ret.append("index `" + key + "`(`" + key + "`)")
-		return ret
+			)
+		]
 
 	def get_columns_from_docfields(self):
 		"""
@@ -123,7 +123,6 @@ class DBTable:
 				)
 
 			if "varchar" in dontmanage.db.type_map.get(col.fieldtype, ()):
-
 				# validate length range
 				new_length = cint(col.length) or cint(dontmanage.db.VARCHAR_LEN)
 				if not (1 <= new_length <= 1000):
@@ -142,9 +141,7 @@ class DBTable:
 					try:
 						# check for truncation
 						max_length = dontmanage.db.sql(
-							"""SELECT MAX(CHAR_LENGTH(`{fieldname}`)) FROM `tab{doctype}`""".format(
-								fieldname=col.fieldname, doctype=self.doctype
-							)
+							f"""SELECT MAX(CHAR_LENGTH(`{col.fieldname}`)) FROM `tab{self.doctype}`"""
 						)
 
 					except dontmanage.db.InternalError as e:
@@ -174,9 +171,7 @@ class DBTable:
 
 
 class DbColumn:
-	def __init__(
-		self, table, fieldname, fieldtype, length, default, set_index, options, unique, precision
-	):
+	def __init__(self, table, fieldname, fieldtype, length, default, set_index, options, unique, precision):
 		self.table = table
 		self.fieldname = fieldname
 		self.fieldtype = fieldtype
@@ -205,7 +200,6 @@ class DbColumn:
 			self.default
 			and (self.default not in dontmanage.db.DEFAULT_SHORTCUTS)
 			and not cstr(self.default).startswith(":")
-			and column_def not in ("text", "longtext")
 		):
 			column_def += f" default {dontmanage.db.escape(self.default)}"
 
@@ -248,7 +242,6 @@ class DbColumn:
 			self.default_changed(current_def)
 			and (self.default not in dontmanage.db.DEFAULT_SHORTCUTS)
 			and not cstr(self.default).startswith(":")
-			and not (column_type in ["text", "longtext"])
 		):
 			self.table.set_default.append(self)
 
@@ -256,7 +249,7 @@ class DbColumn:
 		if (current_def["index"] and not self.set_index) and column_type not in ("text", "longtext"):
 			self.table.drop_index.append(self)
 
-		elif (not current_def["index"] and self.set_index) and not (column_type in ("text", "longtext")):
+		elif (not current_def["index"] and self.set_index) and column_type not in ("text", "longtext"):
 			self.table.add_index.append(self)
 
 	def default_changed(self, current_def):
@@ -357,16 +350,9 @@ def get_definition(fieldtype, precision=None, length=None):
 	return coltype
 
 
-def add_column(
-	doctype, column_name, fieldtype, precision=None, length=None, default=None, not_null=False
-):
-	if column_name in dontmanage.db.get_table_columns(doctype):
-		# already exists
-		return
-
+def add_column(doctype, column_name, fieldtype, precision=None, length=None, default=None, not_null=False):
 	dontmanage.db.commit()
-
-	query = "alter table `tab{}` add column {} {}".format(
+	query = "alter table `tab{}` add column if not exists {} {}".format(
 		doctype,
 		column_name,
 		get_definition(fieldtype, precision, length),

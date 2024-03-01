@@ -44,9 +44,7 @@ class TestRequestPersonalData(DontManageTestCase):
 
 		self.assertEqual(file_count, 1)
 
-		email_queue = dontmanage.get_all(
-			"Email Queue", fields=["message"], order_by="creation DESC", limit=1
-		)
+		email_queue = dontmanage.get_all("Email Queue", fields=["message"], order_by="creation DESC", limit=1)
 		self.assertIn(dontmanage._("Download Your Data"), email_queue[0].message)
 
 		dontmanage.db.delete("Email Queue")

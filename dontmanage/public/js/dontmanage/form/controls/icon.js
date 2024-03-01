@@ -10,7 +10,7 @@ dontmanage.ui.form.ControlIcon = class ControlIcon extends dontmanage.ui.form.Co
 
 	get_all_icons() {
 		dontmanage.symbols = [];
-		$("#dontmanage-symbols > symbol[id]").each(function () {
+		$("#all-symbols > svg > symbol[id]").each(function () {
 			this.id.includes("icon-") && dontmanage.symbols.push(this.id.replace("icon-", ""));
 		});
 	}

@@ -23,7 +23,7 @@ dontmanage.has_indicator = function (doctype) {
 	return false;
 };
 
-dontmanage.get_indicator = function (doc, doctype) {
+dontmanage.get_indicator = function (doc, doctype, show_workflow_state) {
 	if (doc.__unsaved) {
 		return [__("Not Saved"), "orange"];
 	}
@@ -36,17 +36,24 @@ dontmanage.get_indicator = function (doc, doctype) {
 
 	var settings = dontmanage.listview_settings[doctype] || {};
 
-	var is_submittable = dontmanage.model.is_submittable(doctype),
-		workflow_fieldname = dontmanage.workflow.get_state_fieldname(doctype);
+	var is_submittable = dontmanage.model.is_submittable(doctype);
+	let workflow_fieldname = dontmanage.workflow.get_state_fieldname(doctype);
 
+	let avoid_status_override = (dontmanage.workflow.avoid_status_override[doctype] || []).includes(
+		doc[workflow_fieldname]
+	);
 	// workflow
-	if (workflow_fieldname && !without_workflow) {
+	if (
+		workflow_fieldname &&
+		(!without_workflow || show_workflow_state) &&
+		!avoid_status_override
+	) {
 		var value = doc[workflow_fieldname];
 		if (value) {
-			var colour = "";
+			let colour = "";
 
 			if (locals["Workflow State"][value] && locals["Workflow State"][value].style) {
-				var colour = {
+				colour = {
 					Success: "green",
 					Warning: "orange",
 					Danger: "red",

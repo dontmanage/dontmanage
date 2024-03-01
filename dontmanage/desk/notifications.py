@@ -34,13 +34,12 @@ def get_notifications():
 		return out
 
 	groups = list(config.get("for_doctype")) + list(config.get("for_module"))
-	cache = dontmanage.cache()
 
 	notification_count = {}
 	notification_percent = {}
 
 	for name in groups:
-		count = cache.hget("notification_count:" + name, dontmanage.session.user)
+		count = dontmanage.cache.hget("notification_count:" + name, dontmanage.session.user)
 		if count is not None:
 			notification_count[name] = count
 
@@ -83,7 +82,7 @@ def get_notifications_for_doctypes(config, notification_count):
 
 				else:
 					open_count_doctype[d] = result
-					dontmanage.cache().hset("notification_count:" + d, dontmanage.session.user, result)
+					dontmanage.cache.hset("notification_count:" + d, dontmanage.session.user, result)
 
 	return open_count_doctype
 
@@ -131,7 +130,9 @@ def get_notifications_for_targets(config, notification_percent):
 					for doc in doc_list:
 						value = doc[value_field]
 						target = doc[target_field]
-						doc_target_percents[doctype][doc.name] = (value / target * 100) if value < target else 100
+						doc_target_percents[doctype][doc.name] = (
+							(value / target * 100) if value < target else 100
+						)
 
 	return doc_target_percents
 
@@ -139,7 +140,6 @@ def get_notifications_for_targets(config, notification_percent):
 def clear_notifications(user=None):
 	if dontmanage.flags.in_install:
 		return
-	cache = dontmanage.cache()
 	config = get_notification_config()
 
 	if not config:
@@ -151,17 +151,17 @@ def clear_notifications(user=None):
 
 	for name in groups:
 		if user:
-			cache.hdel("notification_count:" + name, user)
+			dontmanage.cache.hdel("notification_count:" + name, user)
 		else:
-			cache.delete_key("notification_count:" + name)
+			dontmanage.cache.delete_key("notification_count:" + name)
 
 
 def clear_notification_config(user):
-	dontmanage.cache().hdel("notification_config", user)
+	dontmanage.cache.hdel("notification_config", user)
 
 
 def delete_notification_count_for(doctype):
-	dontmanage.cache().delete_key("notification_count:" + doctype)
+	dontmanage.cache.delete_key("notification_count:" + doctype)
 
 
 def clear_doctype_notifications(doc, method=None, *args, **kwargs):
@@ -230,27 +230,24 @@ def get_notification_config():
 						config[key].update(nc.get(key, {}))
 		return config
 
-	return dontmanage.cache().hget("notification_config", user, _get)
+	return dontmanage.cache.hget("notification_config", user, _get)
 
 
 def get_filters_for(doctype):
 	"""get open filters for doctype"""
 	config = get_notification_config()
 	doctype_config = config.get("for_doctype").get(doctype, {})
-	filters = doctype_config if not isinstance(doctype_config, str) else None
-
-	return filters
+	return None if isinstance(doctype_config, str) else doctype_config
 
 
 @dontmanage.whitelist()
 @dontmanage.read_only()
-def get_open_count(doctype, name, items=None):
-	"""Get open count for given transactions and filters
+def get_open_count(doctype: str, name: str, items=None):
+	"""Get count for internal and external links for given transactions
 
 	:param doctype: Reference DocType
 	:param name: Reference Name
-	:param transactions: List of transactions (json/dict)
-	:param filters: optional filters (json/list)"""
+	:param items: Optional list of transactions (json/dict)"""
 
 	if dontmanage.flags.in_migrate or dontmanage.flags.in_install:
 		return {"count": []}
@@ -269,30 +266,28 @@ def get_open_count(doctype, name, items=None):
 	if not isinstance(items, list):
 		items = json.loads(items)
 
-	out = []
+	out = {
+		"external_links_found": [],
+		"internal_links_found": [],
+	}
+
 	for d in items:
-		if d in links.get("internal_links", {}):
-			continue
-
-		filters = get_filters_for(d)
-		fieldname = links.get("non_standard_fieldnames", {}).get(d, links.get("fieldname"))
-		data = {"name": d}
-		if filters:
-			# get the fieldname for the current document
-			# we only need open documents related to the current document
-			filters[fieldname] = name
-			total = len(
-				dontmanage.get_all(d, fields="name", filters=filters, limit=100, distinct=True, ignore_ifnull=True)
-			)
-			data["open_count"] = total
-
-		total = len(
-			dontmanage.get_all(
-				d, fields="name", filters={fieldname: name}, limit=100, distinct=True, ignore_ifnull=True
-			)
-		)
-		data["count"] = total
-		out.append(data)
+		internal_link_for_doctype = links.get("internal_links", {}).get(d) or links.get(
+			"internal_and_external_links", {}
+		).get(d)
+		if internal_link_for_doctype:
+			internal_links_data_for_d = get_internal_links(doc, internal_link_for_doctype, d)
+			if internal_links_data_for_d["count"]:
+				out["internal_links_found"].append(internal_links_data_for_d)
+			else:
+				try:
+					external_links_data_for_d = get_external_links(d, name, links)
+					out["external_links_found"].append(external_links_data_for_d)
+				except Exception:
+					out["external_links_found"].append({"doctype": d, "open_count": 0, "count": 0})
+		else:
+			external_links_data_for_d = get_external_links(d, name, links)
+			out["external_links_found"].append(external_links_data_for_d)
 
 	out = {
 		"count": out,
@@ -304,6 +299,58 @@ def get_open_count(doctype, name, items=None):
 			out["timeline_data"] = module.get_timeline_data(doctype, name)
 
 	return out
+
+
+def get_internal_links(doc, link, link_doctype):
+	names = []
+	data = {"doctype": link_doctype}
+
+	if isinstance(link, str):
+		# get internal links in parent document
+		value = doc.get(link)
+		if value and value not in names:
+			names.append(value)
+	elif isinstance(link, list):
+		# get internal links in child documents
+		table_fieldname, link_fieldname = link
+		for row in doc.get(table_fieldname) or []:
+			value = row.get(link_fieldname)
+			if value and value not in names:
+				names.append(value)
+
+	data["open_count"] = 0
+	data["count"] = len(names)
+	data["names"] = names
+
+	return data
+
+
+def get_external_links(doctype, name, links):
+	filters = get_filters_for(doctype)
+	fieldname = links.get("non_standard_fieldnames", {}).get(doctype, links.get("fieldname"))
+	data = {"doctype": doctype}
+
+	if filters:
+		# get the fieldname for the current document
+		# we only need open documents related to the current document
+		filters[fieldname] = name
+		total = len(
+			dontmanage.get_all(
+				doctype, fields="name", filters=filters, limit=100, distinct=True, ignore_ifnull=True
+			)
+		)
+		data["open_count"] = total
+	else:
+		data["open_count"] = 0
+
+	total = len(
+		dontmanage.get_all(
+			doctype, fields="name", filters={fieldname: name}, limit=100, distinct=True, ignore_ifnull=True
+		)
+	)
+	data["count"] = total
+
+	return data
 
 
 def notify_mentions(ref_doctype, ref_name, content):

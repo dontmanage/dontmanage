@@ -8,6 +8,20 @@ from dontmanage.model.document import Document
 
 
 class DocumentShareKey(Document):
+	# begin: auto-generated types
+	# This code is auto-generated. Do not modify anything in this block.
+
+	from typing import TYPE_CHECKING
+
+	if TYPE_CHECKING:
+		from dontmanage.types import DF
+
+		expires_on: DF.Date | None
+		key: DF.Data | None
+		reference_docname: DF.DynamicLink | None
+		reference_doctype: DF.Link | None
+
+	# end: auto-generated types
 	def before_insert(self):
 		self.key = dontmanage.generate_hash(length=randrange(25, 35))
 		if not self.expires_on and not self.flags.no_expiry:

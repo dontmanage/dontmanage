@@ -12,13 +12,28 @@ if TYPE_CHECKING:
 
 
 class DocTypeLayout(Document):
+	# begin: auto-generated types
+	# This code is auto-generated. Do not modify anything in this block.
+
+	from typing import TYPE_CHECKING
+
+	if TYPE_CHECKING:
+		from dontmanage.custom.doctype.doctype_layout_field.doctype_layout_field import DocTypeLayoutField
+		from dontmanage.types import DF
+
+		client_script: DF.Code | None
+		document_type: DF.Link
+		fields: DF.Table[DocTypeLayoutField]
+		route: DF.Data
+
+	# end: auto-generated types
 	def validate(self):
 		if not self.route:
 			self.route = slug(self.name)
 
 	@dontmanage.whitelist()
 	def sync_fields(self):
-		doctype_fields = dontmanage.get_meta(self.document_type).fields
+		doctype_fields = dontmanage.get_meta(self.document_type, cached=False).fields
 
 		if self.is_new():
 			added_fields = [field.fieldname for field in doctype_fields]

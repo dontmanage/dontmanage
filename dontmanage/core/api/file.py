@@ -1,7 +1,8 @@
 import json
 
 import dontmanage
-from dontmanage.core.doctype.file.file import File, setup_folder_path
+from dontmanage.core.doctype.file.file import File
+from dontmanage.core.doctype.file.utils import setup_folder_path
 from dontmanage.utils import cint, cstr
 
 
@@ -13,7 +14,7 @@ def unzip_file(name: str):
 
 
 @dontmanage.whitelist()
-def get_attached_images(doctype: str, names: list[str]) -> dontmanage._dict:
+def get_attached_images(doctype: str, names: list[str] | str) -> dontmanage._dict:
 	"""get list of image urls attached in form
 	returns {name: ['image.jpg', 'image.png']}"""
 
@@ -40,9 +41,6 @@ def get_attached_images(doctype: str, names: list[str]) -> dontmanage._dict:
 
 @dontmanage.whitelist()
 def get_files_in_folder(folder: str, start: int = 0, page_length: int = 20) -> dict:
-	start = cint(start)
-	page_length = cint(page_length)
-
 	attachment_folder = dontmanage.db.get_value(
 		"File",
 		"Home/Attachments",
@@ -86,7 +84,11 @@ def get_files_by_search_text(text: str) -> list[dict]:
 
 @dontmanage.whitelist(allow_guest=True)
 def get_max_file_size() -> int:
-	return cint(dontmanage.conf.get("max_file_size")) or 10485760
+	return (
+		cint(dontmanage.get_system_settings("max_file_size")) * 1024 * 1024
+		or cint(dontmanage.conf.get("max_file_size"))
+		or 25 * 1024 * 1024
+	)
 
 
 @dontmanage.whitelist()
@@ -101,10 +103,11 @@ def create_new_folder(file_name: str, folder: str) -> File:
 
 
 @dontmanage.whitelist()
-def move_file(file_list: list[File], new_parent: str, old_parent: str) -> None:
+def move_file(file_list: list[File | dict] | str, new_parent: str, old_parent: str) -> None:
 	if isinstance(file_list, str):
 		file_list = json.loads(file_list)
 
+	# will check for permission on each file & update parent
 	for file_obj in file_list:
 		setup_folder_path(file_obj.get("name"), new_parent)
 

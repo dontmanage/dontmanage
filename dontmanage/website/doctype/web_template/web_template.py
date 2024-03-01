@@ -12,6 +12,23 @@ from dontmanage.website.utils import clear_cache
 
 
 class WebTemplate(Document):
+	# begin: auto-generated types
+	# This code is auto-generated. Do not modify anything in this block.
+
+	from typing import TYPE_CHECKING
+
+	if TYPE_CHECKING:
+		from dontmanage.types import DF
+		from dontmanage.website.doctype.web_template_field.web_template_field import WebTemplateField
+
+		fields: DF.Table[WebTemplateField]
+		module: DF.Link | None
+		standard: DF.Check
+		template: DF.Code | None
+		type: DF.Literal["Component", "Section", "Navbar", "Footer"]
+
+	# end: auto-generated types
+
 	def validate(self):
 		if self.standard and not (dontmanage.conf.developer_mode or dontmanage.flags.in_patch):
 			dontmanage.throw(_("Enable developer mode to create a standard Web Template"))

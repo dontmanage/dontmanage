@@ -87,9 +87,7 @@ class TestNotification(DontManageTestCase):
 			)
 		)
 
-		self.assertEqual(
-			dontmanage.db.get_value("Communication", communication.name, "subject"), "__testing__"
-		)
+		self.assertEqual(dontmanage.db.get_value("Communication", communication.name, "subject"), "__testing__")
 
 	def test_condition(self):
 		"""Check notification is triggered based on a condition."""
@@ -263,7 +261,6 @@ class TestNotification(DontManageTestCase):
 		)
 
 	def test_cc_jinja(self):
-
 		dontmanage.db.delete("User", {"email": "test_jinja@example.com"})
 		dontmanage.db.delete("Email Queue")
 		dontmanage.db.delete("Email Queue Recipient")
@@ -282,9 +279,7 @@ class TestNotification(DontManageTestCase):
 			)
 		)
 
-		self.assertTrue(
-			dontmanage.db.get_value("Email Queue Recipient", {"recipient": "test_jinja@example.com"})
-		)
+		self.assertTrue(dontmanage.db.get_value("Email Queue Recipient", {"recipient": "test_jinja@example.com"}))
 
 		dontmanage.db.delete("User", {"email": "test_jinja@example.com"})
 		dontmanage.db.delete("Email Queue")

@@ -1,12 +1,14 @@
+from datetime import timedelta
+
 import dontmanage
 from dontmanage.tests.utils import DontManageTestCase, change_settings
+from dontmanage.utils.data import now_datetime
 
 
 class TestTestUtils(DontManageTestCase):
 	SHOW_TRANSACTION_COMMIT_WARNINGS = True
 
 	def test_document_assertions(self):
-
 		currency = dontmanage.new_doc("Currency")
 		currency.currency_name = "STONKS"
 		currency.smallest_currency_fraction_value = 0.420_001
@@ -26,6 +28,13 @@ class TestTestUtils(DontManageTestCase):
 
 		restored_settings = dontmanage.get_system_settings("logout_on_password_reset")
 		self.assertEqual(current_setting, restored_settings)
+
+	def test_time_freezing(self):
+		now = now_datetime()
+
+		tomorrow = now + timedelta(days=1)
+		with self.freeze_time(tomorrow):
+			self.assertEqual(now_datetime(), tomorrow)
 
 
 def tearDownModule():

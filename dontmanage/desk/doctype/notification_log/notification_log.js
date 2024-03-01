@@ -11,6 +11,10 @@ dontmanage.ui.form.on("Notification Log", {
 	},
 
 	open_reference_document: function (frm) {
+		if (frm.doc?.link) {
+			dontmanage.set_route(frm.doc.link);
+			return;
+		}
 		const dt = frm.doc.document_type;
 		const dn = frm.doc.document_name;
 		dontmanage.set_route("Form", dt, dn);

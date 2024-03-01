@@ -55,21 +55,20 @@ def execute():
 			user_permissions_to_delete.append(user_permission.name)
 			user_permission.name = None
 			user_permission.skip_for_doctype = None
-			for doctype in applicable_for_doctypes:
-				if doctype:
-					# Maintain sequence (name, user, allow, for_value, applicable_for, apply_to_all_doctypes, creation, modified)
-					new_user_permissions_list.append(
-						(
-							dontmanage.generate_hash(length=10),
-							user_permission.user,
-							user_permission.allow,
-							user_permission.for_value,
-							doctype,
-							0,
-							user_permission.creation,
-							user_permission.modified,
-						)
-					)
+			new_user_permissions_list.extend(
+				(
+					dontmanage.generate_hash(length=10),
+					user_permission.user,
+					user_permission.allow,
+					user_permission.for_value,
+					doctype,
+					0,
+					user_permission.creation,
+					user_permission.modified,
+				)
+				for doctype in applicable_for_doctypes
+				if doctype
+			)
 		else:
 			# No skip_for_doctype found! Just update apply_to_all_doctypes.
 			dontmanage.db.set_value("User Permission", user_permission.name, "apply_to_all_doctypes", 1)
@@ -87,6 +86,4 @@ def execute():
 		).insert(*new_user_permissions_list).run()
 
 	if user_permissions_to_delete:
-		dontmanage.db.delete(
-			"User Permission", filters=(Field("name").isin(tuple(user_permissions_to_delete)))
-		)
+		dontmanage.db.delete("User Permission", filters=(Field("name").isin(tuple(user_permissions_to_delete))))

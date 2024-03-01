@@ -15,7 +15,7 @@ def make_mapped_doc(method, source_name, selected_children=None, args=None):
 
 	Called from `open_mapped_doc` from create_new.js"""
 
-	for hook in dontmanage.get_hooks("override_whitelisted_methods", {}).get(method, []):
+	for hook in reversed(dontmanage.get_hooks("override_whitelisted_methods", {}).get(method, [])):
 		# override using the first hook
 		method = hook
 		break
@@ -62,8 +62,8 @@ def get_mapped_doc(
 	postprocess=None,
 	ignore_permissions=False,
 	ignore_child_tables=False,
+	cached=False,
 ):
-
 	apply_strict_user_permissions = dontmanage.get_system_settings("apply_strict_user_permissions")
 
 	# main
@@ -79,7 +79,10 @@ def get_mapped_doc(
 	):
 		target_doc.raise_no_permission_to("create")
 
-	source_doc = dontmanage.get_doc(from_doctype, from_docname)
+	if cached:
+		source_doc = dontmanage.get_cached_doc(from_doctype, from_docname)
+	else:
+		source_doc = dontmanage.get_doc(from_doctype, from_docname)
 
 	if not ignore_permissions:
 		if not source_doc.has_permission("read"):
@@ -132,6 +135,9 @@ def get_mapped_doc(
 							True if target_doc.get(target_parentfield) else False
 						)
 
+					if table_map.get("ignore"):
+						continue
+
 					if table_map.get("add_if_empty") and row_exists_for_parentfield.get(target_parentfield):
 						continue
 
@@ -143,13 +149,10 @@ def get_mapped_doc(
 	if postprocess:
 		postprocess(source_doc, target_doc)
 
+	target_doc.run_method("after_mapping", source_doc)
 	target_doc.set_onload("load_after_mapping", True)
 
-	if (
-		apply_strict_user_permissions
-		and not ignore_permissions
-		and not target_doc.has_permission("create")
-	):
+	if apply_strict_user_permissions and not ignore_permissions and not target_doc.has_permission("create"):
 		target_doc.raise_no_permission_to("create")
 
 	return target_doc
@@ -255,7 +258,7 @@ def map_fetch_fields(target_doc, df, no_copy_fields):
 def map_child_doc(source_d, target_parent, table_map, source_parent=None):
 	target_child_doctype = table_map["doctype"]
 	target_parentfield = target_parent.get_parentfield_of_doctype(target_child_doctype)
-	target_d = dontmanage.new_doc(target_child_doctype, target_parent, target_parentfield)
+	target_d = dontmanage.new_doc(target_child_doctype, parent_doc=target_parent, parentfield=target_parentfield)
 
 	map_doc(source_d, target_d, table_map, source_parent)
 

@@ -1,39 +1,37 @@
 # Copyright (c) 2015, DontManage Technologies and Contributors
 # License: MIT. See LICENSE
 import dontmanage
+from dontmanage.contacts.doctype.address_template.address_template import get_default_address_template
 from dontmanage.tests.utils import DontManageTestCase
+from dontmanage.utils.jinja import validate_template
 
 
 class TestAddressTemplate(DontManageTestCase):
-	def setUp(self):
-		self.make_default_address_template()
+	def setUp(self) -> None:
+		dontmanage.db.delete("Address Template", {"country": "India"})
+		dontmanage.db.delete("Address Template", {"country": "Brazil"})
+
+	def test_default_address_template(self):
+		validate_template(get_default_address_template())
 
 	def test_default_is_unset(self):
-		a = dontmanage.get_doc("Address Template", "India")
-		a.is_default = 1
-		a.save()
+		dontmanage.get_doc({"doctype": "Address Template", "country": "India", "is_default": 1}).insert()
 
-		b = dontmanage.get_doc("Address Template", "Brazil")
-		b.is_default = 1
-		b.save()
+		self.assertEqual(dontmanage.db.get_value("Address Template", "India", "is_default"), 1)
+
+		dontmanage.get_doc({"doctype": "Address Template", "country": "Brazil", "is_default": 1}).insert()
 
 		self.assertEqual(dontmanage.db.get_value("Address Template", "India", "is_default"), 0)
+		self.assertEqual(dontmanage.db.get_value("Address Template", "Brazil", "is_default"), 1)
 
-	def tearDown(self):
-		a = dontmanage.get_doc("Address Template", "India")
-		a.is_default = 1
-		a.save()
+	def test_delete_address_template(self):
+		india = dontmanage.get_doc({"doctype": "Address Template", "country": "India", "is_default": 0}).insert()
 
-	@classmethod
-	def make_default_address_template(self):
-		template = """{{ address_line1 }}<br>{% if address_line2 %}{{ address_line2 }}<br>{% endif -%}{{ city }}<br>{% if state %}{{ state }}<br>{% endif -%}{% if pincode %}{{ pincode }}<br>{% endif -%}{{ country }}<br>{% if phone %}Phone: {{ phone }}<br>{% endif -%}{% if fax %}Fax: {{ fax }}<br>{% endif -%}{% if email_id %}Email: {{ email_id }}<br>{% endif -%}"""
+		brazil = dontmanage.get_doc(
+			{"doctype": "Address Template", "country": "Brazil", "is_default": 1}
+		).insert()
 
-		if not dontmanage.db.exists("Address Template", "India"):
-			dontmanage.get_doc(
-				{"doctype": "Address Template", "country": "India", "is_default": 1, "template": template}
-			).insert()
+		india.reload()  # might have been modified by the second template
+		india.delete()  # should not raise an error
 
-		if not dontmanage.db.exists("Address Template", "Brazil"):
-			dontmanage.get_doc(
-				{"doctype": "Address Template", "country": "Brazil", "template": template}
-			).insert()
+		self.assertRaises(dontmanage.ValidationError, brazil.delete)

@@ -215,18 +215,17 @@ context("View", () => {
 	});
 
 	it("Route to Form", () => {
-		cy.call("dontmanage.tests.ui_test_helpers.create_note").then(() => {
-			cy.visit("/app/note/Routing Test");
-			cy.window()
-				.its("cur_frm")
-				.then((frm) => {
-					expect(frm.doc.title).to.equal("Routing Test");
-				});
-		});
+		const test_user = cy.config("testUser");
+		cy.visit(`/app/user/${test_user}`);
+		cy.window()
+			.its("cur_frm")
+			.then((frm) => {
+				expect(frm.doc.name).to.equal(test_user);
+			});
 	});
 
-	it("Route to Settings Workspace", () => {
-		cy.visit("/app/settings");
-		cy.get(".title-text").should("contain", "Settings");
+	it("Route to Website Workspace", () => {
+		cy.visit("/app/website");
+		cy.get(".title-text").should("contain", "Website");
 	});
 });

@@ -3,7 +3,7 @@ import datetime
 import hashlib
 import re
 from http import cookies
-from urllib.parse import unquote, urlparse
+from urllib.parse import unquote, urljoin, urlparse
 
 import jwt
 import pytz
@@ -11,11 +11,10 @@ from oauthlib.openid import RequestValidator
 
 import dontmanage
 from dontmanage.auth import LoginManager
-from dontmanage.utils.data import get_system_timezone
+from dontmanage.utils.data import get_system_timezone, now_datetime
 
 
 class OAuthWebRequestValidator(RequestValidator):
-
 	# Pre- and post-authorization.
 	def validate_client_id(self, client_id, request, *args, **kwargs):
 		# Simple validity check, does client exist? Not banned?
@@ -43,8 +42,7 @@ class OAuthWebRequestValidator(RequestValidator):
 		# The redirect used if none has been supplied.
 		# Prefer your clients to pre register a redirect uri rather than
 		# supplying one on each authorization request.
-		redirect_uri = dontmanage.db.get_value("OAuth Client", client_id, "default_redirect_uri")
-		return redirect_uri
+		return dontmanage.db.get_value("OAuth Client", client_id, "default_redirect_uri")
 
 	def validate_scopes(self, client_id, scopes, client, request, *args, **kwargs):
 		# Is the client allowed to access the requested scopes?
@@ -74,7 +72,6 @@ class OAuthWebRequestValidator(RequestValidator):
 	# Post-authorization
 
 	def save_authorization_code(self, client_id, code, request, *args, **kwargs):
-
 		cookie_dict = get_cookie_dict_from_headers(request)
 
 		oac = dontmanage.new_doc("OAuth Authorization Code")
@@ -150,11 +147,7 @@ class OAuthWebRequestValidator(RequestValidator):
 			filters={"client": client_id, "validity": "Valid"},
 		)
 
-		checkcodes = []
-		for vcode in validcodes:
-			checkcodes.append(vcode["name"])
-
-		if code in checkcodes:
+		if code in [vcode["name"] for vcode in validcodes]:
 			request.scopes = dontmanage.db.get_value("OAuth Authorization Code", code, "scopes").split(
 				get_url_delimiter()
 			)
@@ -231,10 +224,7 @@ class OAuthWebRequestValidator(RequestValidator):
 		otoken.save(ignore_permissions=True)
 		dontmanage.db.commit()
 
-		default_redirect_uri = dontmanage.db.get_value(
-			"OAuth Client", request.client["name"], "default_redirect_uri"
-		)
-		return default_redirect_uri
+		return dontmanage.db.get_value("OAuth Client", request.client["name"], "default_redirect_uri")
 
 	def invalidate_authorization_code(self, client_id, code, request, *args, **kwargs):
 		# Authorization codes are use once, invalidate it when a Bearer token
@@ -248,13 +238,7 @@ class OAuthWebRequestValidator(RequestValidator):
 	def validate_bearer_token(self, token, scopes, request):
 		# Remember to check expiration and scope membership
 		otoken = dontmanage.get_doc("OAuth Bearer Token", token)
-		token_expiration_local = otoken.expiration_time.replace(
-			tzinfo=pytz.timezone(get_system_timezone())
-		)
-		token_expiration_utc = token_expiration_local.astimezone(pytz.utc)
-		is_token_valid = (
-			dontmanage.utils.datetime.datetime.utcnow().replace(tzinfo=pytz.utc) < token_expiration_utc
-		) and otoken.status != "Revoked"
+		is_token_valid = (now_datetime() < otoken.expiration_time) and otoken.status != "Revoked"
 		client_scopes = dontmanage.db.get_value("OAuth Client", otoken.client, "scopes").split(
 			get_url_delimiter()
 		)
@@ -309,9 +293,7 @@ class OAuthWebRequestValidator(RequestValidator):
 		- Refresh Token Grant
 		"""
 
-		otoken = dontmanage.get_doc(
-			"OAuth Bearer Token", {"refresh_token": refresh_token, "status": "Active"}
-		)
+		otoken = dontmanage.get_doc("OAuth Bearer Token", {"refresh_token": refresh_token, "status": "Active"})
 
 		if not otoken:
 			return False
@@ -330,6 +312,8 @@ class OAuthWebRequestValidator(RequestValidator):
 			id_token["nonce"] = request.nonce
 
 		userinfo = get_userinfo(user)
+
+		id_token["exp"] = id_token.get("iat") + token.get("expires_in")
 
 		if userinfo.get("iss"):
 			id_token["iss"] = userinfo.get("iss")
@@ -363,6 +347,7 @@ class OAuthWebRequestValidator(RequestValidator):
 
 	def get_jwt_bearer_token(self, token, token_handler, request):
 		now = datetime.datetime.now()
+
 		id_token = dict(
 			aud=token.client_id,
 			iat=round(now.timestamp()),
@@ -372,8 +357,7 @@ class OAuthWebRequestValidator(RequestValidator):
 
 	def get_userinfo_claims(self, request):
 		user = dontmanage.get_doc("User", dontmanage.session.user)
-		userinfo = get_userinfo(user)
-		return userinfo
+		return get_userinfo(user)
 
 	def validate_id_token(self, token, scopes, request):
 		try:
@@ -410,9 +394,9 @@ class OAuthWebRequestValidator(RequestValidator):
 		- OpenIDConnectHybrid
 		"""
 		if request.prompt == "login":
-			False
+			return False
 		else:
-			True
+			return True
 
 	def validate_silent_login(self, request):
 		"""Ensure session user has authorized silent OpenID login.
@@ -545,20 +529,8 @@ def calculate_at_hash(access_token, hash_alg):
 
 
 def delete_oauth2_data():
-	# Delete Invalid Authorization Code and Revoked Token
-	commit_code, commit_token = False, False
-	code_list = dontmanage.get_all("OAuth Authorization Code", filters={"validity": "Invalid"})
-	token_list = dontmanage.get_all("OAuth Bearer Token", filters={"status": "Revoked"})
-	if len(code_list) > 0:
-		commit_code = True
-	if len(token_list) > 0:
-		commit_token = True
-	for code in code_list:
-		dontmanage.delete_doc("OAuth Authorization Code", code["name"])
-	for token in token_list:
-		dontmanage.delete_doc("OAuth Bearer Token", token["name"])
-	if commit_code or commit_token:
-		dontmanage.db.commit()
+	dontmanage.db.delete("OAuth Authorization Code", {"validity": "Invalid"})
+	dontmanage.db.delete("OAuth Bearer Token", {"status": "Revoked"})
 
 
 def get_client_scopes(client_id):
@@ -575,9 +547,9 @@ def get_userinfo(user):
 		if dontmanage.utils.validate_url(user.user_image, valid_schemes=valid_url_schemes):
 			picture = user.user_image
 		else:
-			picture = dontmanage_server_url + "/" + user.user_image
+			picture = urljoin(dontmanage_server_url, user.user_image)
 
-	userinfo = dontmanage._dict(
+	return dontmanage._dict(
 		{
 			"sub": dontmanage.db.get_value(
 				"User Social Login",
@@ -593,8 +565,6 @@ def get_userinfo(user):
 			"iss": dontmanage_server_url,
 		}
 	)
-
-	return userinfo
 
 
 def get_url_delimiter(separator_character=" "):

@@ -3,37 +3,71 @@
 
 import dontmanage
 from dontmanage import _
+from dontmanage.core.doctype.submission_queue.submission_queue import queue_submission
 from dontmanage.model.document import Document
 from dontmanage.utils import cint
+from dontmanage.utils.scheduler import is_scheduler_inactive
 
 
 class BulkUpdate(Document):
-	pass
+	# begin: auto-generated types
+	# This code is auto-generated. Do not modify anything in this block.
 
+	from typing import TYPE_CHECKING
 
-@dontmanage.whitelist()
-def update(doctype, field, value, condition="", limit=500):
-	if not limit or cint(limit) > 500:
-		limit = 500
+	if TYPE_CHECKING:
+		from dontmanage.types import DF
 
-	if condition:
-		condition = " where " + condition
+		condition: DF.SmallText | None
+		document_type: DF.Link
+		field: DF.Literal
+		limit: DF.Int
+		update_value: DF.SmallText
 
-	if ";" in condition:
-		dontmanage.throw(_("; not allowed in condition"))
+	# end: auto-generated types
+	@dontmanage.whitelist()
+	def bulk_update(self):
+		self.check_permission("write")
+		limit = self.limit if self.limit and cint(self.limit) < 500 else 500
 
-	docnames = dontmanage.db.sql_list(
-		f"""select name from `tab{doctype}`{condition} limit {limit} offset 0"""
-	)
-	data = {}
-	data[field] = value
-	return submit_cancel_or_update_docs(doctype, docnames, "update", data)
+		condition = ""
+		if self.condition:
+			if ";" in self.condition:
+				dontmanage.throw(_("; not allowed in condition"))
+
+			condition = f" where {self.condition}"
+
+		docnames = dontmanage.db.sql_list(
+			f"""select name from `tab{self.document_type}`{condition} limit {limit} offset 0"""
+		)
+		return submit_cancel_or_update_docs(
+			self.document_type, docnames, "update", {self.field: self.update_value}
+		)
 
 
 @dontmanage.whitelist()
 def submit_cancel_or_update_docs(doctype, docnames, action="submit", data=None):
-	docnames = dontmanage.parse_json(docnames)
+	if isinstance(docnames, str):
+		docnames = dontmanage.parse_json(docnames)
 
+	if len(docnames) < 20:
+		return _bulk_action(doctype, docnames, action, data)
+	elif len(docnames) <= 500:
+		dontmanage.msgprint(_("Bulk operation is enqueued in background."), alert=True)
+		dontmanage.enqueue(
+			_bulk_action,
+			doctype=doctype,
+			docnames=docnames,
+			action=action,
+			data=data,
+			queue="short",
+			timeout=1000,
+		)
+	else:
+		dontmanage.throw(_("Bulk operations only support up to 500 documents."), title=_("Too Many Documents"))
+
+
+def _bulk_action(doctype, docnames, action, data):
 	if data:
 		data = dontmanage.parse_json(data)
 
@@ -44,8 +78,12 @@ def submit_cancel_or_update_docs(doctype, docnames, action="submit", data=None):
 		try:
 			message = ""
 			if action == "submit" and doc.docstatus.is_draft():
-				doc.submit()
-				message = _("Submitting {0}").format(doctype)
+				if doc.meta.queue_in_background and not is_scheduler_inactive():
+					queue_submission(doc, action)
+					message = _("Queuing {0} for Submission").format(doctype)
+				else:
+					doc.submit()
+					message = _("Submitting {0}").format(doctype)
 			elif action == "cancel" and doc.docstatus.is_submitted():
 				doc.cancel()
 				message = _("Cancelling {0}").format(doctype)
@@ -67,5 +105,4 @@ def submit_cancel_or_update_docs(doctype, docnames, action="submit", data=None):
 
 def show_progress(docnames, message, i, description):
 	n = len(docnames)
-	if n >= 10:
-		dontmanage.publish_progress(float(i) * 100 / n, title=message, description=description)
+	dontmanage.publish_progress(float(i) * 100 / n, title=message, description=description)

@@ -55,13 +55,12 @@ def get_doctypes_with_global_search(with_child_tables=True):
 		doctypes = [
 			d.name
 			for d in global_search_doctypes
-			if module_app.get(dontmanage.scrub(d.module))
-			and module_app[dontmanage.scrub(d.module)] in installed_apps
+			if module_app.get(dontmanage.scrub(d.module)) and module_app[dontmanage.scrub(d.module)] in installed_apps
 		]
 
 		return doctypes
 
-	return dontmanage.cache().get_value("doctypes_with_global_search", _get)
+	return dontmanage.cache.get_value("doctypes_with_global_search", _get)
 
 
 def rebuild_for_doctype(doctype):
@@ -196,7 +195,9 @@ def get_children_data(doctype, meta):
 			child_search_fields.setdefault(child.options, search_fields)
 			child_fieldnames = get_selected_fields(child_meta, search_fields)
 			child_records = dontmanage.get_all(
-				child.options, fields=child_fieldnames, filters={"docstatus": ["!=", 1], "parenttype": doctype}
+				child.options,
+				fields=child_fieldnames,
+				filters={"docstatus": ["!=", 1], "parenttype": doctype},
 			)
 
 			for record in child_records:
@@ -208,10 +209,10 @@ def get_children_data(doctype, meta):
 
 
 def insert_values_for_multiple_docs(all_contents):
-	values = []
-	for content in all_contents:
-		values.append("({doctype}, {name}, {content}, {published}, {title}, {route})".format(**content))
-
+	values = [
+		"({doctype}, {name}, {content}, {published}, {title}, {route})".format(**content)
+		for content in all_contents
+	]
 	batch_size = 50000
 	for i in range(0, len(values), batch_size):
 		batch_values = values[i : i + batch_size]
@@ -220,15 +221,11 @@ def insert_values_for_multiple_docs(all_contents):
 			{
 				"mariadb": """INSERT IGNORE INTO `__global_search`
 				(doctype, name, content, published, title, route)
-				VALUES {} """.format(
-					", ".join(batch_values)
-				),
+				VALUES {} """.format(", ".join(batch_values)),
 				"postgres": """INSERT INTO `__global_search`
 				(doctype, name, content, published, title, route)
 				VALUES {}
-				ON CONFLICT("name", "doctype") DO NOTHING""".format(
-					", ".join(batch_values)
-				),
+				ON CONFLICT("name", "doctype") DO NOTHING""".format(", ".join(batch_values)),
 			}
 		)
 
@@ -242,26 +239,24 @@ def update_global_search(doc):
 	if dontmanage.local.conf.get("disable_global_search"):
 		return
 
-	if (
-		doc.docstatus > 1
-		or (doc.meta.has_field("enabled") and not doc.get("enabled"))
-		or doc.get("disabled")
-	):
+	if doc.docstatus > 1 or (doc.meta.has_field("enabled") and not doc.get("enabled")) or doc.get("disabled"):
 		return
 
-	content = []
-	for field in doc.meta.get_global_search_fields():
-		if doc.get(field.fieldname) and field.fieldtype not in dontmanage.model.table_fields:
-			content.append(get_formatted_value(doc.get(field.fieldname), field))
+	content = [
+		get_formatted_value(doc.get(field.fieldname), field)
+		for field in doc.meta.get_global_search_fields()
+		if doc.get(field.fieldname) and field.fieldtype not in dontmanage.model.table_fields
+	]
 
 	# Get children
 	for child in doc.meta.get_table_fields():
 		for d in doc.get(child.fieldname):
 			if d.parent == doc.name:
-				for field in d.meta.get_global_search_fields():
-					if d.get(field.fieldname):
-						content.append(get_formatted_value(d.get(field.fieldname), field))
-
+				content.extend(
+					get_formatted_value(d.get(field.fieldname), field)
+					for field in d.meta.get_global_search_fields()
+					if d.get(field.fieldname)
+				)
 	if content:
 		published = 0
 		if hasattr(doc, "is_website_published") and doc.meta.allow_guest_to_view:
@@ -371,23 +366,63 @@ def sync_global_search():
 	:param flags:
 	:return:
 	"""
-	while dontmanage.cache().llen("global_search_queue") > 0:
-		# rpop to follow FIFO
-		# Last one should override all previous contents of same document
-		value = json.loads(dontmanage.cache().rpop("global_search_queue").decode("utf-8"))
-		sync_value(value)
+	from itertools import islice
+
+	def get_search_queue_item_generator():
+		while value := dontmanage.cache.rpop("global_search_queue"):
+			yield value
+
+	item_generator = get_search_queue_item_generator()
+	while search_items := tuple(islice(item_generator, 10_000)):
+		values = _get_deduped_search_item_values(search_items)
+		sync_values(values)
+
+
+def _get_deduped_search_item_values(items):
+	from collections import OrderedDict
+
+	values_dict = OrderedDict()
+	for item in items:
+		item_json = item.decode("utf-8")
+		item_dict = json.loads(item_json)
+		key = (item_dict["doctype"], item_dict["name"])
+		values_dict[key] = tuple(item_dict.values())
+
+	return values_dict.values()
+
+
+def sync_values(values: list):
+	from pypika.terms import Values
+
+	GlobalSearch = dontmanage.qb.Table("__global_search")
+	conflict_fields = ["content", "published", "title", "route"]
+
+	query = dontmanage.qb.into(GlobalSearch).columns(["doctype", "name", *conflict_fields]).insert(*values)
+
+	if dontmanage.db.db_type == "postgres":
+		query = query.on_conflict(GlobalSearch.doctype, GlobalSearch.name)
+
+	for field in conflict_fields:
+		if dontmanage.db.db_type == "mariadb":
+			query = query.on_duplicate_key_update(GlobalSearch[field], Values(field))
+		elif dontmanage.db.db_type == "postgres":
+			query = query.do_update(GlobalSearch[field])
+		else:
+			raise NotImplementedError
+
+	query.run()
 
 
 def sync_value_in_queue(value):
 	try:
 		# append to search queue if connected
-		dontmanage.cache().lpush("global_search_queue", json.dumps(value))
+		dontmanage.cache.lpush("global_search_queue", json.dumps(value))
 	except redis.exceptions.ConnectionError:
 		# not connected, sync directly
 		sync_value(value)
 
 
-def sync_value(value):
+def sync_value(value: dict):
 	"""
 	Sync a given document to global search
 	:param value: dict of { doctype, name, content, published, title, route }
@@ -444,7 +479,9 @@ def search(text, start=0, limit=20, doctype=""):
 	results = []
 	sorted_results = []
 
-	allowed_doctypes = get_doctypes_for_global_search()
+	allowed_doctypes = set(get_doctypes_for_global_search()) & set(dontmanage.get_user().get_can_read())
+	if not allowed_doctypes or (doctype and doctype not in allowed_doctypes):
+		return []
 
 	for word in set(text.split("&")):
 		word = word.strip()
@@ -462,7 +499,7 @@ def search(text, start=0, limit=20, doctype=""):
 
 		if doctype:
 			query = query.where(global_search.doctype == doctype)
-		elif allowed_doctypes:
+		else:
 			query = query.where(global_search.doctype.isin(allowed_doctypes))
 
 		if cint(start) > 0:
@@ -474,7 +511,7 @@ def search(text, start=0, limit=20, doctype=""):
 
 	# sort results based on allowed_doctype's priority
 	for doctype in allowed_doctypes:
-		for index, r in enumerate(results):
+		for r in results:
 			if r.doctype == doctype and r.rank > 0.0:
 				try:
 					meta = dontmanage.get_meta(r.doctype)
@@ -489,7 +526,7 @@ def search(text, start=0, limit=20, doctype=""):
 
 
 @dontmanage.whitelist(allow_guest=True)
-def web_search(text, scope=None, start=0, limit=20):
+def web_search(text: str, scope: str | None = None, start: int = 0, limit: int = 20):
 	"""
 	Search for given text in __global_search where published = 1
 	:param text: phrase to be searched
@@ -515,9 +552,7 @@ def web_search(text, scope=None, start=0, limit=20):
 		mariadb_conditions += "MATCH(`content`) AGAINST ({} IN BOOLEAN MODE)".format(
 			dontmanage.db.escape("+" + text + "*")
 		)
-		postgres_conditions += 'TO_TSVECTOR("content") @@ PLAINTO_TSQUERY({})'.format(
-			dontmanage.db.escape(text)
-		)
+		postgres_conditions += f'TO_TSVECTOR("content") @@ PLAINTO_TSQUERY({dontmanage.db.escape(text)})'
 
 		values = {"scope": "".join([scope, "%"]) if scope else "", "limit": limit, "start": start}
 

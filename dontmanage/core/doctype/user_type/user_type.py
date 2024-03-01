@@ -10,6 +10,29 @@ from dontmanage.utils import get_link_to_form
 
 
 class UserType(Document):
+	# begin: auto-generated types
+	# This code is auto-generated. Do not modify anything in this block.
+
+	from typing import TYPE_CHECKING
+
+	if TYPE_CHECKING:
+		from dontmanage.core.doctype.user_document_type.user_document_type import UserDocumentType
+		from dontmanage.core.doctype.user_select_document_type.user_select_document_type import (
+			UserSelectDocumentType,
+		)
+		from dontmanage.core.doctype.user_type_module.user_type_module import UserTypeModule
+		from dontmanage.types import DF
+
+		apply_user_permission_on: DF.Link | None
+		custom_select_doctypes: DF.Table[UserSelectDocumentType]
+		is_standard: DF.Check
+		role: DF.Link | None
+		select_doctypes: DF.Table[UserSelectDocumentType]
+		user_doctypes: DF.Table[UserDocumentType]
+		user_id_field: DF.Literal
+		user_type_modules: DF.Table[UserTypeModule]
+
+	# end: auto-generated types
 	def validate(self):
 		self.set_modules()
 		self.add_select_perm_doctypes()
@@ -18,7 +41,7 @@ class UserType(Document):
 		super().clear_cache()
 
 		if not self.is_standard:
-			dontmanage.cache().delete_value("non_standard_user_types")
+			dontmanage.cache.delete_value("non_standard_user_types")
 
 	def on_update(self):
 		if self.is_standard:
@@ -171,9 +194,7 @@ class UserType(Document):
 		doctypes.append("File")
 
 		for doctype in ["select_doctypes", "custom_select_doctypes"]:
-			for dt in self.get(doctype):
-				doctypes.append(dt.document_type)
-
+			doctypes.extend(dt.document_type for dt in self.get(doctype))
 		for perm in dontmanage.get_all(
 			"Custom DocPerm", filters={"role": self.role, "parent": ["not in", doctypes]}
 		):
@@ -290,7 +311,7 @@ def apply_permissions_for_non_standard_user_type(doc, method=None):
 	if not dontmanage.db.table_exists("User Type") or dontmanage.flags.in_migrate:
 		return
 
-	user_types = dontmanage.cache().get_value(
+	user_types = dontmanage.cache.get_value(
 		"non_standard_user_types",
 		get_non_standard_user_types,
 	)
@@ -312,7 +333,6 @@ def apply_permissions_for_non_standard_user_type(doc, method=None):
 				"User Permission", {"user": doc.get(data[1]), "allow": data[0], "for_value": doc.name}, "name"
 			)
 		):
-
 			perm_data = dontmanage.db.get_value(
 				"User Permission", {"allow": doc.doctype, "for_value": doc.name}, ["name", "user"]
 			)

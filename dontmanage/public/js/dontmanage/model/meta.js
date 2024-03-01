@@ -154,7 +154,7 @@ $.extend(dontmanage.meta, {
 
 	get_doctype_for_field: function (doctype, key) {
 		var out = null;
-		if (in_list(dontmanage.model.std_fields_list, key)) {
+		if (dontmanage.model.std_fields_list.includes(key)) {
 			// standard
 			out = doctype;
 		} else if (dontmanage.meta.has_field(doctype, key)) {
@@ -164,7 +164,7 @@ $.extend(dontmanage.meta, {
 			dontmanage.meta.get_table_fields(doctype).every(function (d) {
 				if (
 					dontmanage.meta.has_field(d.options, key) ||
-					in_list(dontmanage.model.child_table_field_list, key)
+					dontmanage.model.child_table_field_list.includes(key)
 				) {
 					out = d.options;
 					return false;
@@ -173,7 +173,6 @@ $.extend(dontmanage.meta, {
 			});
 
 			if (!out) {
-				// eslint-disable-next-line
 				console.log(
 					__("Warning: Unable to find {0} in any table related to {1}", [
 						key,
@@ -265,7 +264,7 @@ $.extend(dontmanage.meta, {
 			});
 		$.each(print_formats, function (i, d) {
 			if (
-				!in_list(print_format_list, d.name) &&
+				!print_format_list.includes(d.name) &&
 				d.print_format_type !== "JS" &&
 				(cint(enable_raw_printing) || !d.raw_printing)
 			) {

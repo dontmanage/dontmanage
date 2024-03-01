@@ -1,9 +1,9 @@
 # Copyright (c) 2020, DontManage and Contributors
 # License: MIT. See LICENSE
 
+from collections.abc import Callable
 from datetime import datetime
 from functools import wraps
-from typing import Callable
 
 from werkzeug.wrappers import Response
 
@@ -38,8 +38,8 @@ class RateLimiter:
 		timestamp = int(dontmanage.utils.now_datetime().timestamp())
 
 		self.window_number, self.spent = divmod(timestamp, self.window)
-		self.key = dontmanage.cache().make_key(f"rate-limit-counter-{self.window_number}")
-		self.counter = cint(dontmanage.cache().get(self.key))
+		self.key = dontmanage.cache.make_key(f"rate-limit-counter-{self.window_number}")
+		self.counter = cint(dontmanage.cache.get(self.key))
 		self.remaining = max(self.limit - self.counter, 0)
 		self.reset = self.window - self.spent
 
@@ -56,15 +56,14 @@ class RateLimiter:
 		raise dontmanage.TooManyRequestsError
 
 	def update(self):
-		self.end = datetime.utcnow()
-		self.duration = int((self.end - self.start).total_seconds() * 1000000)
-
-		pipeline = dontmanage.cache().pipeline()
+		self.record_request_end()
+		pipeline = dontmanage.cache.pipeline()
 		pipeline.incrby(self.key, self.duration)
 		pipeline.expire(self.key, self.window)
 		pipeline.execute()
 
 	def headers(self):
+		self.record_request_end()
 		headers = {
 			"X-RateLimit-Reset": self.reset,
 			"X-RateLimit-Limit": self.limit,
@@ -77,13 +76,19 @@ class RateLimiter:
 
 		return headers
 
+	def record_request_end(self):
+		if self.end is not None:
+			return
+		self.end = datetime.utcnow()
+		self.duration = int((self.end - self.start).total_seconds() * 1000000)
+
 	def respond(self):
 		if self.rejected:
 			return Response(_("Too Many Requests"), status=429)
 
 
 def rate_limit(
-	key: str = None,
+	key: str | None = None,
 	limit: int | Callable = 5,
 	seconds: int = 24 * 60 * 60,
 	methods: str | list = "ALL",
@@ -107,17 +112,14 @@ def rate_limit(
 	:returns: a decorator function that limit the number of requests per endpoint
 	"""
 
-	def ratelimit_decorator(fun):
-		@wraps(fun)
+	def ratelimit_decorator(fn):
+		@wraps(fn)
 		def wrapper(*args, **kwargs):
 			# Do not apply rate limits if method is not opted to check
-			if (
-				methods != "ALL"
-				and dontmanage.request
-				and dontmanage.request.method
-				and dontmanage.request.method.upper() not in methods
+			if not dontmanage.request or (
+				methods != "ALL" and dontmanage.request.method and dontmanage.request.method.upper() not in methods
 			):
-				return dontmanage.call(fun, **dontmanage.form_dict or kwargs)
+				return fn(*args, **kwargs)
 
 			_limit = limit() if callable(limit) else limit
 
@@ -135,19 +137,19 @@ def rate_limit(
 			if not identity:
 				dontmanage.throw(_("Either key or IP flag is required."))
 
-			cache_key = f"rl:{dontmanage.form_dict.cmd}:{identity}"
+			cache_key = dontmanage.cache.make_key(f"rl:{dontmanage.form_dict.cmd}:{identity}")
 
-			value = dontmanage.cache().get(cache_key) or 0
+			value = dontmanage.cache.get(cache_key) or 0
 			if not value:
-				dontmanage.cache().setex(cache_key, seconds, 0)
+				dontmanage.cache.setex(cache_key, seconds, 0)
 
-			value = dontmanage.cache().incrby(cache_key, 1)
+			value = dontmanage.cache.incrby(cache_key, 1)
 			if value > _limit:
 				dontmanage.throw(
 					_("You hit the rate limit because of too many requests. Please try after sometime.")
 				)
 
-			return dontmanage.call(fun, **dontmanage.form_dict or kwargs)
+			return fn(*args, **kwargs)
 
 		return wrapper
 

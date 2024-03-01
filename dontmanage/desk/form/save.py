@@ -4,15 +4,22 @@
 import json
 
 import dontmanage
+from dontmanage.core.doctype.submission_queue.submission_queue import queue_submission
 from dontmanage.desk.form.load import run_onload
 from dontmanage.model.docstatus import DocStatus
 from dontmanage.monitor import add_data_to_monitor
+from dontmanage.utils.scheduler import is_scheduler_inactive
+from dontmanage.utils.telemetry import capture_doc
 
 
 @dontmanage.whitelist()
 def savedocs(doc, action):
 	"""save / submit / update doclist"""
 	doc = dontmanage.get_doc(json.loads(doc))
+	capture_doc(doc, action)
+	if doc.get("__islocal") and doc.name.startswith("new-" + doc.doctype.lower().replace(" ", "-")):
+		# required to relink missing attachments if they exist.
+		doc.__temporary_name = doc.name
 	set_local_name(doc)
 
 	# action
@@ -23,14 +30,19 @@ def savedocs(doc, action):
 		"Cancel": DocStatus.cancelled(),
 	}[action]
 
-	doc.save()
+	if doc.docstatus.is_submitted():
+		if action == "Submit" and doc.meta.queue_in_background and not is_scheduler_inactive():
+			queue_submission(doc, action)
+			return
+		doc.submit()
+	else:
+		doc.save()
 
 	# update recent documents
 	run_onload(doc)
 	send_updated_docs(doc)
 
 	add_data_to_monitor(doctype=doc.doctype, action=action)
-
 	dontmanage.msgprint(dontmanage._("Saved"), indicator="green", alert=True)
 
 
@@ -38,6 +50,8 @@ def savedocs(doc, action):
 def cancel(doctype=None, name=None, workflow_state_fieldname=None, workflow_state=None):
 	"""cancel a doclist"""
 	doc = dontmanage.get_doc(doctype, name)
+	capture_doc(doc, "Cancel")
+
 	if workflow_state_fieldname and workflow_state:
 		doc.set(workflow_state_fieldname, workflow_state)
 	doc.cancel()

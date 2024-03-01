@@ -9,6 +9,22 @@ from dontmanage.model.document import Document
 
 
 class Blogger(Document):
+	# begin: auto-generated types
+	# This code is auto-generated. Do not modify anything in this block.
+
+	from typing import TYPE_CHECKING
+
+	if TYPE_CHECKING:
+		from dontmanage.types import DF
+
+		avatar: DF.AttachImage | None
+		bio: DF.SmallText | None
+		disabled: DF.Check
+		full_name: DF.Data
+		short_name: DF.Data
+		user: DF.Link | None
+
+	# end: auto-generated types
 	def validate(self):
 		if self.user and not dontmanage.db.exists("User", self.user):
 			# for data import

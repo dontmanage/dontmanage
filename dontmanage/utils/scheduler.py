@@ -10,13 +10,14 @@ Events:
 
 # imports - standard imports
 import os
+import random
 import time
+from typing import NoReturn
 
 # imports - module imports
 import dontmanage
-from dontmanage.installer import update_site_config
 from dontmanage.utils import cint, get_datetime, get_sites, now_datetime
-from dontmanage.utils.background_jobs import get_jobs
+from dontmanage.utils.background_jobs import set_niceness
 
 DATETIME_FORMAT = "%Y-%m-%d %H:%M:%S"
 
@@ -30,18 +31,19 @@ def cprint(*args, **kwargs):
 		pass
 
 
-def start_scheduler():
+def start_scheduler() -> NoReturn:
 	"""Run enqueue_events_for_all_sites based on scheduler tick.
 	Specify scheduler_interval in seconds in common_site_config.json"""
 
 	tick = cint(dontmanage.get_conf().scheduler_tick_interval) or 60
+	set_niceness()
 
 	while True:
 		time.sleep(tick)
 		enqueue_events_for_all_sites()
 
 
-def enqueue_events_for_all_sites():
+def enqueue_events_for_all_sites() -> None:
 	"""Loop through sites and enqueue events that are not already queued"""
 
 	if os.path.exists(os.path.join(".", ".restarting")):
@@ -51,19 +53,19 @@ def enqueue_events_for_all_sites():
 	with dontmanage.init_site():
 		sites = get_sites()
 
+	# Sites are sorted in alphabetical order, shuffle to randomize priorities
+	random.shuffle(sites)
+
 	for site in sites:
 		try:
 			enqueue_events_for_site(site=site)
-		except Exception as e:
-			print(e.__class__, f"Failed to enqueue events for site: {site}")
+		except Exception:
+			dontmanage.logger("scheduler").debug(f"Failed to enqueue events for site: {site}", exc_info=True)
 
 
-def enqueue_events_for_site(site):
-	def log_and_raise():
-		error_message = "Exception in Enqueue Events for Site {}\n{}".format(
-			site, dontmanage.get_traceback()
-		)
-		dontmanage.logger("scheduler").error(error_message)
+def enqueue_events_for_site(site: str) -> None:
+	def log_exc():
+		dontmanage.logger("scheduler").error(f"Exception in Enqueue Events for Site {site}", exc_info=True)
 
 	try:
 		dontmanage.init(site=site)
@@ -74,26 +76,24 @@ def enqueue_events_for_site(site):
 		enqueue_events(site=site)
 
 		dontmanage.logger("scheduler").debug(f"Queued events for site {site}")
-	except dontmanage.db.OperationalError as e:
+	except Exception as e:
 		if dontmanage.db.is_access_denied(e):
 			dontmanage.logger("scheduler").debug(f"Access denied for site {site}")
-		else:
-			log_and_raise()
-	except Exception:
-		log_and_raise()
+		log_exc()
 
 	finally:
 		dontmanage.destroy()
 
 
-def enqueue_events(site):
+def enqueue_events(site: str) -> list[str] | None:
 	if schedule_jobs_based_on_activity():
-		dontmanage.flags.enqueued_jobs = []
-		queued_jobs = get_jobs(site=site, key="job_type").get(site) or []
-		for job_type in dontmanage.get_all("Scheduled Job Type", ("name", "method"), dict(stopped=0)):
-			if not job_type.method in queued_jobs:
-				# don't add it to queue if still pending
-				dontmanage.get_doc("Scheduled Job Type", job_type.name).enqueue()
+		enqueued_jobs = []
+		for job_type in dontmanage.get_all("Scheduled Job Type", filters={"stopped": 0}, fields="*"):
+			job_type = dontmanage.get_doc(doctype="Scheduled Job Type", **job_type)
+			if job_type.enqueue():
+				enqueued_jobs.append(job_type.method)
+
+		return enqueued_jobs
 
 
 def is_scheduler_inactive(verbose=True) -> bool:
@@ -171,15 +171,15 @@ def is_dormant(check_time=None):
 
 
 def _get_last_modified_timestamp(doctype):
-	timestamp = dontmanage.db.get_value(
-		doctype, filters={}, fieldname="modified", order_by="modified desc"
-	)
+	timestamp = dontmanage.db.get_value(doctype, filters={}, fieldname="modified", order_by="modified desc")
 	if timestamp:
 		return get_datetime(timestamp)
 
 
 @dontmanage.whitelist()
 def activate_scheduler():
+	from dontmanage.installer import update_site_config
+
 	dontmanage.only_for("Administrator")
 
 	if dontmanage.local.conf.maintenance_mode:

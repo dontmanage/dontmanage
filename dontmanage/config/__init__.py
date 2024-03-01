@@ -1,17 +1,9 @@
 import dontmanage
 from dontmanage import _
-from dontmanage.desk.moduleview import (
-	config_exists,
-	get_data,
-	get_module_link_items_from_list,
-	get_onboard_items,
-)
 
 
-def get_modules_from_all_apps_for_user(user=None):
-	if not user:
-		user = dontmanage.session.user
-
+def get_modules_from_all_apps_for_user(user: str | None = None) -> list[dict]:
+	user = user or dontmanage.session.user
 	all_modules = get_modules_from_all_apps()
 	global_blocked_modules = dontmanage.get_doc("User", "Administrator").get_blocked_modules()
 	user_blocked_modules = dontmanage.get_doc("User", user).get_blocked_modules()
@@ -27,9 +19,6 @@ def get_modules_from_all_apps_for_user(user=None):
 		if module_name in empty_tables_by_module:
 			module["onboard_present"] = 1
 
-		# Set defaults links
-		module["links"] = get_onboard_items(module["app"], dontmanage.scrub(module_name))[:5]
-
 	return allowed_modules_list
 
 
@@ -41,9 +30,7 @@ def get_modules_from_all_apps():
 
 
 def get_modules_from_app(app):
-	return dontmanage.get_all(
-		"Module Def", filters={"app_name": app}, fields=["module_name", "app_name as app"]
-	)
+	return dontmanage.get_all("Module Def", filters={"app_name": app}, fields=["module_name", "app_name as app"])
 
 
 def get_all_empty_tables_by_module():
@@ -61,7 +48,7 @@ def get_all_empty_tables_by_module():
 	empty_tables_by_module = {}
 
 	for doctype, module in results:
-		if "tab" + doctype in empty_tables:
+		if f"tab{doctype}" in empty_tables:
 			if module in empty_tables_by_module:
 				empty_tables_by_module[module].append(doctype)
 			else:

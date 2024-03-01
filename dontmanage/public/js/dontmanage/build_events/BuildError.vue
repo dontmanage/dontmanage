@@ -9,47 +9,44 @@
 		</div>
 	</div>
 </template>
-<script>
-export default {
-	name: "BuildError",
-	data() {
-		return {
-			data: null
-		};
-	},
-	methods: {
-		show(data) {
-			this.data = data;
-		},
-		hide() {
-			this.data = null;
-		},
-		open_in_editor(location) {
-			dontmanage.socketio.socket.emit("open_in_editor", location);
-		},
-		error_component(error, i) {
-			let location = this.data.error.errors[i].location;
-			let location_string = `${location.file}:${location.line}:${
-				location.column
-			}`;
-			let template = error.replace(
-				" > " + location_string,
-				` &gt; <a class="file-link" @click="open">${location_string}</a>`
-			);
 
-			return {
-				template: `<div>${template}</div>`,
-				methods: {
-					open() {
-						dontmanage.socketio.socket.emit("open_in_editor", location);
-					}
-				}
-			};
-		}
-	}
-};
+<script setup>
+import { ref } from "vue";
+
+// variables
+let data = ref(null);
+
+// Methods
+function show(data) {
+	data.value = data;
+}
+function hide() {
+	data.value = null;
+}
+function open_in_editor(location) {
+	dontmanage.realtime.emit("open_in_editor", location);
+}
+function error_component(error, i) {
+	let location = data.value.error.errors[i].location;
+	let location_string = `${location.file}:${location.line}:${location.column}`;
+	let template = error.replace(
+		" > " + location_string,
+		` &gt; <a class="file-link" @click="open">${location_string}</a>`
+	);
+
+	return {
+		template: `<div>${template}</div>`,
+		methods: {
+			open() {
+				dontmanage.realtime.emit("open_in_editor", location);
+			},
+		},
+	};
+}
+defineExpose({ show, hide });
 </script>
-<style>
+
+<style scoped>
 .build-error-overlay {
 	position: fixed;
 	top: 0;
@@ -59,8 +56,7 @@ export default {
 	z-index: 9999;
 	margin: 0;
 	background: rgba(0, 0, 0, 0.66);
-	--monospace: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, Courier,
-		monospace;
+	--monospace: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, Courier, monospace;
 	--dim: var(--gray-400);
 }
 .window {

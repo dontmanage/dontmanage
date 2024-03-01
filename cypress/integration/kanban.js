@@ -98,15 +98,17 @@ context("Kanban Board", () => {
 	});
 
 	it("Checks if Kanban Board edits are blocked for non-System Manager and non-owner of the Board", () => {
-		// create admin kanban board
-		cy.call("dontmanage.tests.ui_test_helpers.create_todo", { description: "DontManage User ToDo" });
-
 		cy.switch_to_user("Administrator");
-		cy.call("dontmanage.tests.ui_test_helpers.create_admin_kanban");
-		// remove sys manager
-		cy.remove_role("dontmanage@example.com", "System Manager");
 
-		cy.switch_to_user("dontmanage@example.com");
+		const not_system_manager = "nosysmanager@example.com";
+		cy.call("dontmanage.tests.ui_test_helpers.create_test_user", {
+			username: not_system_manager,
+		});
+		cy.remove_role(not_system_manager, "System Manager");
+		cy.call("dontmanage.tests.ui_test_helpers.create_todo", { description: "DontManage User ToDo" });
+		cy.call("dontmanage.tests.ui_test_helpers.create_admin_kanban");
+
+		cy.switch_to_user(not_system_manager);
 
 		cy.visit("/app/todo/view/kanban/Admin Kanban");
 
@@ -122,7 +124,8 @@ context("Kanban Board", () => {
 		// Column actions should be hidden (dropdown for 'Archive' and indicators)
 		cy.get(".kanban .column-options").should("have.length", 0);
 
-		cy.add_role("dontmanage@example.com", "System Manager");
+		cy.switch_to_user("Administrator");
+		cy.call("dontmanage.client.delete", { doctype: "User", name: not_system_manager });
 	});
 
 	after(() => {

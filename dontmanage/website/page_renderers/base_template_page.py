@@ -64,9 +64,7 @@ class BaseTemplatePage(BaseRenderer):
 			self.context.url_prefix += "/"
 
 		self.context.path = self.path
-		self.context.pathname = (
-			getattr(dontmanage.local, "path", None) if hasattr(dontmanage, "local") else self.path
-		)
+		self.context.pathname = getattr(dontmanage.local, "path", None) if hasattr(dontmanage, "local") else self.path
 
 	def update_website_context(self):
 		# apply context from hooks

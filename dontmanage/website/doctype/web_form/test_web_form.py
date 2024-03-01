@@ -14,15 +14,9 @@ test_dependencies = ["Web Form"]
 class TestWebForm(DontManageTestCase):
 	def setUp(self):
 		dontmanage.conf.disable_website_cache = True
-		dontmanage.local.path = None
 
 	def tearDown(self):
 		dontmanage.conf.disable_website_cache = False
-		dontmanage.local.path = None
-		dontmanage.local.request_ip = None
-		dontmanage.form_dict.web_form = None
-		dontmanage.form_dict.data = None
-		dontmanage.form_dict.docname = None
 
 	def test_accept(self):
 		dontmanage.set_user("Administrator")
@@ -33,10 +27,6 @@ class TestWebForm(DontManageTestCase):
 			"description": "_Test Event Description",
 			"starts_on": "2014-09-09",
 		}
-
-		dontmanage.form_dict.web_form = "manage-events"
-		dontmanage.form_dict.data = json.dumps(doc)
-		dontmanage.local.request_ip = "127.0.0.1"
 
 		accept(web_form="manage-events", data=json.dumps(doc))
 
@@ -58,15 +48,9 @@ class TestWebForm(DontManageTestCase):
 			dontmanage.db.get_value("Event", self.event_name, "description"), doc.get("description")
 		)
 
-		dontmanage.form_dict.web_form = "manage-events"
-		dontmanage.form_dict.docname = self.event_name
-		dontmanage.form_dict.data = json.dumps(doc)
+		accept("manage-events", json.dumps(doc))
 
-		accept(web_form="manage-events", docname=self.event_name, data=json.dumps(doc))
-
-		self.assertEqual(
-			dontmanage.db.get_value("Event", self.event_name, "description"), doc.get("description")
-		)
+		self.assertEqual(dontmanage.db.get_value("Event", self.event_name, "description"), doc.get("description"))
 
 	def test_webform_render(self):
 		set_request(method="GET", path="manage-events/new")
@@ -78,8 +62,14 @@ class TestWebForm(DontManageTestCase):
 
 	def test_webform_html_meta_is_added(self):
 		set_request(method="GET", path="manage-events/new")
-		content = get_response_content("manage-events/new")
+		content = self.normalize_html(get_response_content("manage-events/new"))
 
-		self.assertIn('<meta name="name" content="Test Meta Form Title">', content)
-		self.assertIn('<meta property="og:description" content="Test Meta Form Description">', content)
-		self.assertIn('<meta property="og:image" content="https://dontmanage.io/files/dontmanage.png">', content)
+		self.assertIn(self.normalize_html('<meta name="name" content="Test Meta Form Title">'), content)
+		self.assertIn(
+			self.normalize_html('<meta property="og:description" content="Test Meta Form Description">'),
+			content,
+		)
+		self.assertIn(
+			self.normalize_html('<meta property="og:image" content="https://dontmanage.io/files/dontmanage.png">'),
+			content,
+		)

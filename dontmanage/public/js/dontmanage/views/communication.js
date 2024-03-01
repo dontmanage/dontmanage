@@ -56,7 +56,7 @@ dontmanage.views.CommunicationComposer = class {
 			},
 			{
 				fieldtype: "Button",
-				label: dontmanage.utils.icon("down"),
+				label: dontmanage.utils.icon("down", "xs"),
 				fieldname: "option_toggle_button",
 				click: () => {
 					this.toggle_more_options();
@@ -78,10 +78,25 @@ dontmanage.views.CommunicationComposer = class {
 				fieldname: "bcc",
 			},
 			{
+				label: __("Schedule Send At"),
+				fieldtype: "Datetime",
+				fieldname: "send_after",
+			},
+			{
+				fieldtype: "Section Break",
+				fieldname: "email_template_section_break",
+				hidden: 1,
+			},
+			{
 				label: __("Email Template"),
 				fieldtype: "Link",
 				options: "Email Template",
 				fieldname: "email_template",
+			},
+			{
+				fieldtype: "HTML",
+				label: __("Clear & Add template"),
+				fieldname: "clear_and_add_template",
 			},
 			{ fieldtype: "Section Break" },
 			{
@@ -130,11 +145,6 @@ dontmanage.views.CommunicationComposer = class {
 				fieldtype: "Select",
 				fieldname: "select_print_format",
 			},
-			{
-				label: __("Select Languages"),
-				fieldtype: "Select",
-				fieldname: "language_sel",
-			},
 			{ fieldtype: "Column Break" },
 			{
 				label: __("Select Attachments"),
@@ -146,7 +156,7 @@ dontmanage.views.CommunicationComposer = class {
 		// add from if user has access to multiple email accounts
 		const email_accounts = dontmanage.boot.email_accounts.filter((account) => {
 			return (
-				!in_list(["All Accounts", "Sent", "Spam", "Trash"], account.email_account) &&
+				!["All Accounts", "Sent", "Spam", "Trash"].includes(account.email_account) &&
 				account.enable_outgoing
 			);
 		});
@@ -162,10 +172,15 @@ dontmanage.views.CommunicationComposer = class {
 				reqd: 1,
 				fieldname: "sender",
 				options: this.user_email_accounts,
+				onchange: () => {
+					this.setup_recipients_if_reply();
+				},
 			});
 			//Preselect email senders if there is only one
 			if (this.user_email_accounts.length == 1) {
 				this["sender"] = this.user_email_accounts;
+			} else if (this.user_email_accounts.includes(dontmanage.session.user_email)) {
+				this["sender"] = dontmanage.session.user_email;
 			}
 		}
 
@@ -175,15 +190,15 @@ dontmanage.views.CommunicationComposer = class {
 	toggle_more_options(show_options) {
 		show_options = show_options || this.dialog.fields_dict.more_options.df.hidden;
 		this.dialog.set_df_property("more_options", "hidden", !show_options);
+		this.dialog.set_df_property("email_template_section_break", "hidden", !show_options);
 
-		const label = dontmanage.utils.icon(show_options ? "up-line" : "down");
+		const label = dontmanage.utils.icon(show_options ? "up-line" : "down", "xs");
 		this.dialog.get_field("option_toggle_button").set_label(label);
 	}
 
 	prepare() {
 		this.setup_multiselect_queries();
 		this.setup_subject_and_recipients();
-		this.setup_print_language();
 		this.setup_print();
 		this.setup_attach();
 		this.setup_email();
@@ -215,11 +230,52 @@ dontmanage.views.CommunicationComposer = class {
 		});
 	}
 
+	setup_recipients_if_reply() {
+		if (!this.is_a_reply || !this.last_email) return;
+		let sender = this.dialog.get_value("sender");
+		if (!sender) return;
+		const fields = {
+			recipients: this.dialog.fields_dict.recipients,
+			cc: this.dialog.fields_dict.cc,
+			bcc: this.dialog.fields_dict.bcc,
+		};
+		// If same user replies to their own email, set recipients to last email recipients
+		if (this.last_email.sender == sender) {
+			fields.recipients.set_value(this.last_email.recipients);
+			if (this.reply_all) {
+				fields.cc.set_value(this.last_email.cc);
+				fields.bcc.set_value(this.last_email.bcc);
+			}
+		} else {
+			fields.recipients.set_value(this.last_email.sender);
+			if (this.reply_all) {
+				// if sending reply add ( last email's recipients - sender's email_id ) to cc.
+				const recipients = this.last_email.recipients.split(",").map((r) => r.trim());
+				if (!this.cc) {
+					this.cc = "";
+				}
+				const cc_array = this.cc.split(",").map((r) => r.trim());
+				if (this.cc && !this.cc.endsWith(", ")) {
+					this.cc += ", ";
+				}
+				this.cc += recipients
+					.filter((r) => !cc_array.includes(r) && r != sender)
+					.join(", ");
+				this.cc = this.cc.replace(sender + ", ", "");
+				fields.cc.set_value(this.cc);
+			}
+		}
+	}
+
 	setup_subject_and_recipients() {
 		this.subject = this.subject || "";
 
 		if (!this.forward && !this.recipients && this.last_email) {
 			this.recipients = this.last_email.sender;
+			// If same user replies to their own email, set recipients to last email recipients
+			if (this.last_email.sender == this.sender) {
+				this.recipients = this.last_email.recipients;
+			}
 			this.cc = this.last_email.cc;
 			this.bcc = this.last_email.bcc;
 		}
@@ -272,13 +328,14 @@ dontmanage.views.CommunicationComposer = class {
 	setup_email_template() {
 		const me = this;
 
-		this.dialog.fields_dict["email_template"].df.onchange = () => {
+		const fields = this.dialog.fields_dict;
+		const clear_and_add_template = $(fields.clear_and_add_template.wrapper);
+
+		function add_template() {
 			const email_template = me.dialog.fields_dict.email_template.get_value();
 			if (!email_template) return;
 
 			function prepend_reply(reply) {
-				if (me.reply_added === email_template) return;
-
 				const content_field = me.dialog.fields_dict.content;
 				const subject_field = me.dialog.fields_dict.subject;
 
@@ -286,8 +343,6 @@ dontmanage.views.CommunicationComposer = class {
 
 				content_field.set_value(`${reply.message}<br>${content}`);
 				subject_field.set_value(reply.subject);
-
-				me.reply_added = email_template;
 			}
 
 			dontmanage.call({
@@ -295,13 +350,30 @@ dontmanage.views.CommunicationComposer = class {
 				args: {
 					template_name: email_template,
 					doc: me.doc,
-					_lang: me.dialog.get_value("language_sel"),
 				},
 				callback(r) {
 					prepend_reply(r.message);
 				},
 			});
-		};
+		}
+
+		let email_template_actions = [
+			{
+				label: __("Add Template"),
+				description: __("Prepend the template to the email message"),
+				action: () => add_template(),
+			},
+			{
+				label: __("Clear & Add Template"),
+				description: __("Clear the email message and add the template"),
+				action: () => {
+					me.dialog.fields_dict.content.set_value("");
+					add_template();
+				},
+			},
+		];
+
+		dontmanage.utils.add_select_group_button(clear_and_add_template, email_template_actions);
 	}
 
 	setup_last_edited_communication() {
@@ -346,7 +418,7 @@ dontmanage.views.CommunicationComposer = class {
 			await this.dialog.set_value(fieldname, this[fieldname] || "");
 		}
 
-		const subject = dontmanage.utils.html2text(this.subject) || "";
+		const subject = this.subject ? dontmanage.utils.html2text(this.subject) : "";
 		await this.dialog.set_value("subject", subject);
 
 		await this.set_values_from_last_edited_communication();
@@ -400,29 +472,6 @@ dontmanage.views.CommunicationComposer = class {
 			return locals["Print Format"][format];
 		} else {
 			return {};
-		}
-	}
-
-	setup_print_language() {
-		const fields = this.dialog.fields_dict;
-
-		//Load default print language from doctype
-		this.lang_code =
-			this.doc.language ||
-			this.get_print_format().default_print_language ||
-			dontmanage.boot.lang;
-
-		//On selection of language retrieve language code
-		const me = this;
-		$(fields.language_sel.input).change(function () {
-			me.lang_code = this.value;
-		});
-
-		// Load all languages in the select field language_sel
-		$(fields.language_sel.input).empty().add_options(dontmanage.get_languages());
-
-		if (this.lang_code) {
-			$(fields.language_sel.input).val(this.lang_code);
 		}
 	}
 
@@ -611,7 +660,7 @@ dontmanage.views.CommunicationComposer = class {
 			localforage.setItem(this.frm.doctype + this.frm.docname, message).catch((e) => {
 				if (e) {
 					// silently fail
-					console.log(e); // eslint-disable-line
+					console.log(e);
 					console.warn(
 						"[Communication] IndexedDB is full. Cannot save message as draft"
 					); // eslint-disable-line
@@ -630,10 +679,10 @@ dontmanage.views.CommunicationComposer = class {
 			localforage.removeItem(this.frm.doctype + this.frm.docname).catch((e) => {
 				if (e) {
 					// silently fail
-					console.log(e); // eslint-disable-line
+					console.log(e);
 					console.warn(
 						"[Communication] IndexedDB is full. Cannot save message as draft"
-					); // eslint-disable-line
+					);
 				}
 			});
 		}
@@ -676,9 +725,9 @@ dontmanage.views.CommunicationComposer = class {
 				sender_full_name: form_values.sender ? dontmanage.user.full_name() : undefined,
 				email_template: form_values.email_template,
 				attachments: selected_attachments,
-				_lang: me.lang_code,
 				read_receipt: form_values.send_read_receipt,
 				print_letterhead: me.is_print_letterhead_checked(),
+				send_after: form_values.send_after ? form_values.send_after : null,
 			},
 			btn,
 			callback(r) {
@@ -704,7 +753,7 @@ dontmanage.views.CommunicationComposer = class {
 						try {
 							me.success(r);
 						} catch (e) {
-							console.log(e); // eslint-disable-line
+							console.log(e);
 						}
 					}
 				} else {
@@ -717,7 +766,7 @@ dontmanage.views.CommunicationComposer = class {
 						try {
 							me.error(r);
 						} catch (e) {
-							console.log(e); // eslint-disable-line
+							console.log(e);
 						}
 					}
 				}
@@ -750,7 +799,10 @@ dontmanage.views.CommunicationComposer = class {
 			this.content_set = true;
 		}
 
-		message += await this.get_signature(sender_email || null);
+		const signature = await this.get_signature(sender_email || "");
+		if (!this.content_set || !strip_html(message).includes(strip_html(signature))) {
+			message += signature;
+		}
 
 		if (this.is_a_reply && !this.reply_set) {
 			message += this.get_earlier_reply();

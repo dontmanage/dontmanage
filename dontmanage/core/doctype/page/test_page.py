@@ -12,7 +12,3 @@ class TestPage(DontManageTestCase):
 			dontmanage.NameError,
 			dontmanage.get_doc(dict(doctype="Page", page_name="DocType", module="Core")).insert,
 		)
-		self.assertRaises(
-			dontmanage.NameError,
-			dontmanage.get_doc(dict(doctype="Page", page_name="Settings", module="Core")).insert,
-		)

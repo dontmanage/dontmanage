@@ -1,9 +1,10 @@
 # Copyright (c) 2015, DontManage and Contributors
 # License: MIT. See LICENSE
+import os
+
 no_cache = 1
 
 import json
-import os
 import re
 
 import dontmanage
@@ -18,9 +19,7 @@ CLOSING_SCRIPT_TAG_PATTERN = re.compile(r"</script\>")
 def get_context(context):
 	if dontmanage.session.user == "Guest":
 		dontmanage.throw(_("Log in to access this page."), dontmanage.PermissionError)
-	elif (
-		dontmanage.db.get_value("User", dontmanage.session.user, "user_type", order_by=None) == "Website User"
-	):
+	elif dontmanage.db.get_value("User", dontmanage.session.user, "user_type", order_by=None) == "Website User":
 		dontmanage.throw(_("You are not permitted to access this page."), dontmanage.PermissionError)
 
 	hooks = dontmanage.get_hooks()
@@ -45,6 +44,11 @@ def get_context(context):
 
 	include_js = hooks.get("app_include_js", []) + dontmanage.conf.get("app_include_js", [])
 	include_css = hooks.get("app_include_css", []) + dontmanage.conf.get("app_include_css", [])
+	include_icons = hooks.get("app_include_icons", [])
+	dontmanage.local.preload_assets["icons"].extend(include_icons)
+
+	if dontmanage.get_system_settings("enable_telemetry") and os.getenv("DONTMANAGE_SENTRY_DSN"):
+		include_js.append("sentry.bundle.js")
 
 	context.update(
 		{
@@ -52,6 +56,7 @@ def get_context(context):
 			"build_version": dontmanage.utils.get_build_version(),
 			"include_js": include_js,
 			"include_css": include_css,
+			"include_icons": include_icons,
 			"layout_direction": "rtl" if is_rtl() else "ltr",
 			"lang": dontmanage.local.lang,
 			"sounds": hooks["sounds"],
@@ -60,39 +65,10 @@ def get_context(context):
 			"csrf_token": csrf_token,
 			"google_analytics_id": dontmanage.conf.get("google_analytics_id"),
 			"google_analytics_anonymize_ip": dontmanage.conf.get("google_analytics_anonymize_ip"),
-			"mixpanel_id": dontmanage.conf.get("mixpanel_id"),
+			"app_name": (
+				dontmanage.get_website_settings("app_name") or dontmanage.get_system_settings("app_name") or "DontManage"
+			),
 		}
 	)
 
 	return context
-
-
-@dontmanage.whitelist()
-def get_desk_assets(build_version):
-	"""Get desk assets to be loaded for mobile app"""
-	data = get_context({"for_mobile": True})
-	assets = [{"type": "js", "data": ""}, {"type": "css", "data": ""}]
-
-	if build_version != data["build_version"]:
-		# new build, send assets
-		for path in data["include_js"]:
-			# assets path shouldn't start with /
-			# as it points to different location altogether
-			if path.startswith("/assets/"):
-				path = path.replace("/assets/", "assets/")
-			try:
-				with open(os.path.join(dontmanage.local.sites_path, path)) as f:
-					assets[0]["data"] = assets[0]["data"] + "\n" + dontmanage.safe_decode(f.read(), "utf-8")
-			except OSError:
-				pass
-
-		for path in data["include_css"]:
-			if path.startswith("/assets/"):
-				path = path.replace("/assets/", "assets/")
-			try:
-				with open(os.path.join(dontmanage.local.sites_path, path)) as f:
-					assets[1]["data"] = assets[1]["data"] + "\n" + dontmanage.safe_decode(f.read(), "utf-8")
-			except OSError:
-				pass
-
-	return {"build_version": data["build_version"], "boot": data["boot"], "assets": assets}

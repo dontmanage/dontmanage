@@ -10,6 +10,24 @@ exclude_from_linked_with = True
 
 
 class DocShare(Document):
+	# begin: auto-generated types
+	# This code is auto-generated. Do not modify anything in this block.
+
+	from typing import TYPE_CHECKING
+
+	if TYPE_CHECKING:
+		from dontmanage.types import DF
+
+		everyone: DF.Check
+		notify_by_email: DF.Check
+		read: DF.Check
+		share: DF.Check
+		share_doctype: DF.Link
+		share_name: DF.DynamicLink
+		submit: DF.Check
+		user: DF.Link | None
+		write: DF.Check
+	# end: auto-generated types
 	no_feed_on_delete = True
 
 	def validate(self):
@@ -40,13 +58,10 @@ class DocShare(Document):
 		if not self.flags.ignore_share_permission and not dontmanage.has_permission(
 			self.share_doctype, "share", self.get_doc()
 		):
-
 			dontmanage.throw(_('You need to have "Share" permission'), dontmanage.PermissionError)
 
 	def check_is_submittable(self):
-		if self.submit and not cint(
-			dontmanage.db.get_value("DocType", self.share_doctype, "is_submittable")
-		):
+		if self.submit and not cint(dontmanage.db.get_value("DocType", self.share_doctype, "is_submittable")):
 			dontmanage.throw(
 				_("Cannot share {0} with submit permission as the doctype {1} is not submittable").format(
 					dontmanage.bold(self.share_name), dontmanage.bold(self.share_doctype)

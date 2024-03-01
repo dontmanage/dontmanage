@@ -31,15 +31,13 @@ dontmanage.Application = class Application {
 	}
 
 	startup() {
-		dontmanage.socketio.init();
+		dontmanage.realtime.init();
 		dontmanage.model.init();
 
-		this.setup_dontmanage_vue();
 		this.load_bootinfo();
 		this.load_user_permissions();
 		this.make_nav_bar();
 		this.set_favicon();
-		this.setup_analytics();
 		this.set_fullwidth_if_enabled();
 		this.add_browser_class();
 		this.setup_energy_point_listeners();
@@ -75,6 +73,22 @@ dontmanage.Application = class Application {
 
 		// page container
 		this.make_page_container();
+		if (
+			!window.Cypress &&
+			dontmanage.boot.onboarding_tours &&
+			dontmanage.boot.user.onboarding_status != null
+		) {
+			let pending_tours = !dontmanage.boot.onboarding_tours.every(
+				(tour) => dontmanage.boot.user.onboarding_status[tour[0]]?.is_complete
+			);
+			if (pending_tours && dontmanage.boot.onboarding_tours.length > 0) {
+				dontmanage.require("onboarding_tours.bundle.js", () => {
+					dontmanage.utils.sleep(1000).then(() => {
+						dontmanage.ui.init_onboarding_tour();
+					});
+				});
+			}
+		}
 		this.set_route();
 
 		// trigger app startup
@@ -136,27 +150,6 @@ dontmanage.Application = class Application {
 
 		// REDESIGN-TODO: Fix preview popovers
 		this.link_preview = new dontmanage.ui.LinkPreview();
-
-		if (!dontmanage.boot.developer_mode) {
-			if (dontmanage.user.has_role("System Manager")) {
-				setInterval(function () {
-					dontmanage.call({
-						method: "dontmanage.core.doctype.log_settings.log_settings.has_unseen_error_log",
-						args: {
-							user: dontmanage.session.user,
-						},
-						callback: function (r) {
-							if (r.message && r.message.show_alert) {
-								dontmanage.show_alert({
-									indicator: "red",
-									message: r.message.message,
-								});
-							}
-						},
-					});
-				}, 600000); // check every 10 minutes
-			}
-		}
 	}
 
 	set_route() {
@@ -170,11 +163,6 @@ dontmanage.Application = class Application {
 		dontmanage.router.on("change", () => {
 			$(".tooltip").hide();
 		});
-	}
-
-	setup_dontmanage_vue() {
-		Vue.prototype.__ = window.__;
-		Vue.prototype.dontmanage = window.dontmanage;
 	}
 
 	set_password(user) {
@@ -288,7 +276,7 @@ dontmanage.Application = class Application {
 	}
 
 	load_user_permissions() {
-		dontmanage.defaults.update_user_permissions();
+		dontmanage.defaults.load_user_permission_from_boot();
 
 		dontmanage.realtime.on(
 			"update_user_permissions",
@@ -320,58 +308,6 @@ dontmanage.Application = class Application {
 			.replace("mm", "%m")
 			.replace("yyyy", "%Y");
 		dontmanage.boot.user.last_selected_values = {};
-
-		// Proxy for user globals
-		Object.defineProperties(window, {
-			user: {
-				get: function () {
-					console.warn(
-						"Please use `dontmanage.session.user` instead of `user`. It will be deprecated soon."
-					);
-					return dontmanage.session.user;
-				},
-			},
-			user_fullname: {
-				get: function () {
-					console.warn(
-						"Please use `dontmanage.session.user_fullname` instead of `user_fullname`. It will be deprecated soon."
-					);
-					return dontmanage.session.user;
-				},
-			},
-			user_email: {
-				get: function () {
-					console.warn(
-						"Please use `dontmanage.session.user_email` instead of `user_email`. It will be deprecated soon."
-					);
-					return dontmanage.session.user_email;
-				},
-			},
-			user_defaults: {
-				get: function () {
-					console.warn(
-						"Please use `dontmanage.user_defaults` instead of `user_defaults`. It will be deprecated soon."
-					);
-					return dontmanage.user_defaults;
-				},
-			},
-			roles: {
-				get: function () {
-					console.warn(
-						"Please use `dontmanage.user_roles` instead of `roles`. It will be deprecated soon."
-					);
-					return dontmanage.user_roles;
-				},
-			},
-			sys_defaults: {
-				get: function () {
-					console.warn(
-						"Please use `dontmanage.sys_defaults` instead of `sys_defaults`. It will be deprecated soon."
-					);
-					return dontmanage.user_roles;
-				},
-			},
-		});
 	}
 	sync_pages() {
 		// clear cached pages if timestamp is not found
@@ -427,62 +363,12 @@ dontmanage.Application = class Application {
 		});
 	}
 	handle_session_expired() {
-		if (!dontmanage.app.session_expired_dialog) {
-			var dialog = new dontmanage.ui.Dialog({
-				title: __("Session Expired"),
-				keep_open: true,
-				fields: [
-					{
-						fieldtype: "Password",
-						fieldname: "password",
-						label: __("Please Enter Your Password to Continue"),
-					},
-				],
-				onhide: () => {
-					if (!dialog.logged_in) {
-						dontmanage.app.redirect_to_login();
-					}
-				},
-			});
-			dialog.get_field("password").disable_password_checks();
-			dialog.set_primary_action(__("Login"), () => {
-				dialog.set_message(__("Authenticating..."));
-				dontmanage.call({
-					method: "login",
-					args: {
-						usr: dontmanage.session.user,
-						pwd: dialog.get_values().password,
-					},
-					callback: (r) => {
-						if (r.message === "Logged In") {
-							dialog.logged_in = true;
-
-							// revert backdrop
-							$(".modal-backdrop").css({
-								opacity: "",
-								"background-color": "#334143",
-							});
-						}
-						dialog.hide();
-					},
-					statusCode: () => {
-						dialog.hide();
-					},
-				});
-			});
-			dontmanage.app.session_expired_dialog = dialog;
-		}
-		if (!dontmanage.app.session_expired_dialog.display) {
-			dontmanage.app.session_expired_dialog.show();
-			// add backdrop
-			$(".modal-backdrop").css({
-				opacity: 1,
-				"background-color": "#4B4C9D",
-			});
-		}
+		dontmanage.app.redirect_to_login();
 	}
 	redirect_to_login() {
-		window.location.href = "/";
+		window.location.href = `/login?redirect-to=${encodeURIComponent(
+			window.location.pathname + window.location.search
+		)}`;
 	}
 	set_favicon() {
 		var link = $('link[type="image/x-icon"]').remove().attr("href");
@@ -549,18 +435,6 @@ dontmanage.Application = class Application {
 		dontmanage.call({
 			method: "dontmanage.utils.change_log.show_update_popup",
 		});
-	}
-
-	setup_analytics() {
-		if (window.mixpanel) {
-			window.mixpanel.identify(dontmanage.session.user);
-			window.mixpanel.people.set({
-				$first_name: dontmanage.boot.user.first_name,
-				$last_name: dontmanage.boot.user.last_name,
-				$created: dontmanage.boot.user.creation,
-				$email: dontmanage.session.user,
-			});
-		}
 	}
 
 	add_browser_class() {

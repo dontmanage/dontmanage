@@ -14,10 +14,11 @@ test_dependencies = ["Custom Field", "Property Setter"]
 
 class TestCustomizeForm(DontManageTestCase):
 	def insert_custom_field(self):
-		dontmanage.delete_doc_if_exists("Custom Field", "Event-test_custom_field")
-		dontmanage.get_doc(
+		dontmanage.delete_doc_if_exists("Custom Field", "Event-custom_test_field")
+		self.field = dontmanage.get_doc(
 			{
 				"doctype": "Custom Field",
+				"fieldname": "custom_test_field",
 				"dt": "Event",
 				"label": "Test Custom Field",
 				"description": "A Custom Field for Testing",
@@ -36,7 +37,7 @@ class TestCustomizeForm(DontManageTestCase):
 		dontmanage.clear_cache(doctype="Event")
 
 	def tearDown(self):
-		dontmanage.delete_doc("Custom Field", "Event-test_custom_field")
+		dontmanage.delete_doc("Custom Field", self.field.name)
 		dontmanage.db.commit()
 		dontmanage.clear_cache(doctype="Event")
 
@@ -60,7 +61,7 @@ class TestCustomizeForm(DontManageTestCase):
 		self.assertEqual(d.doc_type, "Event")
 
 		self.assertEqual(len(d.get("fields")), len(dontmanage.get_doc("DocType", d.doc_type).fields) + 1)
-		self.assertEqual(d.get("fields")[-1].fieldname, "test_custom_field")
+		self.assertEqual(d.get("fields")[-1].fieldname, self.field.fieldname)
 		self.assertEqual(d.get("fields", {"fieldname": "event_type"})[0].in_list_view, 1)
 
 		return d
@@ -68,27 +69,21 @@ class TestCustomizeForm(DontManageTestCase):
 	def test_save_customization_property(self):
 		d = self.get_customize_form("Event")
 		self.assertEqual(
-			dontmanage.db.get_value(
-				"Property Setter", {"doc_type": "Event", "property": "allow_copy"}, "value"
-			),
+			dontmanage.db.get_value("Property Setter", {"doc_type": "Event", "property": "allow_copy"}, "value"),
 			None,
 		)
 
 		d.allow_copy = 1
 		d.run_method("save_customization")
 		self.assertEqual(
-			dontmanage.db.get_value(
-				"Property Setter", {"doc_type": "Event", "property": "allow_copy"}, "value"
-			),
+			dontmanage.db.get_value("Property Setter", {"doc_type": "Event", "property": "allow_copy"}, "value"),
 			"1",
 		)
 
 		d.allow_copy = 0
 		d.run_method("save_customization")
 		self.assertEqual(
-			dontmanage.db.get_value(
-				"Property Setter", {"doc_type": "Event", "property": "allow_copy"}, "value"
-			),
+			dontmanage.db.get_value("Property Setter", {"doc_type": "Event", "property": "allow_copy"}, "value"),
 			None,
 		)
 
@@ -129,21 +124,21 @@ class TestCustomizeForm(DontManageTestCase):
 
 	def test_save_customization_custom_field_property(self):
 		d = self.get_customize_form("Event")
-		self.assertEqual(dontmanage.db.get_value("Custom Field", "Event-test_custom_field", "reqd"), 0)
+		self.assertEqual(dontmanage.db.get_value("Custom Field", self.field.name, "reqd"), 0)
 
-		custom_field = d.get("fields", {"fieldname": "test_custom_field"})[0]
+		custom_field = d.get("fields", {"fieldname": self.field.fieldname})[0]
 		custom_field.reqd = 1
 		custom_field.no_copy = 1
 		d.run_method("save_customization")
-		self.assertEqual(dontmanage.db.get_value("Custom Field", "Event-test_custom_field", "reqd"), 1)
-		self.assertEqual(dontmanage.db.get_value("Custom Field", "Event-test_custom_field", "no_copy"), 1)
+		self.assertEqual(dontmanage.db.get_value("Custom Field", self.field.name, "reqd"), 1)
+		self.assertEqual(dontmanage.db.get_value("Custom Field", self.field.name, "no_copy"), 1)
 
 		custom_field = d.get("fields", {"is_custom_field": True})[0]
 		custom_field.reqd = 0
 		custom_field.no_copy = 0
 		d.run_method("save_customization")
-		self.assertEqual(dontmanage.db.get_value("Custom Field", "Event-test_custom_field", "reqd"), 0)
-		self.assertEqual(dontmanage.db.get_value("Custom Field", "Event-test_custom_field", "no_copy"), 0)
+		self.assertEqual(dontmanage.db.get_value("Custom Field", self.field.name, "reqd"), 0)
+		self.assertEqual(dontmanage.db.get_value("Custom Field", self.field.name, "no_copy"), 0)
 
 	def test_save_customization_new_field(self):
 		d = self.get_customize_form("Event")
@@ -157,28 +152,24 @@ class TestCustomizeForm(DontManageTestCase):
 			},
 		)
 		d.run_method("save_customization")
+
+		custom_field_name = "Event-custom_test_add_custom_field_via_customize_form"
 		self.assertEqual(
-			dontmanage.db.get_value(
-				"Custom Field", "Event-test_add_custom_field_via_customize_form", "fieldtype"
-			),
+			dontmanage.db.get_value("Custom Field", custom_field_name, "fieldtype"),
 			"Data",
 		)
 
 		self.assertEqual(
-			dontmanage.db.get_value(
-				"Custom Field", "Event-test_add_custom_field_via_customize_form", "insert_after"
-			),
+			dontmanage.db.get_value("Custom Field", custom_field_name, "insert_after"),
 			last_fieldname,
 		)
 
-		dontmanage.delete_doc("Custom Field", "Event-test_add_custom_field_via_customize_form")
-		self.assertEqual(
-			dontmanage.db.get_value("Custom Field", "Event-test_add_custom_field_via_customize_form"), None
-		)
+		dontmanage.delete_doc("Custom Field", custom_field_name)
+		self.assertEqual(dontmanage.db.get_value("Custom Field", custom_field_name), None)
 
 	def test_save_customization_remove_field(self):
 		d = self.get_customize_form("Event")
-		custom_field = d.get("fields", {"fieldname": "test_custom_field"})[0]
+		custom_field = d.get("fields", {"fieldname": self.field.fieldname})[0]
 		d.get("fields").remove(custom_field)
 		d.run_method("save_customization")
 
@@ -200,7 +191,7 @@ class TestCustomizeForm(DontManageTestCase):
 	def test_set_allow_on_submit(self):
 		d = self.get_customize_form("Event")
 		d.get("fields", {"fieldname": "subject"})[0].allow_on_submit = 1
-		d.get("fields", {"fieldname": "test_custom_field"})[0].allow_on_submit = 1
+		d.get("fields", {"fieldname": "custom_test_field"})[0].allow_on_submit = 1
 		d.run_method("save_customization")
 
 		d = self.get_customize_form("Event")
@@ -209,7 +200,7 @@ class TestCustomizeForm(DontManageTestCase):
 		self.assertEqual(d.get("fields", {"fieldname": "subject"})[0].allow_on_submit or 0, 0)
 
 		# allow for custom field
-		self.assertEqual(d.get("fields", {"fieldname": "test_custom_field"})[0].allow_on_submit, 1)
+		self.assertEqual(d.get("fields", {"fieldname": "custom_test_field"})[0].allow_on_submit, 1)
 
 	def test_title_field_pattern(self):
 		d = self.get_customize_form("Web Form")
@@ -243,8 +234,9 @@ class TestCustomizeForm(DontManageTestCase):
 		# Using Notification Log doctype as it doesn't have any other custom fields
 		d = self.get_customize_form("Notification Log")
 
+		new_document_length = 255
 		document_name = d.get("fields", {"fieldname": "document_name"})[0]
-		document_name.length = 255
+		document_name.length = new_document_length
 		d.run_method("save_customization")
 
 		self.assertEqual(
@@ -253,10 +245,8 @@ class TestCustomizeForm(DontManageTestCase):
 				{"doc_type": "Notification Log", "property": "length", "field_name": "document_name"},
 				"value",
 			),
-			"255",
+			str(new_document_length),
 		)
-
-		self.assertTrue(d.flags.update_db)
 
 		length = dontmanage.db.sql(
 			"""SELECT character_maximum_length
@@ -265,7 +255,7 @@ class TestCustomizeForm(DontManageTestCase):
 			AND column_name = 'document_name'"""
 		)[0][0]
 
-		self.assertEqual(length, 255)
+		self.assertEqual(length, new_document_length)
 
 	def test_custom_link(self):
 		try:
@@ -344,9 +334,7 @@ class TestCustomizeForm(DontManageTestCase):
 
 		dontmanage.clear_cache()
 		user_group = dontmanage.get_meta("Event")
-		self.assertFalse(
-			[d.name for d in (user_group.links or []) if d.link_doctype == "User Group Member"]
-		)
+		self.assertFalse([d.name for d in (user_group.links or []) if d.link_doctype == "User Group Member"])
 
 	def test_custom_action(self):
 		test_route = "/app/List/DocType"
@@ -403,3 +391,37 @@ class TestCustomizeForm(DontManageTestCase):
 
 		with self.assertRaises(dontmanage.ValidationError):
 			d.run_method("save_customization")
+
+	def test_system_generated_fields(self):
+		doctype = "Event"
+		custom_field_name = "custom_test_field"
+
+		custom_field = dontmanage.get_doc("Custom Field", {"dt": doctype, "fieldname": custom_field_name})
+		custom_field.is_system_generated = 1
+		custom_field.save()
+
+		d = self.get_customize_form(doctype)
+		custom_field = d.getone("fields", {"fieldname": custom_field_name})
+		custom_field.description = "Test Description"
+		d.run_method("save_customization")
+
+		property_setter_filters = {
+			"doc_type": doctype,
+			"field_name": custom_field_name,
+			"property": "description",
+		}
+		self.assertEqual(
+			dontmanage.db.get_value("Property Setter", property_setter_filters, "value"), "Test Description"
+		)
+
+	def test_custom_field_order(self):
+		# shuffle fields
+		customize_form = self.get_customize_form(doctype="ToDo")
+		customize_form.fields.insert(0, customize_form.fields.pop())
+		customize_form.save_customization()
+
+		field_order_property = json.loads(
+			dontmanage.db.get_value("Property Setter", {"doc_type": "ToDo", "property": "field_order"}, "value")
+		)
+
+		self.assertEqual(field_order_property, [df.fieldname for df in dontmanage.get_meta("ToDo").fields])

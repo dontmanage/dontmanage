@@ -267,6 +267,7 @@ dontmanage.ui.form.on("Communication", {
 		$.extend(args, {
 			subject: __("Re: {0}", [frm.doc.subject]),
 			recipients: frm.doc.sender,
+			is_a_reply: true,
 		});
 
 		new dontmanage.views.CommunicationComposer(args);
@@ -278,6 +279,7 @@ dontmanage.ui.form.on("Communication", {
 			subject: __("Res: {0}", [frm.doc.subject]),
 			recipients: frm.doc.sender,
 			cc: frm.doc.cc,
+			is_a_reply: true,
 		});
 		new dontmanage.views.CommunicationComposer(args);
 	},
@@ -287,6 +289,7 @@ dontmanage.ui.form.on("Communication", {
 		$.extend(args, {
 			forward: true,
 			subject: __("Fw: {0}", [frm.doc.subject]),
+			is_a_reply: true,
 		});
 
 		new dontmanage.views.CommunicationComposer(args);

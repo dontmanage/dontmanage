@@ -31,20 +31,25 @@ window.addEventListener("popstate", (e) => {
 	return false;
 });
 
-// routing v2, capture all clicks so that the target is managed with push-state
+// Capture all clicks so that the target is managed with push-state
 $("body").on("click", "a", function (e) {
-	let override = (route) => {
+	const target_element = e.currentTarget;
+	const href = target_element.getAttribute("href");
+	const is_on_same_host = target_element.hostname === window.location.hostname;
+
+	if (target_element.getAttribute("target") === "_blank") {
+		return;
+	}
+
+	const override = (route) => {
 		e.preventDefault();
 		dontmanage.set_route(route);
 		return false;
 	};
 
-	const target_element = e.currentTarget;
-	const href = target_element.getAttribute("href");
-	const is_on_same_host = target_element.hostname === window.location.hostname;
-
 	// click handled, but not by href
 	if (
+		!is_on_same_host || // external link
 		target_element.getAttribute("onclick") || // has a handler
 		e.ctrlKey ||
 		e.metaKey || // open in a new tab
@@ -53,18 +58,13 @@ $("body").on("click", "a", function (e) {
 		return;
 	}
 
-	if (href === "") {
-		return override("/app");
-	}
-
 	if (href && href.startsWith("#")) {
 		// target startswith "#", this is a v1 style route, so remake it.
 		return override(target_element.hash);
 	}
 
-	if (is_on_same_host && dontmanage.router.is_app_route(target_element.pathname)) {
+	if (dontmanage.router.is_app_route(target_element.pathname)) {
 		// target has "/app, this is a v2 style route.
-
 		if (target_element.search) {
 			dontmanage.route_options = {};
 			let params = new URLSearchParams(target_element.search);
@@ -72,7 +72,10 @@ $("body").on("click", "a", function (e) {
 				dontmanage.route_options[key] = value;
 			}
 		}
-		return override(target_element.pathname + target_element.hash);
+		if (target_element.hash) {
+			dontmanage.route_hash = target_element.hash;
+		}
+		return override(target_element.pathname);
 	}
 });
 
@@ -108,6 +111,7 @@ dontmanage.router = {
 	layout_mapped: {},
 
 	is_app_route(path) {
+		if (!path) return;
 		// desk paths must begin with /app or doctype route
 		if (path.substr(0, 1) === "/") path = path.substr(1);
 		path = path.split("/");
@@ -139,6 +143,12 @@ dontmanage.router = {
 		if (!dontmanage.app) return;
 
 		let sub_path = this.get_sub_path();
+		if (dontmanage.boot.setup_complete) {
+			!dontmanage.re_route["setup-wizard"] && (dontmanage.re_route["setup-wizard"] = "app");
+		} else if (!sub_path.startsWith("setup-wizard")) {
+			dontmanage.re_route["setup-wizard"] && delete dontmanage.re_route["setup-wizard"];
+			dontmanage.set_route(["setup-wizard"]);
+		}
 		if (this.re_route(sub_path)) return;
 
 		this.current_sub_path = sub_path;
@@ -172,8 +182,18 @@ dontmanage.router = {
 		if (dontmanage.workspaces[route[0]]) {
 			// public workspace
 			route = ["Workspaces", dontmanage.workspaces[route[0]].title];
-		} else if (route[0] == "private" && dontmanage.workspaces[private_workspace]) {
+		} else if (route[0] == "private") {
 			// private workspace
+			if (!dontmanage.workspaces[private_workspace] && localStorage.new_workspace) {
+				let new_workspace = JSON.parse(localStorage.new_workspace);
+				if (dontmanage.router.slug(new_workspace.title) === route[1]) {
+					dontmanage.workspaces[private_workspace] = new_workspace;
+				}
+			}
+			if (!dontmanage.workspaces[private_workspace]) {
+				dontmanage.msgprint(__("Workspace <b>{0}</b> does not exist", [route[1]]));
+				return ["Workspaces"];
+			}
 			route = ["Workspaces", "private", dontmanage.workspaces[private_workspace].title];
 		} else if (this.routes[route[0]]) {
 			// route
@@ -203,7 +223,7 @@ dontmanage.router = {
 						? meta.default_view
 						: null
 				);
-			} else if (route[1] && route[1] !== "view" && !route[2]) {
+			} else if (route[1] && route[1] !== "view") {
 				let docname = route[1];
 				if (route.length > 2) {
 					docname = route.slice(1).join("/");
@@ -234,7 +254,7 @@ dontmanage.router = {
 			standard_route = ["Tree", doctype_route.doctype];
 		} else {
 			let new_route = this.list_views_route[_route.toLowerCase()];
-			let re_route = route[2].toLowerCase() !== new_route.toLowerCase();
+			let re_route = route[2].toLowerCase() !== new_route?.toLowerCase();
 
 			if (re_route) {
 				/**
@@ -346,8 +366,8 @@ dontmanage.router = {
 			route = this.get_route_from_arguments(route);
 			route = this.convert_from_standard_route(route);
 			let sub_path = this.make_url(route);
-			// replace each # occurrences in the URL with encoded character except for last
-			// sub_path = sub_path.replace(/[#](?=.*[#])/g, "%23");
+			sub_path += dontmanage.route_hash || "";
+			dontmanage.route_hash = null;
 			if (dontmanage.open_in_new_tab) {
 				localStorage["route_options"] = JSON.stringify(dontmanage.route_options);
 				window.open(sub_path, "_blank");
@@ -440,11 +460,17 @@ dontmanage.router = {
 			}
 		}).join("/");
 		let private_home = dontmanage.workspaces[`home-${dontmanage.user.name.toLowerCase()}`];
-		let default_page = private_home
-			? "private/home"
-			: dontmanage.workspaces["home"]
-			? "home"
-			: Object.keys(dontmanage.workspaces)[0];
+
+		let workspace_name = private_home || dontmanage.workspaces["home"] ? "home" : "";
+		let is_private = !!private_home;
+		let first_workspace = Object.keys(dontmanage.workspaces)[0];
+
+		if (!workspace_name && first_workspace) {
+			workspace_name = dontmanage.workspaces[first_workspace].title;
+			is_private = !dontmanage.workspaces[first_workspace].public;
+		}
+
+		let default_page = (is_private ? "private/" : "") + dontmanage.router.slug(workspace_name);
 		return "/app/" + (path_string || default_page);
 	},
 

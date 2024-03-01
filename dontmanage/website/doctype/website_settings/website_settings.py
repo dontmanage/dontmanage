@@ -5,13 +5,67 @@ from urllib.parse import quote
 
 import dontmanage
 from dontmanage import _
-from dontmanage.integrations.google_oauth import GoogleOAuth
 from dontmanage.model.document import Document
 from dontmanage.utils import encode, get_request_site_address
 from dontmanage.website.utils import get_boot_data
 
 
 class WebsiteSettings(Document):
+	# begin: auto-generated types
+	# This code is auto-generated. Do not modify anything in this block.
+
+	from typing import TYPE_CHECKING
+
+	if TYPE_CHECKING:
+		from dontmanage.types import DF
+		from dontmanage.website.doctype.top_bar_item.top_bar_item import TopBarItem
+		from dontmanage.website.doctype.website_route_redirect.website_route_redirect import (
+			WebsiteRouteRedirect,
+		)
+
+		address: DF.SmallText | None
+		app_logo: DF.AttachImage | None
+		app_name: DF.Data | None
+		auto_account_deletion: DF.Int
+		banner_html: DF.Code | None
+		banner_image: DF.AttachImage | None
+		brand_html: DF.Code | None
+		call_to_action: DF.Data | None
+		call_to_action_url: DF.Data | None
+		copyright: DF.Data | None
+		disable_signup: DF.Check
+		enable_google_indexing: DF.Check
+		enable_view_tracking: DF.Check
+		favicon: DF.Attach | None
+		footer_items: DF.Table[TopBarItem]
+		footer_logo: DF.AttachImage | None
+		footer_powered: DF.SmallText | None
+		footer_template: DF.Link | None
+		footer_template_values: DF.Code | None
+		google_analytics_anonymize_ip: DF.Check
+		google_analytics_id: DF.Data | None
+		head_html: DF.Code | None
+		hide_footer_signup: DF.Check
+		hide_login: DF.Check
+		home_page: DF.Data | None
+		indexing_authorization_code: DF.Data | None
+		indexing_refresh_token: DF.Data | None
+		navbar_search: DF.Check
+		navbar_template: DF.Link | None
+		navbar_template_values: DF.Code | None
+		robots_txt: DF.Code | None
+		route_redirects: DF.Table[WebsiteRouteRedirect]
+		show_account_deletion_link: DF.Check
+		show_footer_on_login: DF.Check
+		show_language_picker: DF.Check
+		splash_image: DF.AttachImage | None
+		subdomain: DF.SmallText | None
+		title_prefix: DF.Data | None
+		top_bar_items: DF.Table[TopBarItem]
+		website_theme: DF.Link | None
+		website_theme_image_link: DF.Code | None
+	# end: auto-generated types
+
 	def validate(self):
 		self.validate_top_bar_items()
 		self.validate_footer_items()
@@ -100,6 +154,8 @@ class WebsiteSettings(Document):
 		dontmanage.clear_cache()
 
 	def get_access_token(self):
+		from dontmanage.integrations.google_oauth import GoogleOAuth
+
 		if not self.indexing_refresh_token:
 			button_label = dontmanage.bold(_("Allow API Indexing Access"))
 			raise dontmanage.ValidationError(_("Click on {0} to generate Refresh Token.").format(button_label))
@@ -180,7 +236,7 @@ def get_website_settings(context=None):
 	for key in via_hooks:
 		context[key] = via_hooks[key]
 		if key not in ("top_bar_items", "footer_items", "post_login") and isinstance(
-			context[key], (list, tuple)
+			context[key], list | tuple
 		):
 			context[key] = context[key][-1]
 

@@ -1,13 +1,18 @@
 import copy
 import datetime
+import os
 import signal
 import unittest
+from collections.abc import Sequence
 from contextlib import contextmanager
-from typing import Sequence
+from unittest.mock import patch
+
+import pytz
 
 import dontmanage
-from dontmanage.model.base_document import BaseDocument
+from dontmanage.model.base_document import BaseDocument, get_controller
 from dontmanage.utils import cint
+from dontmanage.utils.data import convert_utc_to_timezone, get_datetime, get_system_timezone
 
 datetime_like_types = (datetime.datetime, datetime.date, datetime.time, datetime.timedelta)
 
@@ -23,6 +28,7 @@ class DontManageTestCase(unittest.TestCase):
 	TEST_SITE = "test_site"
 
 	SHOW_TRANSACTION_COMMIT_WARNINGS = False
+	maxDiff = None  # prints long diffs but useful in CI
 
 	@classmethod
 	def setUpClass(cls) -> None:
@@ -31,7 +37,7 @@ class DontManageTestCase(unittest.TestCase):
 		# flush changes done so far to avoid flake
 		dontmanage.db.commit()
 		if cls.SHOW_TRANSACTION_COMMIT_WARNINGS:
-			dontmanage.db.add_before_commit(_commit_watcher)
+			dontmanage.db.before_commit.add(_commit_watcher)
 
 		# enqueue teardown actions (executed in LIFO order)
 		cls.addClassCleanup(_restore_thread_locals, copy.deepcopy(dontmanage.local.flags))
@@ -54,7 +60,7 @@ class DontManageTestCase(unittest.TestCase):
 			if isinstance(value, list):
 				actual_child_docs = actual.get(field)
 				self.assertEqual(len(value), len(actual_child_docs), msg=f"{field} length should be same")
-				for exp_child, actual_child in zip(value, actual_child_docs):
+				for exp_child, actual_child in zip(value, actual_child_docs, strict=False):
 					self.assertDocumentEqual(exp_child, actual_child)
 			else:
 				self._compare_field(value, actual.get(field), actual, field)
@@ -67,12 +73,27 @@ class DontManageTestCase(unittest.TestCase):
 			self.assertAlmostEqual(
 				expected, actual, places=precision, msg=f"{field} should be same to {precision} digits"
 			)
-		elif isinstance(expected, (bool, int)):
+		elif isinstance(expected, bool | int):
 			self.assertEqual(expected, cint(actual), msg=msg)
 		elif isinstance(expected, datetime_like_types):
 			self.assertEqual(str(expected), str(actual), msg=msg)
 		else:
 			self.assertEqual(expected, actual, msg=msg)
+
+	def normalize_html(self, code: str) -> str:
+		"""Formats HTML consistently so simple string comparisons can work on them."""
+		from bs4 import BeautifulSoup
+
+		return BeautifulSoup(code, "html.parser").prettify(formatter=None)
+
+	def normalize_sql(self, query: str) -> str:
+		"""Formats SQL consistently so simple string comparisons can work on them."""
+		import sqlparse
+
+		return (sqlparse.format(query.strip(), keyword_case="upper", reindent=True, strip_comments=True),)
+
+	def assertQueryEqual(self, first: str, second: str):
+		self.assertEqual(self.normalize_sql(first), self.normalize_sql(second))
 
 	@contextmanager
 	def assertQueryCount(self, count):
@@ -91,17 +112,97 @@ class DontManageTestCase(unittest.TestCase):
 		finally:
 			dontmanage.db.sql = orig_sql
 
+	@contextmanager
+	def assertRowsRead(self, count):
+		rows_read = 0
+
+		def _sql_with_count(*args, **kwargs):
+			nonlocal rows_read
+
+			ret = orig_sql(*args, **kwargs)
+			# count of last touched rows as per DB-API 2.0 https://peps.python.org/pep-0249/#rowcount
+			rows_read += cint(dontmanage.db._cursor.rowcount)
+			return ret
+
+		try:
+			orig_sql = dontmanage.db.sql
+			dontmanage.db.sql = _sql_with_count
+			yield
+			self.assertLessEqual(rows_read, count, msg="Queries read more rows than expected")
+		finally:
+			dontmanage.db.sql = orig_sql
+
+	@classmethod
+	def enable_safe_exec(cls) -> None:
+		"""Enable safe exec and disable them after test case is completed."""
+		from dontmanage.installer import update_site_config
+		from dontmanage.utils.safe_exec import SAFE_EXEC_CONFIG_KEY
+
+		cls._common_conf = os.path.join(dontmanage.local.sites_path, "common_site_config.json")
+		update_site_config(SAFE_EXEC_CONFIG_KEY, 1, validate=False, site_config_path=cls._common_conf)
+
+		cls.addClassCleanup(
+			lambda: update_site_config(
+				SAFE_EXEC_CONFIG_KEY, 0, validate=False, site_config_path=cls._common_conf
+			)
+		)
+
+	@contextmanager
+	def set_user(self, user: str):
+		try:
+			old_user = dontmanage.session.user
+			dontmanage.set_user(user)
+			yield
+		finally:
+			dontmanage.set_user(old_user)
+
+	@contextmanager
+	def switch_site(self, site: str):
+		"""Switch connection to different site.
+		Note: Drops current site connection completely."""
+
+		try:
+			old_site = dontmanage.local.site
+			dontmanage.init(site, force=True)
+			dontmanage.connect()
+			yield
+		finally:
+			dontmanage.init(old_site, force=True)
+			dontmanage.connect()
+
+	@contextmanager
+	def freeze_time(self, time_to_freeze, *args, **kwargs):
+		from freezegun import freeze_time
+
+		# Freeze time expects UTC or tzaware objects. We have neither, so convert to UTC.
+		timezone = pytz.timezone(get_system_timezone())
+		fake_time_with_tz = timezone.localize(get_datetime(time_to_freeze)).astimezone(pytz.utc)
+
+		with freeze_time(fake_time_with_tz, *args, **kwargs):
+			yield
+
+
+class MockedRequestTestCase(DontManageTestCase):
+	def setUp(self):
+		import responses
+
+		self.responses = responses.RequestsMock()
+		self.responses.start()
+
+		self.addCleanup(self.responses.stop)
+		self.addCleanup(self.responses.reset)
+
+		return super().setUp()
+
 
 def _commit_watcher():
 	import traceback
 
 	print("Warning:, transaction committed during tests.")
-	traceback.print_stack(limit=5)
+	traceback.print_stack(limit=10)
 
 
 def _rollback_db():
-	dontmanage.local.before_commit = []
-	dontmanage.local.rollback_observers = []
 	dontmanage.db.value_cache = {}
 	dontmanage.db.rollback()
 
@@ -111,15 +212,17 @@ def _restore_thread_locals(flags):
 	dontmanage.local.error_log = []
 	dontmanage.local.message_log = []
 	dontmanage.local.debug_log = []
-	dontmanage.local.realtime_log = []
 	dontmanage.local.conf = dontmanage._dict(dontmanage.get_site_config())
 	dontmanage.local.cache = {}
 	dontmanage.local.lang = "en"
-	dontmanage.local.preload_assets = {"style": [], "script": []}
+	dontmanage.local.preload_assets = {"style": [], "script": [], "icons": []}
+
+	if hasattr(dontmanage.local, "request"):
+		delattr(dontmanage.local, "request")
 
 
 @contextmanager
-def change_settings(doctype, settings_dict):
+def change_settings(doctype, settings_dict=None, /, commit=False, **settings):
 	"""A context manager to ensure that settings are changed before running
 	function and restored after running it regardless of exceptions occured.
 	This is useful in tests where you want to make changes in a function but
@@ -130,7 +233,14 @@ def change_settings(doctype, settings_dict):
 	@change_settings("Print Settings", {"send_print_as_pdf": 1})
 	def test_case(self):
 	        ...
+
+	@change_settings("Print Settings", send_print_as_pdf=1)
+	def test_case(self):
+	        ...
 	"""
+
+	if settings_dict is None:
+		settings_dict = settings
 
 	try:
 		settings = dontmanage.get_doc(doctype)
@@ -142,9 +252,11 @@ def change_settings(doctype, settings_dict):
 		# change setting
 		for key, value in settings_dict.items():
 			setattr(settings, key, value)
-		settings.save()
+		settings.save(ignore_permissions=True)
 		# singles are cached by default, clear to avoid flake
 		dontmanage.db.value_cache[settings] = {}
+		if commit:
+			dontmanage.db.commit()
 		yield  # yield control to calling function
 
 	finally:
@@ -152,7 +264,9 @@ def change_settings(doctype, settings_dict):
 		settings = dontmanage.get_doc(doctype)
 		for key, value in previous_settings.items():
 			setattr(settings, key, value)
-		settings.save()
+		settings.save(ignore_permissions=True)
+		if commit:
+			dontmanage.db.commit()
 
 
 def timeout(seconds=30, error_message="Test timed out."):
@@ -176,3 +290,34 @@ def timeout(seconds=30, error_message="Test timed out."):
 		return wrapper
 
 	return decorator
+
+
+@contextmanager
+def patch_hooks(overridden_hoooks):
+	get_hooks = dontmanage.get_hooks
+
+	def patched_hooks(hook=None, default="_KEEP_DEFAULT_LIST", app_name=None):
+		if hook in overridden_hoooks:
+			return overridden_hoooks[hook]
+		return get_hooks(hook, default, app_name)
+
+	with patch.object(dontmanage, "get_hooks", patched_hooks):
+		yield
+
+
+def check_orpahned_doctypes():
+	"""Check that all doctypes in DB actually exist after patch test"""
+
+	doctypes = dontmanage.get_all("DocType", {"custom": 0}, pluck="name")
+	orpahned_doctypes = []
+
+	for doctype in doctypes:
+		try:
+			get_controller(doctype)
+		except ImportError:
+			orpahned_doctypes.append(doctype)
+
+	if orpahned_doctypes:
+		dontmanage.throw(
+			"Following doctypes exist in DB without controller.\n {}".format("\n".join(orpahned_doctypes))
+		)

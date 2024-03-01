@@ -7,6 +7,20 @@ dontmanage.listview_settings["Workflow"] = {
 			return [__("Not active"), "gray", "is_active,=,No"];
 		}
 	},
+	button: {
+		show(doc) {
+			return doc.name;
+		},
+		get_label() {
+			return dontmanage.utils.icon("workflow", "sm");
+		},
+		get_description(doc) {
+			return __("Build {0}", [`${doc.name}`]);
+		},
+		action(doc) {
+			dontmanage.set_route("workflow-builder", doc.name);
+		},
+	},
 };
 
 dontmanage.help.youtube_id["Workflow"] = "yObJUg9FxFs";

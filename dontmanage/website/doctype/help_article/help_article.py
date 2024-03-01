@@ -3,12 +3,33 @@
 
 import dontmanage
 from dontmanage import _
+from dontmanage.rate_limiter import rate_limit
 from dontmanage.utils import cint, is_markdown, markdown
 from dontmanage.website.utils import get_comment_list
 from dontmanage.website.website_generator import WebsiteGenerator
 
 
 class HelpArticle(WebsiteGenerator):
+	# begin: auto-generated types
+	# This code is auto-generated. Do not modify anything in this block.
+
+	from typing import TYPE_CHECKING
+
+	if TYPE_CHECKING:
+		from dontmanage.types import DF
+
+		author: DF.Data | None
+		category: DF.Link
+		content: DF.TextEditor
+		helpful: DF.Int
+		level: DF.Literal["Beginner", "Intermediate", "Expert"]
+		likes: DF.Int
+		not_helpful: DF.Int
+		published: DF.Check
+		route: DF.Data | None
+		title: DF.Data
+	# end: auto-generated types
+
 	def validate(self):
 		self.set_route()
 
@@ -93,7 +114,7 @@ def get_sidebar_items():
 			as_dict=True,
 		)
 
-	return dontmanage.cache().get_value("knowledge_base:category_sidebar", _get)
+	return dontmanage.cache.get_value("knowledge_base:category_sidebar", _get)
 
 
 def clear_cache():
@@ -105,15 +126,14 @@ def clear_cache():
 
 
 def clear_website_cache(path=None):
-	dontmanage.cache().delete_value("knowledge_base:category_sidebar")
-	dontmanage.cache().delete_value("knowledge_base:faq")
+	dontmanage.cache.delete_value("knowledge_base:category_sidebar")
+	dontmanage.cache.delete_value("knowledge_base:faq")
 
 
 @dontmanage.whitelist(allow_guest=True)
-def add_feedback(article, helpful):
-	field = "helpful"
-	if helpful == "No":
-		field = "not_helpful"
+@rate_limit(key="article", limit=5, seconds=60 * 60)
+def add_feedback(article: str, helpful: str):
+	field = "not_helpful" if helpful == "No" else "helpful"
 
 	value = cint(dontmanage.db.get_value("Help Article", article, field))
 	dontmanage.db.set_value("Help Article", article, field, value + 1, update_modified=False)

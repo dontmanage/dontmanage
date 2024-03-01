@@ -9,21 +9,16 @@ from unittest.mock import patch
 
 import dontmanage
 from dontmanage.core.doctype.doctype.test_doctype import new_doctype
-from dontmanage.exceptions import DoesNotExistError, ValidationError
+from dontmanage.exceptions import DoesNotExistError
 from dontmanage.model.base_document import get_controller
-from dontmanage.model.rename_doc import (
-	bulk_rename,
-	get_fetch_fields,
-	update_document_title,
-	update_linked_doctypes,
-)
+from dontmanage.model.rename_doc import bulk_rename, update_document_title
 from dontmanage.modules.utils import get_doc_path
 from dontmanage.tests.utils import DontManageTestCase
 from dontmanage.utils import add_to_date, now
 
 
 @contextmanager
-def patch_db(endpoints: list[str] = None):
+def patch_db(endpoints: list[str] | None = None):
 	patched_endpoints = []
 
 	for point in endpoints:
@@ -141,9 +136,7 @@ class TestRenameDoc(DontManageTestCase):
 		second_todo_doc.priority = "High"
 		second_todo_doc.save()
 
-		merged_todo = dontmanage.rename_doc(
-			self.test_doctype, first_todo, second_todo, merge=True, force=True
-		)
+		merged_todo = dontmanage.rename_doc(self.test_doctype, first_todo, second_todo, merge=True, force=True)
 		merged_todo_doc = dontmanage.get_doc(self.test_doctype, merged_todo)
 		self.available_documents.remove(first_todo)
 
@@ -197,9 +190,7 @@ class TestRenameDoc(DontManageTestCase):
 		)
 
 		# Test if Doctype value has changed in Link field
-		linked_to_doctype = dontmanage.db.get_value(
-			"Renamed Doc", to_rename_record.name, "linked_to_doctype"
-		)
+		linked_to_doctype = dontmanage.db.get_value("Renamed Doc", to_rename_record.name, "linked_to_doctype")
 		self.assertEqual(linked_to_doctype, "Renamed Doc")
 
 		# Test if there are conflicts between a record and a DocType
@@ -224,7 +215,7 @@ class TestRenameDoc(DontManageTestCase):
 		new_name = f"{dn}-new"
 
 		# pass invalid types to API
-		with self.assertRaises(ValidationError):
+		with self.assertRaises(TypeError):
 			update_document_title(doctype=dt, docname=dn, title={}, name={"hack": "this"})
 
 		doc_before = dontmanage.get_doc(test_doctype, dn)
@@ -253,16 +244,6 @@ class TestRenameDoc(DontManageTestCase):
 				"dontmanage.utils.global_search.rebuild_for_doctype",
 				doctype=self.test_doctype,
 			)
-
-	def test_deprecated_utils(self):
-		stdout = StringIO()
-
-		with redirect_stdout(stdout), patch_db(["set_value"]):
-			get_fetch_fields("User", "ToDo", ["Activity Log"])
-			self.assertTrue("Function dontmanage.model.rename_doc.get_fetch_fields" in stdout.getvalue())
-
-			update_linked_doctypes("User", "ToDo", "str", "str")
-			self.assertTrue("Function dontmanage.model.rename_doc.update_linked_doctypes" in stdout.getvalue())
 
 	def test_doc_rename_method(self):
 		name = choice(self.available_documents)

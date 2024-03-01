@@ -3,19 +3,13 @@
 import json
 
 import dontmanage
-from dontmanage.tests.utils import DontManageTestCase
+from dontmanage.templates.includes.comments.comments import add_comment
+from dontmanage.tests.test_model_utils import set_user
+from dontmanage.tests.utils import DontManageTestCase, change_settings
+from dontmanage.website.doctype.blog_post.test_blog_post import make_test_blog
 
 
 class TestComment(DontManageTestCase):
-	def tearDown(self):
-		dontmanage.form_dict.comment = None
-		dontmanage.form_dict.comment_email = None
-		dontmanage.form_dict.comment_by = None
-		dontmanage.form_dict.reference_doctype = None
-		dontmanage.form_dict.reference_name = None
-		dontmanage.form_dict.route = None
-		dontmanage.local.request_ip = None
-
 	def test_comment_creation(self):
 		test_doc = dontmanage.get_doc(dict(doctype="ToDo", description="test"))
 		test_doc.insert()
@@ -39,23 +33,18 @@ class TestComment(DontManageTestCase):
 
 	# test via blog
 	def test_public_comment(self):
-		from dontmanage.website.doctype.blog_post.test_blog_post import make_test_blog
-
 		test_blog = make_test_blog()
 
 		dontmanage.db.delete("Comment", {"reference_doctype": "Blog Post"})
-
-		from dontmanage.templates.includes.comments.comments import add_comment
-
-		dontmanage.form_dict.comment = "Good comment with 10 chars"
-		dontmanage.form_dict.comment_email = "test@test.com"
-		dontmanage.form_dict.comment_by = "Good Tester"
-		dontmanage.form_dict.reference_doctype = "Blog Post"
-		dontmanage.form_dict.reference_name = test_blog.name
-		dontmanage.form_dict.route = test_blog.route
-		dontmanage.local.request_ip = "127.0.0.1"
-
-		add_comment()
+		add_comment_args = {
+			"comment": "Good comment with 10 chars",
+			"comment_email": "test@test.com",
+			"comment_by": "Good Tester",
+			"reference_doctype": test_blog.doctype,
+			"reference_name": test_blog.name,
+			"route": test_blog.route,
+		}
+		add_comment(**add_comment_args)
 
 		self.assertEqual(
 			dontmanage.get_all(
@@ -68,10 +57,8 @@ class TestComment(DontManageTestCase):
 
 		dontmanage.db.delete("Comment", {"reference_doctype": "Blog Post"})
 
-		dontmanage.form_dict.comment = "pleez vizits my site http://mysite.com"
-		dontmanage.form_dict.comment_by = "bad commentor"
-
-		add_comment()
+		add_comment_args.update(comment="pleez vizits my site http://mysite.com", comment_by="bad commentor")
+		add_comment(**add_comment_args)
 
 		self.assertEqual(
 			len(
@@ -87,11 +74,8 @@ class TestComment(DontManageTestCase):
 		# test for filtering html and css injection elements
 		dontmanage.db.delete("Comment", {"reference_doctype": "Blog Post"})
 
-		dontmanage.form_dict.comment = "<script>alert(1)</script>Comment"
-		dontmanage.form_dict.comment_by = "hacker"
-
-		add_comment()
-
+		add_comment_args.update(comment="<script>alert(1)</script>Comment", comment_by="hacker")
+		add_comment(**add_comment_args)
 		self.assertEqual(
 			dontmanage.get_all(
 				"Comment",
@@ -102,3 +86,35 @@ class TestComment(DontManageTestCase):
 		)
 
 		test_blog.delete()
+
+	@change_settings("Blog Settings", {"allow_guest_to_comment": 0})
+	def test_guest_cannot_comment(self):
+		test_blog = make_test_blog()
+		with set_user("Guest"):
+			self.assertEqual(
+				add_comment(
+					comment="Good comment with 10 chars",
+					comment_email="mail@example.org",
+					comment_by="Good Tester",
+					reference_doctype="Blog Post",
+					reference_name=test_blog.name,
+					route=test_blog.route,
+				),
+				None,
+			)
+
+	def test_user_not_logged_in(self):
+		some_system_user = dontmanage.db.get_value("User", {"name": ("not in", dontmanage.STANDARD_USERS)})
+
+		test_blog = make_test_blog()
+		with set_user("Guest"):
+			self.assertRaises(
+				dontmanage.ValidationError,
+				add_comment,
+				comment="Good comment with 10 chars",
+				comment_email=some_system_user,
+				comment_by="Good Tester",
+				reference_doctype="Blog Post",
+				reference_name=test_blog.name,
+				route=test_blog.route,
+			)

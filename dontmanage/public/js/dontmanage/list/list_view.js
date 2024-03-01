@@ -24,11 +24,14 @@ dontmanage.views.ListView = class ListView extends dontmanage.views.BaseList {
 	constructor(opts) {
 		super(opts);
 		this.show();
+		this.debounced_refresh = dontmanage.utils.debounce(
+			this.process_document_refreshes.bind(this),
+			2000
+		);
 	}
 
 	has_permissions() {
-		const can_read = dontmanage.perm.has_perm(this.doctype, 0, "read");
-		return can_read;
+		return dontmanage.perm.has_perm(this.doctype, 0, "read");
 	}
 
 	show() {
@@ -80,8 +83,8 @@ dontmanage.views.ListView = class ListView extends dontmanage.views.BaseList {
 
 		this.view = "List";
 		// initialize with saved order by
-		this.sort_by = this.view_user_settings.sort_by || "modified";
-		this.sort_order = this.view_user_settings.sort_order || "desc";
+		this.sort_by = this.view_user_settings.sort_by || this.sort_by || "modified";
+		this.sort_order = this.view_user_settings.sort_order || this.sort_order || "desc";
 
 		// build menu items
 		this.menu_items = this.menu_items.concat(this.get_menu_items());
@@ -136,7 +139,7 @@ dontmanage.views.ListView = class ListView extends dontmanage.views.BaseList {
 		this.workflow_action_items = {};
 
 		const actions = this.actions_menu_items.concat(this.workflow_action_menu_items);
-		actions.map((item) => {
+		actions.forEach((item) => {
 			const $item = this.page.add_actions_menu_item(item.label, item.action, item.standard);
 			if (item.class) {
 				$item.addClass(item.class);
@@ -304,10 +307,11 @@ dontmanage.views.ListView = class ListView extends dontmanage.views.BaseList {
 	}
 
 	refresh(refresh_header = false) {
-		super.refresh().then(() => {
+		return super.refresh().then(() => {
 			this.render_header(refresh_header);
 			this.update_checkbox();
 			this.update_url_with_filters();
+			this.setup_realtime_updates();
 		});
 	}
 
@@ -374,7 +378,7 @@ dontmanage.views.ListView = class ListView extends dontmanage.views.BaseList {
 					if (dontmanage.has_indicator(this.doctype) && df.fieldname === "status") {
 						return false;
 					}
-					if (!df.in_list_view) {
+					if (!df.in_list_view || df.is_virtual) {
 						return false;
 					}
 					return df.fieldname !== this.meta.title_field;
@@ -455,28 +459,29 @@ dontmanage.views.ListView = class ListView extends dontmanage.views.BaseList {
 	get_no_result_message() {
 		let help_link = this.get_documentation_link();
 		let filters = this.filter_area && this.filter_area.get();
-		let no_result_message =
-			filters && filters.length
-				? __("No {0} found", [__(this.doctype)])
-				: __("You haven't created a {0} yet", [__(this.doctype)]);
-		let new_button_label =
-			filters && filters.length
-				? __(
-						"Create a new {0}",
-						[__(this.doctype)],
-						"Create a new document from list view"
-				  )
-				: __(
-						"Create your first {0}",
-						[__(this.doctype)],
-						"Create a new document from list view"
-				  );
+
+		let has_filters_set = filters && filters.length;
+		let no_result_message = has_filters_set
+			? __("No {0} found with matching filters. Clear filters to see all {0}.", [
+					__(this.doctype),
+			  ])
+			: this.meta.description
+			? __(this.meta.description)
+			: __("You haven't created a {0} yet", [__(this.doctype)]);
+
+		let new_button_label = has_filters_set
+			? __("Create a new {0}", [__(this.doctype)], "Create a new document from list view")
+			: __(
+					"Create your first {0}",
+					[__(this.doctype)],
+					"Create a new document from list view"
+			  );
 		let empty_state_image =
 			this.settings.empty_state_image ||
 			"/assets/dontmanage/images/ui-states/list-empty-state.svg";
 
 		const new_button = this.can_create
-			? `<p><button class="btn btn-primary btn-sm btn-new-doc hidden-xs">
+			? `<p><button class="btn btn-default btn-sm btn-new-doc hidden-xs">
 				${new_button_label}
 			</button> <button class="btn btn-primary btn-new-doc visible-xs">
 				${__("Create New", null, "Create a new document from list view")}
@@ -504,9 +509,13 @@ dontmanage.views.ListView = class ListView extends dontmanage.views.BaseList {
 	get_args() {
 		const args = super.get_args();
 
-		return Object.assign(args, {
-			with_comment_count: true,
-		});
+		if (this.list_view_settings && !this.list_view_settings.disable_comment_count) {
+			args.with_comment_count = 1;
+		} else {
+			args.with_comment_count = 0;
+		}
+
+		return args;
 	}
 
 	before_refresh() {
@@ -542,7 +551,6 @@ dontmanage.views.ListView = class ListView extends dontmanage.views.BaseList {
 		if (toggle) {
 			this.page.show_actions_menu();
 			this.page.clear_primary_action();
-			this.toggle_workflow_actions();
 		} else {
 			this.page.hide_actions_menu();
 			this.set_primary_action();
@@ -584,32 +592,26 @@ dontmanage.views.ListView = class ListView extends dontmanage.views.BaseList {
 			</div>
 		`);
 		this.setup_new_doc_event();
-		if (this.list_view_settings && !this.list_view_settings.disable_sidebar_stats) {
-			this.list_sidebar && this.list_sidebar.reload_stats();
-		}
 		this.toggle_paging && this.$paging_area.toggle(true);
 	}
 
 	render() {
 		this.render_list();
 		this.set_rows_as_checked();
-		this.on_row_checked();
 		this.render_count();
 	}
 
 	render_list() {
 		// clear rows
 		this.$result.find(".list-row-container").remove();
+
 		if (this.data.length > 0) {
 			// append rows
-			this.$result.append(
-				this.data
-					.map((doc, i) => {
-						doc._idx = i;
-						return this.get_list_row_html(doc);
-					})
-					.join("")
-			);
+			let idx = 0;
+			for (let doc of this.data) {
+				doc._idx = idx++;
+				this.$result.append(this.get_list_row_html(doc));
+			}
 		}
 	}
 
@@ -630,10 +632,10 @@ dontmanage.views.ListView = class ListView extends dontmanage.views.BaseList {
 		let subject_html = `
 			<input class="level-item list-check-all" type="checkbox"
 				title="${__("Select All")}">
-			<span class="level-item list-liked-by-me hidden-xs">
-				<span title="${__("Likes")}">${dontmanage.utils.icon("heart", "sm", "like-icon")}</span>
+			<span class="level-item" data-sort-by="${subject_field.fieldname}"
+				title="${__("Click to sort by {0}", [subject_field.label])}">
+				${__(subject_field.label)}
 			</span>
-			<span class="level-item">${__(subject_field.label)}</span>
 		`;
 		const $columns = this.columns
 			.map((col) => {
@@ -644,20 +646,32 @@ dontmanage.views.ListView = class ListView extends dontmanage.views.BaseList {
 					dontmanage.model.is_numeric_field(col.df) ? "text-right" : "",
 				].join(" ");
 
-				return `
-				<div class="${classes}">
-					${
-						col.type === "Subject"
-							? subject_html
-							: `
-						<span>${__((col.df && col.df.label) || col.type)}</span>`
-					}
-				</div>
+				let html = "";
+				if (col.type === "Subject") {
+					html = subject_html;
+				} else {
+					const fieldname = col.df?.fieldname;
+					const label = __(col.df?.label || col.type, null, col.df?.parent);
+					const title = __("Click to sort by {0}", [label]);
+					const attrs = fieldname ? `data-sort-by="${fieldname}" title="${title}"` : "";
+					html = `<span ${attrs}>${label}</span>`;
+				}
+
+				return `<div class="${classes}">${html}</div>
 			`;
 			})
 			.join("");
 
-		return this.get_header_html_skeleton($columns, '<span class="list-count"></span>');
+		const right_html = `
+			<span class="list-count"></span>
+			<span class="level-item list-liked-by-me hidden-xs">
+				<span title="${__("Liked by me")}">
+					${dontmanage.utils.icon("es-solid-heart", "sm", "like-icon")}
+				</span>
+			</span>
+		`;
+
+		return this.get_header_html_skeleton($columns, right_html);
 	}
 
 	get_header_html_skeleton(left = "", right = "") {
@@ -708,10 +722,11 @@ dontmanage.views.ListView = class ListView extends dontmanage.views.BaseList {
 	}
 
 	get_column_html(col, doc) {
-		if (col.type === "Status") {
+		if (col.type === "Status" || col.df?.options == "Workflow State") {
+			let show_workflow_state = col.df?.options == "Workflow State";
 			return `
 				<div class="list-row-col hidden-xs ellipsis">
-					${this.get_indicator_html(doc)}
+					${this.get_indicator_html(doc, show_workflow_state)}
 				</div>
 			`;
 		}
@@ -738,7 +753,7 @@ dontmanage.views.ListView = class ListView extends dontmanage.views.BaseList {
 			: value;
 
 		let translated_doctypes = dontmanage.boot?.translated_doctypes || [];
-		if (in_list(translated_doctypes, df.options)) {
+		if (translated_doctypes.includes(df.options)) {
 			value_display = __(value_display);
 		}
 
@@ -828,15 +843,18 @@ dontmanage.views.ListView = class ListView extends dontmanage.views.BaseList {
 			dontmanage.model.is_numeric_field(df) ? "text-right" : "",
 		].join(" ");
 
-		const html_map = {
-			Subject: this.get_subject_html(doc),
-			Field: field_html(),
-		};
-		let column_html = html_map[col.type];
-
-		// listview_setting formatter
-		if (this.settings.formatters && this.settings.formatters[fieldname]) {
+		let column_html;
+		if (
+			this.settings.formatters &&
+			this.settings.formatters[fieldname] &&
+			col.type !== "Subject"
+		) {
 			column_html = this.settings.formatters[fieldname](value, df, doc);
+		} else {
+			column_html = {
+				Subject: this.get_subject_html(doc),
+				Field: field_html(),
+			}[col.type];
 		}
 
 		return `
@@ -884,33 +902,37 @@ dontmanage.views.ListView = class ListView extends dontmanage.views.BaseList {
 
 		const modified = comment_when(doc.modified, true);
 
-		let assigned_to = `<div class="list-assignments">
-			<span class="avatar avatar-small">
-			<span class="avatar-empty"></span>
-		</div>`;
+		let assigned_to = ``;
 
-		let assigned_users = JSON.parse(doc._assign || "[]");
+		let assigned_users = doc._assign ? JSON.parse(doc._assign) : [];
 		if (assigned_users.length) {
-			assigned_to = `<div class="list-assignments">
+			assigned_to = `<div class="list-assignments d-flex align-items-center">
 					${dontmanage.avatar_group(assigned_users, 3, { filterable: true })[0].outerHTML}
 				</div>`;
 		}
 
-		const comment_count = `<span class="comment-count">
-				${dontmanage.utils.icon("small-message")}
-				${doc._comment_count > 99 ? "99+" : doc._comment_count || 0}
-			</span>`;
+		let comment_count = null;
+		if (this.list_view_settings && !this.list_view_settings.disable_comment_count) {
+			comment_count = $(`<span class="comment-count d-flex align-items-center"></span>`);
+			$(comment_count).append(`
+				${dontmanage.utils.icon("es-line-chat-alt")}
+				${doc._comment_count > 99 ? "99+" : doc._comment_count || 0}`);
+		}
 
 		html += `
 			<div class="level-item list-row-activity hidden-xs">
 				<div class="hidden-md hidden-xs">
 					${settings_button || assigned_to}
 				</div>
-				${modified}
-				${comment_count}
+				<span class="modified">${modified}</span>
+				${comment_count ? $(comment_count).prop("outerHTML") : ""}
+				${comment_count ? '<span class="mx-2">·</span>' : ""}
+				<span class="list-row-like hidden-xs style="margin-bottom: 1px;">
+					${this.get_like_html(doc)}
+				</span>
 			</div>
 			<div class="level-item visible-xs text-right">
-				${this.get_indicator_dot(doc)}
+				${this.get_indicator_html(doc)}
 			</div>
 		`;
 
@@ -946,8 +968,8 @@ dontmanage.views.ListView = class ListView extends dontmanage.views.BaseList {
 			return this.settings.get_form_link(doc);
 		}
 
-		return `/app/${dontmanage.router.slug(
-			dontmanage.router.doctype_layout || this.doctype
+		return `/app/${encodeURIComponent(
+			dontmanage.router.slug(dontmanage.router.doctype_layout || this.doctype)
 		)}/${encodeURIComponent(cstr(doc.name))}`;
 	}
 
@@ -957,18 +979,28 @@ dontmanage.views.ListView = class ListView extends dontmanage.views.BaseList {
 
 	get_like_html(doc) {
 		const liked_by = JSON.parse(doc._liked_by || "[]");
-		let heart_class = liked_by.includes(dontmanage.session.user) ? "liked-by liked" : "not-liked";
+		const heart_class = liked_by.includes(dontmanage.session.user)
+			? "liked-by liked"
+			: "not-liked";
+		const title = liked_by.map((u) => dontmanage.user_info(u).fullname).join(", ");
 
-		return `<span
-			class="like-action ${heart_class}"
-			data-name="${doc.name}" data-doctype="${this.doctype}"
-			data-liked-by="${encodeURI(doc._liked_by) || "[]"}"
-			title="${liked_by.map((u) => dontmanage.user_info(u).fullname).join(", ")}">
-			${dontmanage.utils.icon("heart", "sm", "like-icon")}
-		</span>
-		<span class="likes-count">
-			${liked_by.length > 99 ? __("99") + "+" : __(liked_by.length || "")}
-		</span>`;
+		const div = document.createElement("div");
+		div.innerHTML = `
+			<span class="like-action ${heart_class}">
+				${dontmanage.utils.icon("es-solid-heart", "sm", "like-icon")}
+			</span>
+			<span class="likes-count">
+				${liked_by.length > 99 ? __("99") + "+" : __(liked_by.length || "")}
+			</span>
+		`;
+
+		const like = div.querySelector(".like-action");
+		like.setAttribute("data-liked-by", doc._liked_by || "[]");
+		like.setAttribute("data-doctype", this.doctype);
+		like.setAttribute("data-name", doc.name);
+		like.setAttribute("title", title);
+
+		return div.innerHTML;
 	}
 
 	get_subject_html(doc) {
@@ -981,35 +1013,38 @@ dontmanage.views.ListView = class ListView extends dontmanage.views.BaseList {
 		if (!value) {
 			value = doc.name;
 		}
-		let subject = strip_html(value.toString());
-		let escaped_subject = dontmanage.utils.escape_html(subject);
 
 		const seen = this.get_seen_class(doc);
 
-		let subject_html = `
+		const div = document.createElement("div");
+		div.innerHTML = `
 			<span class="level-item select-like">
-				<input class="list-row-checkbox" type="checkbox"
-					data-name="${escape(doc.name)}">
-				<span class="list-row-like hidden-xs style="margin-bottom: 1px;">
-					${this.get_like_html(doc)}
-				</span>
+				<input class="list-row-checkbox" type="checkbox">
 			</span>
-			<span class="level-item ${seen} ellipsis" title="${escaped_subject}">
-				<a class="ellipsis"
-					href="${this.get_form_link(doc)}"
-					title="${escaped_subject}"
-					data-doctype="${this.doctype}"
-					data-name="${doc.name}">
-					${subject}
-				</a>
+			<span class="level-item ${seen} ellipsis">
+				<a class="ellipsis"></a>
 			</span>
 		`;
 
-		return subject_html;
+		const checkbox = div.querySelector(".list-row-checkbox");
+		checkbox.dataset.doctype = this.doctype;
+		checkbox.dataset.name = doc.name;
+
+		const link = div.querySelector(".level-item a");
+		link.dataset.doctype = this.doctype;
+		link.dataset.name = doc.name;
+		link.href = this.get_form_link(doc);
+		// "Text Editor" and some other fieldtypes can have html tags in them so strip and show text.
+		// If no text is found show "No Text Found in {Field Label}"
+		let textValue = dontmanage.utils.html2text(value);
+		link.title = textValue;
+		link.textContent = textValue;
+
+		return div.innerHTML;
 	}
 
-	get_indicator_html(doc) {
-		const indicator = dontmanage.get_indicator(doc, this.doctype);
+	get_indicator_html(doc, show_workflow_state) {
+		const indicator = dontmanage.get_indicator(doc, this.doctype, show_workflow_state);
 		// sequence is important
 		const docstatus_description = [
 			__("Document is in draft state"),
@@ -1018,10 +1053,12 @@ dontmanage.views.ListView = class ListView extends dontmanage.views.BaseList {
 		];
 		const title = docstatus_description[doc.docstatus || 0];
 		if (indicator) {
-			return `<span class="indicator-pill ${indicator[1]} filterable ellipsis"
+			return `<span class="indicator-pill ${
+				indicator[1]
+			} filterable no-indicator-dot ellipsis"
 				data-filter='${indicator[2]}' title='${title}'>
 				<span class="ellipsis"> ${__(indicator[0])}</span>
-			<span>`;
+			</span>`;
 		}
 		return "";
 	}
@@ -1043,7 +1080,9 @@ dontmanage.views.ListView = class ListView extends dontmanage.views.BaseList {
 
 	setup_events() {
 		this.setup_filterable();
+		this.setup_sort_by();
 		this.setup_list_click();
+		this.setup_drag_click();
 		this.setup_tag_event();
 		this.setup_new_doc_event();
 		this.setup_check_events();
@@ -1183,6 +1222,20 @@ dontmanage.views.ListView = class ListView extends dontmanage.views.BaseList {
 		});
 	}
 
+	setup_sort_by() {
+		this.$result.on("click", "[data-sort-by]", (e) => {
+			const sort_by = e.currentTarget.getAttribute("data-sort-by");
+			if (!sort_by) return;
+			let sort_order = "asc"; // always start with asc
+			if (this.sort_by === sort_by) {
+				// unless it's the same field, then toggle
+				sort_order = this.sort_order === "asc" ? "desc" : "asc";
+			}
+			this.sort_selector.set_value(sort_by, sort_order);
+			this.on_sort_change(sort_by, sort_order);
+		});
+	}
+
 	setup_list_click() {
 		this.$result.on("click", ".list-row, .image-view-header, .file-header", (e) => {
 			const $target = $(e.target);
@@ -1218,6 +1271,36 @@ dontmanage.views.ListView = class ListView extends dontmanage.views.BaseList {
 				return false;
 			}
 		});
+	}
+
+	setup_drag_click() {
+		/*
+			Click on the check box in the list view and
+			drag through the rows to select.
+
+			Do it again to unselect.
+
+			If the first click is on checked checkbox, then it will unselect rows on drag,
+			else if it is unchecked checkbox, it will select rows on drag.
+		*/
+		this.dragClick = false;
+		this.$result.on("mousedown", ".list-row-checkbox", (e) => {
+			this.dragClick = true;
+			this.check = !e.target.checked;
+		});
+		$(document).on("mouseup", () => {
+			this.dragClick = false;
+		});
+		this.$result.on("mousemove", ".level.list-row", (e) => {
+			if (this.dragClick) {
+				this.check_row_on_drag(e, this.check);
+			}
+		});
+	}
+
+	check_row_on_drag(event, check = true) {
+		$(event.target).find(".list-row-checkbox").prop("checked", check);
+		this.on_row_checked();
 	}
 
 	setup_action_handler() {
@@ -1279,6 +1362,11 @@ dontmanage.views.ListView = class ListView extends dontmanage.views.BaseList {
 
 			this.update_checkbox($target);
 		});
+
+		let me = this;
+		this.page.actions_btn_group.on("show.bs.dropdown", () => {
+			me.toggle_workflow_actions();
+		});
 	}
 
 	setup_like() {
@@ -1322,10 +1410,11 @@ dontmanage.views.ListView = class ListView extends dontmanage.views.BaseList {
 	setup_realtime_updates() {
 		this.pending_document_refreshes = [];
 
-		if (this.list_view_settings && this.list_view_settings.disable_auto_refresh) {
+		if (this.list_view_settings?.disable_auto_refresh || this.realtime_events_setup) {
 			return;
 		}
-		dontmanage.socketio.doctype_subscribe(this.doctype);
+		dontmanage.realtime.doctype_subscribe(this.doctype);
+		dontmanage.realtime.off("list_update");
 		dontmanage.realtime.on("list_update", (data) => {
 			if (data?.doctype !== this.doctype) {
 				return;
@@ -1341,8 +1430,14 @@ dontmanage.views.ListView = class ListView extends dontmanage.views.BaseList {
 			}
 
 			this.pending_document_refreshes.push(data);
-			dontmanage.utils.debounce(this.process_document_refreshes.bind(this), 1000)();
+			this.debounced_refresh();
 		});
+		this.realtime_events_setup = true;
+	}
+
+	disable_realtime_updates() {
+		dontmanage.realtime.doctype_unsubscribe(this.doctype);
+		this.realtime_events_setup = false;
 	}
 
 	process_document_refreshes() {
@@ -1352,6 +1447,7 @@ dontmanage.views.ListView = class ListView extends dontmanage.views.BaseList {
 		if (!cur_list || route[0] != "List" || cur_list.doctype != route[1]) {
 			// wait till user is back on list view before refreshing
 			this.pending_document_refreshes = [];
+			this.disable_realtime_updates();
 			return;
 		}
 
@@ -1375,8 +1471,13 @@ dontmanage.views.ListView = class ListView extends dontmanage.views.BaseList {
 				// this doc was changed and should not be visible
 				// in the listview according to filters applied
 				// let's remove it manually
-				this.data = this.data.filter((d) => names.indexOf(d.name) === -1);
-				this.render_list();
+				this.data = this.data.filter((d) => !names.includes(d.name));
+				for (let name of names) {
+					this.$result
+						.find(`.list-row-checkbox[data-name='${name}']`)
+						.closest(".list-row-container")
+						.remove();
+				}
 				return;
 			}
 
@@ -1419,7 +1520,7 @@ dontmanage.views.ListView = class ListView extends dontmanage.views.BaseList {
 	}
 
 	avoid_realtime_update() {
-		if (this.filter_area.is_being_edited()) {
+		if (this.filter_area?.is_being_edited()) {
 			return true;
 		}
 		// this is set when a bulk operation is called from a list view which might update the list view
@@ -1432,6 +1533,10 @@ dontmanage.views.ListView = class ListView extends dontmanage.views.BaseList {
 	}
 
 	set_rows_as_checked() {
+		if (!this.$checks || !this.$checks.length) {
+			return;
+		}
+
 		$.each(this.$checks, (i, el) => {
 			let docname = $(el).attr("data-name");
 			this.$result.find(`.list-row-checkbox[data-name='${docname}']`).prop("checked", true);
@@ -1499,24 +1604,26 @@ dontmanage.views.ListView = class ListView extends dontmanage.views.BaseList {
 	}
 
 	get_url_with_filters() {
-		const query_params = this.get_filters_for_args()
-			.map((filter) => {
-				if (filter[2] === "=") {
-					return `${filter[1]}=${encodeURIComponent(filter[3])}`;
-				}
-				return [
-					filter[1],
-					"=",
-					encodeURIComponent(JSON.stringify([filter[2], filter[3]])),
-				].join("");
-			})
-			.join("&");
+		let search_params = this.get_search_params();
 
 		let full_url = window.location.href.replace(window.location.search, "");
-		if (query_params) {
-			full_url += "?" + query_params;
+		if (search_params.size) {
+			full_url += "?" + search_params.toString();
 		}
 		return full_url;
+	}
+
+	get_search_params() {
+		let search_params = new URLSearchParams();
+
+		this.get_filters_for_args().forEach((filter) => {
+			if (filter[2] === "=") {
+				search_params.append(filter[1], filter[3]);
+			} else {
+				search_params.append(filter[1], JSON.stringify([filter[2], filter[3]]));
+			}
+		});
+		return search_params;
 	}
 
 	get_menu_items() {
@@ -1534,7 +1641,7 @@ dontmanage.views.ListView = class ListView extends dontmanage.views.BaseList {
 			});
 		}
 
-		if (dontmanage.model.can_set_user_permissions(doctype)) {
+		if (dontmanage.user_roles.includes("System Manager")) {
 			items.push({
 				label: __("User Permissions", null, "Button in list view menu"),
 				action: () =>
@@ -1624,6 +1731,8 @@ dontmanage.views.ListView = class ListView extends dontmanage.views.BaseList {
 
 	get_workflow_action_menu_items() {
 		const workflow_actions = [];
+		const me = this;
+
 		if (dontmanage.model.has_workflow(this.doctype)) {
 			const actions = dontmanage.workflow.get_all_transition_actions(this.doctype);
 			actions.forEach((action) => {
@@ -1631,11 +1740,16 @@ dontmanage.views.ListView = class ListView extends dontmanage.views.BaseList {
 					label: __(action),
 					name: action,
 					action: () => {
-						dontmanage.xcall("dontmanage.model.workflow.bulk_workflow_approval", {
-							docnames: this.get_checked_items(true),
-							doctype: this.doctype,
-							action: action,
-						});
+						me.disable_list_update = true;
+						dontmanage
+							.xcall("dontmanage.model.workflow.bulk_workflow_approval", {
+								docnames: this.get_checked_items(true),
+								doctype: this.doctype,
+								action: action,
+							})
+							.finally(() => {
+								me.disable_list_update = false;
+							});
 					},
 					is_workflow_action: true,
 				});
@@ -1646,7 +1760,12 @@ dontmanage.views.ListView = class ListView extends dontmanage.views.BaseList {
 
 	toggle_workflow_actions() {
 		if (!dontmanage.model.has_workflow(this.doctype)) return;
+
+		Object.keys(this.workflow_action_items).forEach((key) => {
+			this.workflow_action_items[key].addClass("disabled");
+		});
 		const checked_items = this.get_checked_items();
+
 		dontmanage
 			.xcall("dontmanage.model.workflow.get_common_transition_actions", {
 				docs: checked_items,
@@ -1654,6 +1773,7 @@ dontmanage.views.ListView = class ListView extends dontmanage.views.BaseList {
 			})
 			.then((actions) => {
 				Object.keys(this.workflow_action_items).forEach((key) => {
+					this.workflow_action_items[key].removeClass("disabled");
 					this.workflow_action_items[key].toggle(actions.includes(key));
 				});
 			});

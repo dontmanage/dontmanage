@@ -9,12 +9,31 @@ from dontmanage.model.document import Document
 
 
 class KanbanBoard(Document):
+	# begin: auto-generated types
+	# This code is auto-generated. Do not modify anything in this block.
+
+	from typing import TYPE_CHECKING
+
+	if TYPE_CHECKING:
+		from dontmanage.desk.doctype.kanban_board_column.kanban_board_column import KanbanBoardColumn
+		from dontmanage.types import DF
+
+		columns: DF.Table[KanbanBoardColumn]
+		field_name: DF.Literal
+		fields: DF.Code | None
+		filters: DF.Code | None
+		kanban_board_name: DF.Data
+		private: DF.Check
+		reference_doctype: DF.Link
+		show_labels: DF.Check
+
+	# end: auto-generated types
 	def validate(self):
 		self.validate_column_name()
 
 	def on_change(self):
 		dontmanage.clear_cache(doctype=self.reference_doctype)
-		dontmanage.cache().delete_keys("_user_settings")
+		dontmanage.cache.delete_keys("_user_settings")
 
 	def before_insert(self):
 		for column in self.columns:
@@ -33,9 +52,7 @@ def get_permission_query_conditions(user):
 	if user == "Administrator":
 		return ""
 
-	return """(`tabKanban Board`.private=0 or `tabKanban Board`.owner={user})""".format(
-		user=dontmanage.db.escape(user)
-	)
+	return f"""(`tabKanban Board`.private=0 or `tabKanban Board`.owner={dontmanage.db.escape(user)})"""
 
 
 def has_permission(doc, ptype, user):
@@ -112,9 +129,7 @@ def update_order(board_name, order):
 
 
 @dontmanage.whitelist()
-def update_order_for_single_card(
-	board_name, docname, from_colname, to_colname, old_index, new_index
-):
+def update_order_for_single_card(board_name, docname, from_colname, to_colname, old_index, new_index):
 	"""Save the order of cards in columns"""
 	board = dontmanage.get_doc("Kanban Board", board_name)
 	doctype = board.reference_doctype
@@ -220,7 +235,7 @@ def update_column_order(board_name, order):
 	new_columns = []
 
 	for col in order:
-		for column in old_columns:
+		for column in list(old_columns):
 			if col == column.column_name:
 				new_columns.append(column)
 				old_columns.remove(column)

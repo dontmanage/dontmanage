@@ -9,6 +9,22 @@ from dontmanage.model.document import Document
 
 
 class WebsiteSlideshow(Document):
+	# begin: auto-generated types
+	# This code is auto-generated. Do not modify anything in this block.
+
+	from typing import TYPE_CHECKING
+
+	if TYPE_CHECKING:
+		from dontmanage.types import DF
+		from dontmanage.website.doctype.website_slideshow_item.website_slideshow_item import (
+			WebsiteSlideshowItem,
+		)
+
+		header: DF.HTMLEditor | None
+		slideshow_items: DF.Table[WebsiteSlideshowItem]
+		slideshow_name: DF.Data
+
+	# end: auto-generated types
 	def validate(self):
 		self.validate_images()
 

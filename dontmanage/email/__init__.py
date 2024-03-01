@@ -2,7 +2,6 @@
 # License: MIT. See LICENSE
 
 import dontmanage
-from dontmanage.desk.reportview import build_match_conditions
 
 
 def sendmail_to_system_managers(subject, content):
@@ -12,31 +11,38 @@ def sendmail_to_system_managers(subject, content):
 @dontmanage.whitelist()
 def get_contact_list(txt, page_length=20) -> list[dict]:
 	"""Return email ids for a multiselect field."""
+	from dontmanage.contacts.doctype.contact.contact import get_full_name
 
 	if cached_contacts := get_cached_contacts(txt):
 		return cached_contacts[:page_length]
 
-	reportview_conditions = build_match_conditions("Contact")
-	match_conditions = f"and {reportview_conditions}" if reportview_conditions else ""
+	fields = ["first_name", "middle_name", "last_name", "company_name"]
+	contacts = dontmanage.get_list(
+		"Contact",
+		fields=[*fields, "`tabContact Email`.email_id"],
+		filters=[
+			["Contact Email", "email_id", "is", "set"],
+		],
+		or_filters=[[field, "like", f"%{txt}%"] for field in fields]
+		+ [["Contact Email", "email_id", "like", f"%{txt}%"]],
+		limit_page_length=page_length,
+	)
 
 	# The multiselect field will store the `label` as the selected value.
 	# The `value` is just used as a unique key to distinguish between the options.
 	# https://github.com/dontmanage/dontmanage/blob/6c6a89bcdd9454060a1333e23b855d0505c9ebc2/dontmanage/public/js/dontmanage/form/controls/autocomplete.js#L29-L35
-	out = dontmanage.db.sql(
-		f"""select name as value, email_id as label,
-		concat(first_name, ifnull(concat(' ',last_name), '' )) as description
-		from tabContact
-		where (name like %(txt)s or email_id like %(txt)s) and email_id != ''
-		{match_conditions}
-		limit %(page_length)s""",
-		{"txt": f"%{txt}%", "page_length": page_length},
-		as_dict=True,
-	)
-	out = list(filter(None, out))
+	result = [
+		dontmanage._dict(
+			value=d.email_id,
+			label=d.email_id,
+			description=get_full_name(d.first_name, d.middle_name, d.last_name, d.company_name),
+		)
+		for d in contacts
+	]
 
-	update_contact_cache(out)
+	update_contact_cache(result)
 
-	return out
+	return result
 
 
 def get_system_managers():
@@ -74,7 +80,6 @@ def get_communication_doctype(doctype, txt, searchfield, start, page_len, filter
 
 	com_doctypes = []
 	if len(txt) < 2:
-
 		for name in dontmanage.get_hooks("communication_doctypes"):
 			try:
 				module = load_doctype_module(name, suffix="_dashboard")
@@ -88,15 +93,11 @@ def get_communication_doctype(doctype, txt, searchfield, start, page_len, filter
 			d[0] for d in dontmanage.db.get_values("DocType", {"issingle": 0, "istable": 0, "hide_toolbar": 0})
 		]
 
-	out = []
-	for dt in com_doctypes:
-		if txt.lower().replace("%", "") in dt.lower() and dt in can_read:
-			out.append([dt])
-	return out
+	return [[dt] for dt in com_doctypes if txt.lower().replace("%", "") in dt.lower() and dt in can_read]
 
 
 def get_cached_contacts(txt):
-	contacts = dontmanage.cache().hget("contacts", dontmanage.session.user) or []
+	contacts = dontmanage.cache.hget("contacts", dontmanage.session.user) or []
 
 	if not contacts:
 		return
@@ -104,18 +105,17 @@ def get_cached_contacts(txt):
 	if not txt:
 		return contacts
 
-	match = [
+	return [
 		d
 		for d in contacts
 		if (d.value and ((d.value and txt in d.value) or (d.description and txt in d.description)))
 	]
-	return match
 
 
 def update_contact_cache(contacts):
-	cached_contacts = dontmanage.cache().hget("contacts", dontmanage.session.user) or []
+	cached_contacts = dontmanage.cache.hget("contacts", dontmanage.session.user) or []
 
 	uncached_contacts = [d for d in contacts if d not in cached_contacts]
 	cached_contacts.extend(uncached_contacts)
 
-	dontmanage.cache().hset("contacts", dontmanage.session.user, cached_contacts)
+	dontmanage.cache.hset("contacts", dontmanage.session.user, cached_contacts)

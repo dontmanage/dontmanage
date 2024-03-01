@@ -9,9 +9,37 @@ from dontmanage.cache_manager import clear_doctype_map, get_doctype_map
 from dontmanage.desk.form import assign_to
 from dontmanage.model import log_types
 from dontmanage.model.document import Document
+from dontmanage.utils.data import comma_and
 
 
 class AssignmentRule(Document):
+	# begin: auto-generated types
+	# This code is auto-generated. Do not modify anything in this block.
+
+	from typing import TYPE_CHECKING
+
+	if TYPE_CHECKING:
+		from dontmanage.automation.doctype.assignment_rule_day.assignment_rule_day import AssignmentRuleDay
+		from dontmanage.automation.doctype.assignment_rule_user.assignment_rule_user import (
+			AssignmentRuleUser,
+		)
+		from dontmanage.types import DF
+
+		assign_condition: DF.Code
+		assignment_days: DF.Table[AssignmentRuleDay]
+		close_condition: DF.Code | None
+		description: DF.SmallText
+		disabled: DF.Check
+		document_type: DF.Link
+		due_date_based_on: DF.Literal
+		field: DF.Literal
+		last_user: DF.Link | None
+		priority: DF.Int
+		rule: DF.Literal["Round Robin", "Load Balancing", "Based on Field"]
+		unassign_condition: DF.Code | None
+		users: DF.TableMultiSelect[AssignmentRuleUser]
+
+	# end: auto-generated types
 	def validate(self):
 		self.validate_document_types()
 		self.validate_assignment_days()
@@ -23,20 +51,14 @@ class AssignmentRule(Document):
 
 	def validate_document_types(self):
 		if self.document_type == "ToDo":
-			dontmanage.throw(
-				_("Assignment Rule is not allowed on {0} document type").format(dontmanage.bold("ToDo"))
-			)
+			dontmanage.throw(_("Assignment Rule is not allowed on {0} document type").format(dontmanage.bold("ToDo")))
 
 	def validate_assignment_days(self):
 		assignment_days = self.get_assignment_days()
-
 		if len(set(assignment_days)) != len(assignment_days):
-			repeated_days = get_repeated(assignment_days)
-			plural = "s" if len(repeated_days) > 1 else ""
-
 			dontmanage.throw(
-				_("Assignment Day{0} {1} has been repeated.").format(
-					plural, dontmanage.bold(", ".join(repeated_days))
+				_("The following Assignment Days have been repeated: {0}").format(
+					comma_and([_(day) for day in get_repeated(assignment_days)], add_quotes=False)
 				)
 			)
 
@@ -52,7 +74,7 @@ class AssignmentRule(Document):
 
 	def do_assignment(self, doc):
 		# clear existing assignment, to reassign
-		assign_to.clear(doc.get("doctype"), doc.get("name"))
+		assign_to.clear(doc.get("doctype"), doc.get("name"), ignore_permissions=True)
 
 		user = self.get_user(doc)
 
@@ -66,7 +88,8 @@ class AssignmentRule(Document):
 					assignment_rule=self.name,
 					notify=True,
 					date=doc.get(self.due_date_based_on) if self.due_date_based_on else None,
-				)
+				),
+				ignore_permissions=True,
 			)
 
 			# set for reference in round robin
@@ -78,12 +101,14 @@ class AssignmentRule(Document):
 	def clear_assignment(self, doc):
 		"""Clear assignments"""
 		if self.safe_eval("unassign_condition", doc):
-			return assign_to.clear(doc.get("doctype"), doc.get("name"))
+			return assign_to.clear(doc.get("doctype"), doc.get("name"), ignore_permissions=True)
 
 	def close_assignments(self, doc):
 		"""Close assignments"""
 		if self.safe_eval("close_condition", doc):
-			return assign_to.close_all_assignments(doc.get("doctype"), doc.get("name"))
+			return assign_to.close_all_assignments(
+				doc.get("doctype"), doc.get("name"), ignore_permissions=True
+			)
 
 	def get_user(self, doc):
 		"""
@@ -115,17 +140,20 @@ class AssignmentRule(Document):
 
 	def get_user_load_balancing(self):
 		"""Assign to the user with least number of open assignments"""
-		counts = []
-		for d in self.users:
-			counts.append(
-				dict(
-					user=d.user,
-					count=dontmanage.db.count(
-						"ToDo", dict(reference_type=self.document_type, allocated_to=d.user, status="Open")
+		counts = [
+			dict(
+				user=d.user,
+				count=dontmanage.db.count(
+					"ToDo",
+					dict(
+						reference_type=self.document_type,
+						allocated_to=d.user,
+						status="Open",
 					),
-				)
+				),
 			)
-
+			for d in self.users
+		]
 		# sort by dict value
 		sorted_counts = sorted(counts, key=lambda k: k["count"])
 
@@ -328,9 +356,7 @@ def update_due_date(doc, state=None):
 		rule_doc = dontmanage.get_cached_doc("Assignment Rule", rule.get("name"))
 		due_date_field = rule_doc.due_date_based_on
 		field_updated = (
-			doc.meta.has_field(due_date_field)
-			and doc.has_value_changed(due_date_field)
-			and rule.get("name")
+			doc.meta.has_field(due_date_field) and doc.has_value_changed(due_date_field) and rule.get("name")
 		)
 
 		if field_updated:

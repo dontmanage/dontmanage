@@ -61,7 +61,7 @@ class TestTwoFactor(DontManageTestCase):
 		self.assertTrue(verification_obj)
 		self.assertTrue(tmp_id)
 		for k in ["_usr", "_pwd", "_otp_secret"]:
-			self.assertTrue(dontmanage.cache().get(f"{tmp_id}{k}"), f"{k} not available")
+			self.assertTrue(dontmanage.cache.get(f"{tmp_id}{k}"), f"{k} not available")
 
 	def test_two_factor_is_enabled(self):
 		"""
@@ -205,8 +205,7 @@ def create_http_request():
 	dontmanage.form_dict["usr"] = "test@example.com"
 	dontmanage.form_dict["pwd"] = "Eastern_43A1W"
 	dontmanage.local.form_dict["cmd"] = "login"
-	http_requests = HTTPRequest()
-	return http_requests
+	return HTTPRequest()
 
 
 def enable_2fa(bypass_two_factor_auth=0, bypass_restrict_ip_check=0):
@@ -233,7 +232,7 @@ def toggle_2fa_all_role(state=None):
 	"""Enable or disable 2fa for 'all' role on the system."""
 	all_role = dontmanage.get_doc("Role", "All")
 	state = state if state is not None else False
-	if type(state) != bool:
+	if not isinstance(state, bool):
 		return
 
 	all_role.two_factor_auth = cint(state)

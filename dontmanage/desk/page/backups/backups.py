@@ -82,6 +82,8 @@ def delete_downloadable_backups():
 def schedule_files_backup(user_email):
 	from dontmanage.utils.background_jobs import enqueue, get_jobs
 
+	dontmanage.only_for("System Manager")
+
 	queued_jobs = get_jobs(site=dontmanage.local.site, queue="long")
 	method = "dontmanage.desk.page.backups.backups.backup_files_and_notify_user"
 
@@ -93,9 +95,7 @@ def schedule_files_backup(user_email):
 		)
 		dontmanage.msgprint(_("Queued for backup. You will receive an email with the download link"))
 	else:
-		dontmanage.msgprint(
-			_("Backup job is already queued. You will receive an email with the download link")
-		)
+		dontmanage.msgprint(_("Backup job is already queued. You will receive an email with the download link"))
 
 
 def backup_files_and_notify_user(user_email=None):

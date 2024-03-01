@@ -111,6 +111,10 @@ dontmanage.search.AwesomeBar = class AwesomeBar {
 				if (event.ctrlKey || event.metaKey) {
 					dontmanage.open_in_new_tab = true;
 				}
+				if (item.route[0].startsWith("https://")) {
+					window.open(item.route[0], "_blank");
+					return;
+				}
 				dontmanage.set_route(item.route);
 			}
 			$input.val("");
@@ -127,7 +131,6 @@ dontmanage.search.AwesomeBar = class AwesomeBar {
 			}
 		});
 		dontmanage.search.utils.setup_recent();
-		dontmanage.tags.utils.fetch_tags();
 	}
 
 	add_help() {
@@ -202,7 +205,8 @@ dontmanage.search.AwesomeBar = class AwesomeBar {
 				dontmanage.search.utils.get_workspaces(txt),
 				dontmanage.search.utils.get_dashboards(txt),
 				dontmanage.search.utils.get_recent_pages(txt || ""),
-				dontmanage.search.utils.get_executables(txt)
+				dontmanage.search.utils.get_executables(txt),
+				dontmanage.search.utils.get_marketplace_apps(txt)
 			);
 		if (txt.charAt(0) === "#") {
 			options = dontmanage.tags.utils.get_tags(txt);
@@ -302,7 +306,9 @@ dontmanage.search.AwesomeBar = class AwesomeBar {
 		var route = dontmanage.get_route();
 		if (route[0] === "List" && txt.indexOf(" in") === -1) {
 			// search in title field
-			var meta = dontmanage.get_meta(dontmanage.container.page.list_view.doctype);
+			const doctype = dontmanage.container.page?.list_view?.doctype;
+			if (!doctype) return;
+			var meta = dontmanage.get_meta(doctype);
 			var search_field = meta.title_field || "name";
 			var options = {};
 			options[search_field] = ["like", "%" + txt + "%"];

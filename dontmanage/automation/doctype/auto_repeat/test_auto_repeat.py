@@ -1,5 +1,7 @@
 # Copyright (c) 2018, DontManage Technologies and Contributors
 # License: MIT. See LICENSE
+from typing import TYPE_CHECKING
+
 import dontmanage
 from dontmanage.automation.doctype.auto_repeat.auto_repeat import (
 	create_repeated_entries,
@@ -10,8 +12,11 @@ from dontmanage.custom.doctype.custom_field.custom_field import create_custom_fi
 from dontmanage.tests.utils import DontManageTestCase
 from dontmanage.utils import add_days, add_months, getdate, today
 
+if TYPE_CHECKING:
+	from dontmanage.custom.doctype.custom_field.custom_field import CustomField
 
-def add_custom_fields():
+
+def add_custom_fields() -> "CustomField":
 	df = dict(
 		fieldname="auto_repeat",
 		label="Auto Repeat",
@@ -22,15 +27,17 @@ def add_custom_fields():
 		print_hide=1,
 		read_only=1,
 	)
-	create_custom_field("ToDo", df)
+	return create_custom_field("ToDo", df) or dontmanage.get_doc(
+		"Custom Field", dict(fieldname=df["fieldname"], dt="ToDo")
+	)
 
 
 class TestAutoRepeat(DontManageTestCase):
-	def setUp(self):
-		if not dontmanage.db.sql(
-			"SELECT `fieldname` FROM `tabCustom Field` WHERE `fieldname`='auto_repeat' and `dt`=%s", "Todo"
-		):
-			add_custom_fields()
+	@classmethod
+	def setUpClass(cls):
+		cls.custom_field = add_custom_fields()
+		cls.addClassCleanup(cls.custom_field.delete)
+		return super().setUpClass()
 
 	def test_daily_auto_repeat(self):
 		todo = dontmanage.get_doc(
@@ -46,9 +53,7 @@ class TestAutoRepeat(DontManageTestCase):
 		todo = dontmanage.get_doc(doc.reference_doctype, doc.reference_document)
 		self.assertEqual(todo.auto_repeat, doc.name)
 
-		new_todo = dontmanage.db.get_value(
-			"ToDo", {"auto_repeat": doc.name, "name": ("!=", todo.name)}, "name"
-		)
+		new_todo = dontmanage.db.get_value("ToDo", {"auto_repeat": doc.name, "name": ("!=", todo.name)}, "name")
 
 		new_todo = dontmanage.get_doc("ToDo", new_todo)
 
@@ -74,9 +79,7 @@ class TestAutoRepeat(DontManageTestCase):
 		todo = dontmanage.get_doc(doc.reference_doctype, doc.reference_document)
 		self.assertEqual(todo.auto_repeat, doc.name)
 
-		new_todo = dontmanage.db.get_value(
-			"ToDo", {"auto_repeat": doc.name, "name": ("!=", todo.name)}, "name"
-		)
+		new_todo = dontmanage.db.get_value("ToDo", {"auto_repeat": doc.name, "name": ("!=", todo.name)}, "name")
 
 		new_todo = dontmanage.get_doc("ToDo", new_todo)
 
@@ -121,7 +124,9 @@ class TestAutoRepeat(DontManageTestCase):
 		# test without end_date
 		todo = dontmanage.get_doc(
 			dict(
-				doctype="ToDo", description="test recurring todo without end_date", assigned_by="Administrator"
+				doctype="ToDo",
+				description="test recurring todo without end_date",
+				assigned_by="Administrator",
 			)
 		).insert()
 		self.monthly_auto_repeat("ToDo", todo.name, start_date)
@@ -156,7 +161,7 @@ class TestAutoRepeat(DontManageTestCase):
 		docnames = dontmanage.get_all(doc.reference_doctype, {"auto_repeat": doc.name})
 		self.assertEqual(len(docnames), months)
 
-	def test_notification_is_attached(self):
+	def test_email_notification(self):
 		todo = dontmanage.get_doc(
 			dict(
 				doctype="ToDo",
@@ -176,14 +181,10 @@ class TestAutoRepeat(DontManageTestCase):
 		create_repeated_entries(data)
 		dontmanage.db.commit()
 
-		new_todo = dontmanage.db.get_value(
-			"ToDo", {"auto_repeat": doc.name, "name": ("!=", todo.name)}, "name"
-		)
+		new_todo = dontmanage.db.get_value("ToDo", {"auto_repeat": doc.name, "name": ("!=", todo.name)}, "name")
 
-		linked_comm = dontmanage.db.exists(
-			"Communication", dict(reference_doctype="ToDo", reference_name=new_todo)
-		)
-		self.assertTrue(linked_comm)
+		email_queue = dontmanage.db.exists("Email Queue", dict(reference_doctype="ToDo", reference_name=new_todo))
+		self.assertTrue(email_queue)
 
 	def test_next_schedule_date(self):
 		current_date = getdate(today())
@@ -201,9 +202,7 @@ class TestAutoRepeat(DontManageTestCase):
 		self.assertTrue(doc.next_schedule_date >= current_date)
 
 		todo = dontmanage.get_doc(
-			dict(
-				doctype="ToDo", description="test next schedule date for daily", assigned_by="Administrator"
-			)
+			dict(doctype="ToDo", description="test next schedule date for daily", assigned_by="Administrator")
 		).insert()
 		doc = make_auto_repeat(
 			frequency="Daily", reference_document=todo.name, start_date=add_days(today(), -2)
@@ -235,7 +234,7 @@ class TestAutoRepeat(DontManageTestCase):
 
 def make_auto_repeat(**args):
 	args = dontmanage._dict(args)
-	doc = dontmanage.get_doc(
+	return dontmanage.get_doc(
 		{
 			"doctype": "Auto Repeat",
 			"reference_doctype": args.reference_doctype or "ToDo",
@@ -251,8 +250,6 @@ def make_auto_repeat(**args):
 			"repeat_on_days": args.days or [],
 		}
 	).insert(ignore_permissions=True)
-
-	return doc
 
 
 def create_submittable_doctype(doctype, submit_perms=1):

@@ -10,10 +10,12 @@ from werkzeug.wrappers import Response
 import dontmanage
 import dontmanage.sessions
 import dontmanage.utils
-from dontmanage import _, is_whitelisted
+from dontmanage import _, is_whitelisted, ping
 from dontmanage.core.doctype.server_script.server_script_utils import get_server_script_map
+from dontmanage.monitor import add_data_to_monitor
 from dontmanage.utils import cint
 from dontmanage.utils.csvutils import build_csv_response
+from dontmanage.utils.deprecations import deprecation_warning
 from dontmanage.utils.image import optimize_image
 from dontmanage.utils.response import build_response
 
@@ -32,6 +34,8 @@ ALLOWED_MIMETYPES = (
 	"application/vnd.oasis.opendocument.text",
 	"application/vnd.oasis.opendocument.spreadsheet",
 	"text/plain",
+	"video/quicktime",
+	"video/mp4",
 )
 
 
@@ -53,13 +57,11 @@ def handle():
 		# add the response to `message` label
 		dontmanage.response["message"] = data
 
-	return build_response("json")
-
 
 def execute_cmd(cmd, from_async=False):
 	"""execute a request as python module"""
-	for hook in dontmanage.get_hooks("override_whitelisted_methods", {}).get(cmd, []):
-		# override using the first hook
+	for hook in reversed(dontmanage.get_hooks("override_whitelisted_methods", {}).get(cmd, [])):
+		# override using the last hook
 		cmd = hook
 		break
 
@@ -108,11 +110,6 @@ def throw_permission_error():
 
 
 @dontmanage.whitelist(allow_guest=True)
-def version():
-	return dontmanage.__version__
-
-
-@dontmanage.whitelist(allow_guest=True)
 def logout():
 	dontmanage.local.login_manager.logout()
 	dontmanage.db.commit()
@@ -130,6 +127,7 @@ def web_logout():
 @dontmanage.whitelist()
 def uploadfile():
 	ret = None
+	check_write_permission(dontmanage.form_dict.doctype, dontmanage.form_dict.docname)
 
 	try:
 		if dontmanage.form_dict.get("from_form"):
@@ -189,13 +187,28 @@ def upload_file():
 	optimize = dontmanage.form_dict.optimize
 	content = None
 
+	if library_file := dontmanage.form_dict.get("library_file_name"):
+		dontmanage.has_permission("File", doc=library_file, throw=True)
+		doc = dontmanage.get_value(
+			"File",
+			dontmanage.form_dict.library_file_name,
+			["is_private", "file_url", "file_name"],
+			as_dict=True,
+		)
+		is_private = doc.is_private
+		file_url = doc.file_url
+		filename = doc.file_name
+
+	if not ignore_permissions:
+		check_write_permission(doctype, docname)
+
 	if "file" in files:
 		file = files["file"]
 		content = file.stream.read()
 		filename = file.filename
 
 		content_type = guess_type(filename)[0]
-		if optimize and content_type.startswith("image/"):
+		if optimize and content_type and content_type.startswith("image/"):
 			args = {"content": content, "content_type": content_type}
 			if dontmanage.form_dict.max_width:
 				args["max_width"] = int(dontmanage.form_dict.max_width)
@@ -206,9 +219,7 @@ def upload_file():
 	dontmanage.local.uploaded_file = content
 	dontmanage.local.uploaded_filename = filename
 
-	if content is not None and (
-		dontmanage.session.user == "Guest" or (user and not user.has_desk_access())
-	):
+	if content is not None and (dontmanage.session.user == "Guest" or (user and not user.has_desk_access())):
 		filetype = guess_type(filename)[0]
 		if filetype not in ALLOWED_MIMETYPES:
 			dontmanage.throw(_("You can only upload JPG, PNG, PDF, TXT or Microsoft documents."))
@@ -231,6 +242,20 @@ def upload_file():
 				"content": content,
 			}
 		).save(ignore_permissions=ignore_permissions)
+
+
+def check_write_permission(doctype: str | None = None, name: str | None = None):
+	check_doctype = doctype and not name
+	if doctype and name:
+		try:
+			doc = dontmanage.get_doc(doctype, name)
+			doc.has_permission("write")
+		except dontmanage.DoesNotExistError:
+			# doc has not been inserted yet, name is set to "new-some-doctype"
+			check_doctype = True
+
+	if check_doctype:
+		dontmanage.has_permission(doctype, "write", throw=True)
 
 
 @dontmanage.whitelist(allow_guest=True)
@@ -257,19 +282,17 @@ def get_attr(cmd):
 	if "." in cmd:
 		method = dontmanage.get_attr(cmd)
 	else:
+		deprecation_warning(
+			f"Calling shorthand for {cmd} is deprecated, please specify full path in RPC call."
+		)
 		method = globals()[cmd]
 	dontmanage.log("method:" + cmd)
 	return method
 
 
-@dontmanage.whitelist(allow_guest=True)
-def ping():
-	return "pong"
-
-
 def run_doc_method(method, docs=None, dt=None, dn=None, arg=None, args=None):
 	"""run a whitelisted controller method"""
-	from inspect import getfullargspec
+	from inspect import signature
 
 	if not args and arg:
 		args = arg
@@ -298,7 +321,7 @@ def run_doc_method(method, docs=None, dt=None, dn=None, arg=None, args=None):
 	is_whitelisted(fn)
 	is_valid_http_method(fn)
 
-	fnargs = getfullargspec(method_obj).args
+	fnargs = list(signature(method_obj).parameters)
 
 	if not fnargs or (len(fnargs) == 1 and fnargs[0] == "self"):
 		response = doc.run_method(method)
@@ -319,6 +342,8 @@ def run_doc_method(method, docs=None, dt=None, dn=None, arg=None, args=None):
 		return
 
 	dontmanage.response["message"] = response
+
+	add_data_to_monitor(methodname=method)
 
 
 # for backwards compatibility

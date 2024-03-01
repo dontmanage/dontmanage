@@ -49,9 +49,10 @@ def approve(*args, **kwargs):
 	r = dontmanage.request
 
 	try:
-		(scopes, dontmanage.flags.oauth_credentials,) = get_oauth_server().validate_authorization_request(
-			r.url, r.method, r.get_data(), r.headers
-		)
+		(
+			scopes,
+			dontmanage.flags.oauth_credentials,
+		) = get_oauth_server().validate_authorization_request(r.url, r.method, r.get_data(), r.headers)
 
 		headers, body, status = get_oauth_server().create_authorization_response(
 			uri=dontmanage.flags.oauth_credentials["redirect_uri"],
@@ -72,23 +73,20 @@ def approve(*args, **kwargs):
 
 @dontmanage.whitelist(allow_guest=True)
 def authorize(**kwargs):
-	success_url = "/api/method/dontmanage.integrations.oauth2.approve?" + encode_params(
-		sanitize_kwargs(kwargs)
-	)
+	success_url = "/api/method/dontmanage.integrations.oauth2.approve?" + encode_params(sanitize_kwargs(kwargs))
 	failure_url = dontmanage.form_dict["redirect_uri"] + "?error=access_denied"
 
 	if dontmanage.session.user == "Guest":
 		# Force login, redirect to preauth again.
 		dontmanage.local.response["type"] = "redirect"
-		dontmanage.local.response["location"] = "/login?" + encode_params(
-			{"redirect-to": dontmanage.request.url}
-		)
+		dontmanage.local.response["location"] = "/login?" + encode_params({"redirect-to": dontmanage.request.url})
 	else:
 		try:
 			r = dontmanage.request
-			(scopes, dontmanage.flags.oauth_credentials,) = get_oauth_server().validate_authorization_request(
-				r.url, r.method, r.get_data(), r.headers
-			)
+			(
+				scopes,
+				dontmanage.flags.oauth_credentials,
+			) = get_oauth_server().validate_authorization_request(r.url, r.method, r.get_data(), r.headers)
 
 			skip_auth = dontmanage.db.get_value(
 				"OAuth Client",
@@ -101,6 +99,10 @@ def authorize(**kwargs):
 				dontmanage.local.response["type"] = "redirect"
 				dontmanage.local.response["location"] = success_url
 			else:
+				if "openid" in scopes:
+					scopes.remove("openid")
+					scopes.extend(["Full Name", "Email", "User Image", "Roles"])
+
 				# Show Allow/Deny screen.
 				response_html_params = dontmanage._dict(
 					{
@@ -113,7 +115,7 @@ def authorize(**kwargs):
 				resp_html = dontmanage.render_template(
 					"templates/includes/oauth_confirmation.html", response_html_params
 				)
-				dontmanage.respond_as_web_page("Confirm Access", resp_html)
+				dontmanage.respond_as_web_page("Confirm Access", resp_html, primary_action=None)
 		except (FatalClientError, OAuth2Error) as e:
 			return generate_json_error_response(e)
 

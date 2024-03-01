@@ -1,7 +1,6 @@
 # Copyright (c) 2015, DontManage and contributors
 # License: MIT. See LICENSE
 
-import os
 from contextlib import suppress
 
 import redis
@@ -9,27 +8,25 @@ import redis
 import dontmanage
 from dontmanage.utils.data import cstr
 
-redis_server = None
-
 
 def publish_progress(percent, title=None, doctype=None, docname=None, description=None):
 	publish_realtime(
 		"progress",
 		{"percent": percent, "title": title, "description": description},
-		user=dontmanage.session.user,
+		user=None if doctype and docname else dontmanage.session.user,
 		doctype=doctype,
 		docname=docname,
 	)
 
 
 def publish_realtime(
-	event: str = None,
-	message: dict = None,
-	room: str = None,
-	user: str = None,
-	doctype: str = None,
-	docname: str = None,
-	task_id: str = None,
+	event: str | None = None,
+	message: dict | None = None,
+	room: str | None = None,
+	user: str | None = None,
+	doctype: str | None = None,
+	docname: str | None = None,
+	task_id: str | None = None,
 	after_commit: bool = False,
 ):
 	"""Publish real-time updates
@@ -73,11 +70,28 @@ def publish_realtime(
 			room = get_site_room()
 
 	if after_commit:
+		if not hasattr(dontmanage.local, "_realtime_log"):
+			dontmanage.local._realtime_log = []
+			dontmanage.db.after_commit.add(flush_realtime_log)
+			dontmanage.db.after_rollback.add(clear_realtime_log)
+
 		params = [event, message, room]
-		if params not in dontmanage.local.realtime_log:
-			dontmanage.local.realtime_log.append(params)
+		if params not in dontmanage.local._realtime_log:
+			dontmanage.local._realtime_log.append(params)
 	else:
 		emit_via_redis(event, message, room)
+
+
+def flush_realtime_log():
+	for args in dontmanage.local._realtime_log:
+		dontmanage.realtime.emit_via_redis(*args)
+
+	clear_realtime_log()
+
+
+def clear_realtime_log():
+	if hasattr(dontmanage.local, "_realtime_log"):
+		del dontmanage.local._realtime_log
 
 
 def emit_via_redis(event, message, room):
@@ -86,32 +100,23 @@ def emit_via_redis(event, message, room):
 	:param event: Event name, like `task_progress` etc.
 	:param message: JSON message object. For async must contain `task_id`
 	:param room: name of the room"""
+	from dontmanage.utils.background_jobs import get_redis_connection_without_auth
 
 	with suppress(redis.exceptions.ConnectionError):
-		r = get_redis_server()
-		r.publish("events", dontmanage.as_json({"event": event, "message": message, "room": room}))
-
-
-def get_redis_server():
-	"""returns redis_socketio connection."""
-	global redis_server
-	if not redis_server:
-		from redis import Redis
-
-		redis_server = Redis.from_url(dontmanage.conf.redis_socketio or "redis://localhost:12311")
-	return redis_server
+		r = get_redis_connection_without_auth()
+		r.publish(
+			"events",
+			dontmanage.as_json(
+				{"event": event, "message": message, "room": room, "namespace": dontmanage.local.site}
+			),
+		)
 
 
 @dontmanage.whitelist(allow_guest=True)
-def can_subscribe_doc(doctype, docname):
-	if os.environ.get("CI"):
-		return True
-
+def can_subscribe_doc(doctype: str, docname: str) -> bool:
 	from dontmanage.exceptions import PermissionError
-	from dontmanage.sessions import Session
 
-	session = Session(None, resume=True).get_session_data()
-	if not dontmanage.has_permission(user=session.user, doctype=doctype, doc=docname, ptype="read"):
+	if not dontmanage.has_permission(doctype=doctype, doc=docname, ptype="read"):
 		raise PermissionError()
 
 	return True
@@ -121,7 +126,7 @@ def can_subscribe_doc(doctype, docname):
 def can_subscribe_doctype(doctype: str) -> bool:
 	from dontmanage.exceptions import PermissionError
 
-	if not dontmanage.has_permission(user=dontmanage.session.user, doctype=doctype, ptype="read"):
+	if not dontmanage.has_permission(doctype=doctype, ptype="read"):
 		raise PermissionError()
 
 	return True
@@ -129,35 +134,31 @@ def can_subscribe_doctype(doctype: str) -> bool:
 
 @dontmanage.whitelist(allow_guest=True)
 def get_user_info():
-	from dontmanage.sessions import Session
-
-	session = Session(None, resume=True).get_session_data()
-
 	return {
-		"user": session.user,
-		"user_type": session.user_type,
+		"user": dontmanage.session.user,
+		"user_type": dontmanage.session.data.user_type,
 	}
 
 
 def get_doctype_room(doctype):
-	return f"{dontmanage.local.site}:doctype:{doctype}"
+	return f"doctype:{doctype}"
 
 
 def get_doc_room(doctype, docname):
-	return f"{dontmanage.local.site}:doc:{doctype}/{cstr(docname)}"
+	return f"doc:{doctype}/{cstr(docname)}"
 
 
 def get_user_room(user):
-	return f"{dontmanage.local.site}:user:{user}"
+	return f"user:{user}"
 
 
 def get_site_room():
-	return f"{dontmanage.local.site}:all"
+	return "all"
 
 
 def get_task_progress_room(task_id):
-	return f"{dontmanage.local.site}:task_progress:{task_id}"
+	return f"task_progress:{task_id}"
 
 
 def get_website_room():
-	return f"{dontmanage.local.site}:website"
+	return "website"

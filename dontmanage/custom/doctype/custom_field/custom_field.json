@@ -1,7 +1,7 @@
 {
  "actions": [],
  "allow_import": 1,
- "creation": "2013-01-10 16:34:01",
+ "creation": "2024-02-21 18:14:42.281748",
  "description": "Adds a custom field to a DocType",
  "doctype": "DocType",
  "document_type": "Setup",
@@ -21,6 +21,7 @@
   "hide_seconds",
   "hide_days",
   "options",
+  "sort_options",
   "fetch_from",
   "fetch_if_empty",
   "options_help",
@@ -55,6 +56,7 @@
   "ignore_xss_filter",
   "translatable",
   "hide_border",
+  "show_dashboard",
   "description",
   "permlevel",
   "width",
@@ -126,7 +128,8 @@
    "oldfieldname": "fieldtype",
    "oldfieldtype": "Select",
    "options": "Autocomplete\nAttach\nAttach Image\nBarcode\nButton\nCheck\nCode\nColor\nColumn Break\nCurrency\nData\nDate\nDatetime\nDuration\nDynamic Link\nFloat\nFold\nGeolocation\nHeading\nHTML\nHTML Editor\nIcon\nImage\nInt\nJSON\nLink\nLong Text\nMarkdown Editor\nPassword\nPercent\nPhone\nRead Only\nRating\nSection Break\nSelect\nSignature\nSmall Text\nTab Break\nTable\nTable MultiSelect\nText\nText Editor\nTime",
-   "reqd": 1
+   "reqd": 1,
+   "sort_options": 1
   },
   {
    "depends_on": "eval:in_list([\"Float\", \"Currency\", \"Percent\"], doc.fieldtype)",
@@ -151,10 +154,10 @@
   },
   {
    "default": "0",
-   "description": "If checked, this field will be not overwritten based on Fetch From if a value already exists.",
+   "description": "If unchecked, the value will always be re-fetched on save.",
    "fieldname": "fetch_if_empty",
    "fieldtype": "Check",
-   "label": "Fetch If Empty"
+   "label": "Fetch on Save if Empty"
   },
   {
    "fieldname": "options_help",
@@ -435,13 +438,26 @@
    "fieldtype": "Check",
    "label": "Is System Generated",
    "read_only": 1
+  },
+  {
+   "default": "0",
+   "depends_on": "eval: doc.fieldtype === 'Select'",
+   "fieldname": "sort_options",
+   "fieldtype": "Check",
+   "label": "Sort Options"
+  },
+  {
+   "default": "0",
+   "fieldname": "show_dashboard",
+   "fieldtype": "Check",
+   "label": "Show Dashboard"
   }
  ],
  "icon": "fa fa-glass",
  "idx": 1,
  "index_web_pages_for_search": 1,
  "links": [],
- "modified": "2022-06-13 06:39:03.319667",
+ "modified": "2024-02-21 18:15:19.384933",
  "modified_by": "Administrator",
  "module": "Custom",
  "name": "Custom Field",
@@ -472,7 +488,7 @@
  ],
  "search_fields": "dt,label,fieldtype,options",
  "sort_field": "modified",
- "sort_order": "ASC",
+ "sort_order": "DESC",
  "states": [],
  "track_changes": 1
 }

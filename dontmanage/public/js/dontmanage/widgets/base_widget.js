@@ -27,7 +27,7 @@ export default class Widget {
 
 		options.allow_sorting &&
 			dontmanage.utils.add_custom_button(
-				dontmanage.utils.icon("drag", "xs"),
+				dontmanage.utils.icon("es-line-drag", "xs"),
 				null,
 				"drag-handle",
 				__("Drag"),
@@ -58,7 +58,7 @@ export default class Widget {
 
 		options.allow_edit &&
 			dontmanage.utils.add_custom_button(
-				dontmanage.utils.icon("edit", "xs"),
+				dontmanage.utils.icon("es-line-edit-alt", "xs"),
 				() => this.edit(),
 				"edit-button",
 				__("Edit"),
@@ -98,14 +98,9 @@ export default class Widget {
 		let base = this.title || this.label || this.name;
 		let title = max_chars ? dontmanage.ellipsis(base, max_chars) : base;
 
-		if (this.icon) {
-			let icon = dontmanage.utils.icon(this.icon, "lg");
-			this.title_field[0].innerHTML = `${icon} <span class="ellipsis" title="${title}">${title}</span>`;
-		} else {
-			this.title_field[0].innerHTML = `<span class="ellipsis" title="${title}">${title}</span>`;
-			if (max_chars) {
-				this.title_field[0].setAttribute("title", this.title || this.label);
-			}
+		this.title_field[0].innerHTML = `<span class="ellipsis" title="${title}">${title}</span>`;
+		if (max_chars) {
+			this.title_field[0].setAttribute("title", this.title || this.label);
 		}
 		this.subtitle && this.subtitle_field.html(this.subtitle);
 	}

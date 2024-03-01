@@ -1,7 +1,11 @@
 // Copyright (c) 2020, DontManage and Contributors
 // MIT License. See license.txt
 import BaseTimeline from "./base_timeline";
-import { get_version_timeline_content } from "./version_timeline_content_builder";
+import {
+	get_version_timeline_content,
+	get_user_link,
+	get_user_message,
+} from "./version_timeline_content_builder";
 
 class FormTimeline extends BaseTimeline {
 	make() {
@@ -21,8 +25,8 @@ class FormTimeline extends BaseTimeline {
 		this.add_action_button(
 			__("New Email"),
 			() => this.compose_mail(),
-			"mail",
-			"btn-secondary-dark"
+			"es-line-add",
+			"btn-secondary"
 		);
 		this.setup_new_event_button();
 	}
@@ -50,32 +54,37 @@ class FormTimeline extends BaseTimeline {
 			return (communications || []).length || (comments || []).length;
 		};
 		let me = this;
+		this.timeline_wrapper.remove(this.timeline_actions_wrapper);
+		this.timeline_wrapper.prepend(`
+				<div class="timeline-item activity-title">
+				<h4>${__("Activity")}</h4>
+				</div>
+			`);
 		if (has_communications()) {
 			this.timeline_wrapper
-				.prepend(
+				.find(".timeline-item.activity-title")
+				.append(
 					`
-				<div class="timeline-item activity-toggle">
-					<div class="timeline-dot"></div>
-					<div class="timeline-content flex align-center">
-						<h4>${__("Activity")}</h4>
-						<nav class="nav nav-pills flex-row">
-							<a class="flex-sm-fill text-sm-center nav-link" data-only-communication="true">${__(
-								"Communication"
-							)}</a>
-							<a class="flex-sm-fill text-sm-center nav-link active">${__("All")}</a>
-						</nav>
+					<div class="d-flex align-items-center show-all-activity">
+						<span style="color: var(--text-light); margin:0px 6px;">${__("Show all activity")}</span>
+						<label class="switch">
+							<input type="checkbox">
+							<span class="slider round"></span>
+						</label>
 					</div>
-				</div>
-			`
+				`
 				)
-				.find("a")
+				.find("input[type=checkbox]")
+				.prop("checked", !me.only_communication)
 				.on("click", function (e) {
-					e.preventDefault();
-					me.only_communication = $(this).data().onlyCommunication;
+					me.only_communication = !this.checked;
 					me.render_timeline_items();
 					$(this).tab("show");
 				});
 		}
+		this.timeline_wrapper
+			.find(".timeline-item.activity-title")
+			.append(this.timeline_actions_wrapper);
 	}
 
 	setup_document_email_link() {
@@ -95,7 +104,7 @@ class FormTimeline extends BaseTimeline {
 					</div>
 				</div>
 			`);
-			this.timeline_actions_wrapper.append(this.document_email_link_wrapper);
+			this.timeline_items_wrapper.before(this.document_email_link_wrapper);
 
 			this.document_email_link_wrapper.find(".document-email-link").on("click", (e) => {
 				let text = $(e.target).text();
@@ -106,56 +115,47 @@ class FormTimeline extends BaseTimeline {
 
 	render_timeline_items() {
 		super.render_timeline_items();
-		this.set_document_info();
+		this.add_web_page_view_count();
 		dontmanage.utils.bind_actions_with_object(this.timeline_items_wrapper, this);
 	}
 
-	set_document_info() {
-		// TODO: handle creation via automation
-		const creation = comment_when(this.frm.doc.creation);
-		let creation_message = dontmanage.utils.is_current_user(this.frm.doc.owner)
-			? __("You created this {0}", [creation], "Form timeline")
-			: __(
-					"{0} created this {1}",
-					[this.get_user_link(this.frm.doc.owner), creation],
-					"Form timeline"
-			  );
-
-		const modified = comment_when(this.frm.doc.modified);
-		let modified_message = dontmanage.utils.is_current_user(this.frm.doc.modified_by)
-			? __("You edited this {0}", [modified], "Form timeline")
-			: __(
-					"{0} edited this {1}",
-					[this.get_user_link(this.frm.doc.modified_by), modified],
-					"Form timeline"
-			  );
-
+	add_web_page_view_count() {
 		if (this.frm.doc.route && cint(dontmanage.boot.website_tracking_enabled)) {
-			let route = this.frm.doc.route;
-			dontmanage.utils.get_page_view_count(route).then((res) => {
-				let page_view_count_message = __("{0} Page views", [res.message], "Form timeline");
-				this.add_timeline_item(
-					{
-						content: `${creation_message} • ${modified_message} • 	${page_view_count_message}`,
-						hide_timestamp: true,
-					},
-					true
-				);
-			});
-		} else {
-			this.add_timeline_item(
-				{
-					content: `${creation_message} • ${modified_message}`,
+			dontmanage.utils.get_page_view_count(this.frm.doc.route).then((res) => {
+				this.add_timeline_item({
+					content: __("{0} Web page views", [res.message]),
 					hide_timestamp: true,
-				},
-				true
-			);
+				});
+			});
 		}
 	}
 
+	get_creation_message() {
+		return {
+			creation: this.frm.doc.creation,
+			content: get_user_message(
+				this.frm.doc.owner,
+				__("You created this"),
+				__("{0} created this", [get_user_link(this.frm.doc.owner)])
+			),
+		};
+	}
+
+	get_modified_message() {
+		return {
+			creation: this.frm.doc.modified,
+			content: get_user_message(
+				this.frm.doc.modified_by,
+				__("You last edited this"),
+				__("{0} last edited this", [get_user_link(this.frm.doc.modified_by)])
+			),
+		};
+	}
+
 	prepare_timeline_contents() {
+		this.timeline_items.push(this.get_creation_message());
+		this.timeline_items.push(this.get_modified_message());
 		this.timeline_items.push(...this.get_communication_timeline_contents());
-		this.timeline_items.push(...this.get_auto_messages_timeline_contents());
 		this.timeline_items.push(...this.get_comment_timeline_contents());
 		if (!this.only_communication) {
 			this.timeline_items.push(...this.get_view_timeline_contents());
@@ -172,33 +172,55 @@ class FormTimeline extends BaseTimeline {
 		}
 	}
 
-	get_user_link(user) {
-		const user_display_text = (dontmanage.user_info(user).fullname || "").bold();
-		return dontmanage.utils.get_form_link("User", user, true, user_display_text);
-	}
-
 	get_view_timeline_contents() {
 		let view_timeline_contents = [];
 		(this.doc_info.views || []).forEach((view) => {
-			const view_time = comment_when(view.creation);
-			let view_message = dontmanage.utils.is_current_user(view.owner)
-				? __("You viewed this {0}", [view_time], "Form timeline")
-				: __(
-						"{0} viewed this {1}",
-						[this.get_user_link(view.owner), view_time],
-						"Form timeline"
-				  );
-
 			view_timeline_contents.push({
 				creation: view.creation,
-				content: view_message,
-				hide_timestamp: true,
+				content: get_user_message(
+					view.owner,
+					__("You viewed this"),
+					__("{0} viewed this", [get_user_link(view.owner)])
+				),
 			});
 		});
+
 		return view_timeline_contents;
 	}
 
-	get_communication_timeline_contents() {
+	get_communication_timeline_contents(more_communications, more_automated_messages) {
+		let email_communications =
+			this.get_email_communication_timeline_contents(more_communications);
+		let automated_messages = this.get_auto_messages_timeline_contents(more_automated_messages);
+		let all_communications = email_communications.concat(automated_messages);
+
+		if (all_communications.length > 20) {
+			all_communications.pop();
+
+			if (more_communications || more_automated_messages) {
+				all_communications.forEach((message) => {
+					if (message.communication_type == "Automated Message") {
+						this.doc_info.automated_messages.push(message);
+					} else {
+						this.doc_info.communications.push(message);
+					}
+				});
+			}
+
+			let last_communication_time =
+				all_communications[all_communications.length - 1].creation;
+			let load_more_button = {
+				creation: last_communication_time,
+				content: __("Load More Communications", null, "Form timeline"),
+				name: "load-more",
+			};
+			all_communications.push(load_more_button);
+		}
+
+		return all_communications;
+	}
+
+	get_email_communication_timeline_contents(more_items) {
 		let communication_timeline_contents = [];
 		let icon_set = {
 			Email: "mail",
@@ -206,12 +228,13 @@ class FormTimeline extends BaseTimeline {
 			Meeting: "calendar",
 			Other: "dot-horizontal",
 		};
-		(this.doc_info.communications || []).forEach((communication) => {
+		let items = more_items ? more_items : this.doc_info.communications || [];
+		items.forEach((communication) => {
 			let medium = communication.communication_medium;
 			communication_timeline_contents.push({
 				icon: icon_set[medium],
 				icon_size: "sm",
-				creation: communication.creation,
+				creation: communication.communication_date,
 				is_card: true,
 				content: this.get_communication_timeline_content(communication),
 				doctype: "Communication",
@@ -219,7 +242,39 @@ class FormTimeline extends BaseTimeline {
 				name: communication.name,
 			});
 		});
+
 		return communication_timeline_contents;
+	}
+
+	async get_more_communication_timeline_contents() {
+		let more_items = [];
+		let start =
+			this.doc_info.communications.length + this.doc_info.automated_messages.length - 1;
+		let response = await dontmanage.call({
+			method: "dontmanage.desk.form.load.get_communications",
+			args: {
+				doctype: this.doc_info.doctype,
+				name: this.doc_info.name,
+				start: start,
+				limit: 21,
+			},
+		});
+		if (response.message) {
+			let email_communications = [];
+			let automated_messages = [];
+			response.message.forEach((message) => {
+				if (message.communication_type == "Automated Message") {
+					automated_messages.push(message);
+				} else {
+					email_communications.push(message);
+				}
+			});
+			more_items = this.get_communication_timeline_contents(
+				email_communications,
+				automated_messages
+			);
+		}
+		return more_items;
 	}
 
 	get_communication_timeline_content(doc, allow_reply = true) {
@@ -240,11 +295,11 @@ class FormTimeline extends BaseTimeline {
 
 	set_communication_doc_status(doc) {
 		let indicator_color = "red";
-		if (in_list(["Sent", "Clicked"], doc.delivery_status)) {
+		if (["Sent", "Clicked"].includes(doc.delivery_status)) {
 			indicator_color = "green";
-		} else if (doc.delivery_status === "Sending") {
+		} else if (["Sending", "Scheduled"].includes(doc.delivery_status)) {
 			indicator_color = "orange";
-		} else if (in_list(["Opened", "Read"], doc.delivery_status)) {
+		} else if (["Opened", "Read"].includes(doc.delivery_status)) {
 			indicator_color = "blue";
 		} else if (doc.delivery_status == "Error") {
 			indicator_color = "red";
@@ -253,9 +308,10 @@ class FormTimeline extends BaseTimeline {
 		doc._doc_status_indicator = indicator_color;
 	}
 
-	get_auto_messages_timeline_contents() {
+	get_auto_messages_timeline_contents(more_items) {
 		let auto_messages_timeline_contents = [];
-		(this.doc_info.automated_messages || []).forEach((message) => {
+		let items = more_items ? more_items : this.doc_info.automated_messages || [];
+		items.forEach((message) => {
 			auto_messages_timeline_contents.push({
 				icon: "notification",
 				icon_size: "sm",
@@ -279,7 +335,8 @@ class FormTimeline extends BaseTimeline {
 
 	get_comment_timeline_item(comment) {
 		return {
-			icon: "small-message",
+			icon: "es-line-chat-alt",
+			icon_size: "sm",
 			creation: comment.creation,
 			is_card: true,
 			doctype: "Comment",
@@ -337,7 +394,7 @@ class FormTimeline extends BaseTimeline {
 		(this.doc_info.info_logs || []).forEach((info_log) => {
 			info_timeline_contents.push({
 				creation: info_log.creation,
-				content: `${this.get_user_link(info_log.owner)} ${info_log.content}`,
+				content: `${get_user_link(info_log.owner)} ${info_log.content}`,
 			});
 		});
 		return info_timeline_contents;
@@ -345,45 +402,76 @@ class FormTimeline extends BaseTimeline {
 
 	get_attachment_timeline_contents() {
 		let attachment_timeline_contents = [];
+
 		(this.doc_info.attachment_logs || []).forEach((attachment_log) => {
-			let is_file_upload = attachment_log.comment_type == "Attachment";
+			const is_file_upload = attachment_log.comment_type == "Attachment";
+			const user_link = get_user_link(attachment_log.owner);
+			const filename = attachment_log.content;
+			const timeline_content = is_file_upload
+				? get_user_message(
+						attachment_log.owner,
+						__("You attached {0}", [filename], "Form timeline"),
+						__("{0} attached {1}", [user_link, filename], "Form timeline")
+				  )
+				: get_user_message(
+						attachment_log.owner,
+						__("You removed attachment {0}", [filename], "Form timeline"),
+						__("{0} removed attachment {1}", [user_link, filename], "Form timeline")
+				  );
+
 			attachment_timeline_contents.push({
-				icon: is_file_upload ? "upload" : "delete",
+				icon: is_file_upload ? "es-line-attachment" : "es-line-delete",
 				icon_size: "sm",
 				creation: attachment_log.creation,
-				content: `${this.get_user_link(attachment_log.owner)} ${attachment_log.content}`,
+				content: timeline_content,
 			});
 		});
+
 		return attachment_timeline_contents;
 	}
 
 	get_milestone_timeline_contents() {
 		let milestone_timeline_contents = [];
+
 		(this.doc_info.milestones || []).forEach((milestone_log) => {
+			const field = dontmanage.meta.get_label(this.frm.doctype, milestone_log.track_field);
+			const value = milestone_log.value.bold();
+			const user_link = get_user_link(milestone_log.owner);
+			const timeline_content = get_user_message(
+				milestone_log.owner,
+				__("You changed {0} to {1}", [field, value], "Form timeline"),
+				__("{0} changed {1} to {2}", [user_link, field, value], "Form timeline")
+			);
+
 			milestone_timeline_contents.push({
 				icon: "milestone",
 				creation: milestone_log.creation,
-				content: __("{0} changed {1} to {2}", [
-					this.get_user_link(milestone_log.owner),
-					dontmanage.meta.get_label(this.frm.doctype, milestone_log.track_field),
-					milestone_log.value.bold(),
-				]),
+				content: timeline_content,
 			});
 		});
+
 		return milestone_timeline_contents;
 	}
 
 	get_like_timeline_contents() {
 		let like_timeline_contents = [];
+
 		(this.doc_info.like_logs || []).forEach((like_log) => {
+			const timeline_content = get_user_message(
+				like_log.owner,
+				__("You Liked"),
+				__("{0} Liked", [get_user_link(like_log.owner)])
+			);
+
 			like_timeline_contents.push({
-				icon: "heart",
+				icon: "es-line-like",
 				icon_size: "sm",
 				creation: like_log.creation,
-				content: __("{0} Liked", [this.get_user_link(like_log.owner)]),
+				content: timeline_content,
 				title: "Like",
 			});
 		});
+
 		return like_timeline_contents;
 	}
 
@@ -394,7 +482,7 @@ class FormTimeline extends BaseTimeline {
 				icon: "branch",
 				icon_size: "sm",
 				creation: workflow_log.creation,
-				content: `${this.get_user_link(workflow_log.owner)} ${__(workflow_log.content)}`,
+				content: `${get_user_link(workflow_log.owner)} ${__(workflow_log.content)}`,
 				title: "Workflow",
 			});
 		});
@@ -462,11 +550,34 @@ class FormTimeline extends BaseTimeline {
 			title: communication_doc ? __("Reply") : null,
 			last_email: communication_doc,
 			subject: communication_doc && communication_doc.subject,
+			reply_all: reply_all,
 		};
 
-		if (communication_doc && reply_all) {
-			args.cc = communication_doc.cc;
-			args.bcc = communication_doc.bcc;
+		const email_accounts = dontmanage.boot.email_accounts
+			.filter((account) => {
+				return (
+					!["All Accounts", "Sent", "Spam", "Trash"].includes(account.email_account) &&
+					account.enable_outgoing
+				);
+			})
+			.map((e) => e.email_id);
+
+		if (communication_doc && args.is_a_reply) {
+			args.cc = "";
+			if (
+				email_accounts.includes(dontmanage.session.user_email) &&
+				communication_doc.sender != dontmanage.session.user_email
+			) {
+				// add recipients to cc if replying sender is different from last email
+				const recipients = communication_doc.recipients.split(",").map((r) => r.trim());
+				args.cc =
+					recipients.filter((r) => r != dontmanage.session.user_email).join(", ") + ", ";
+			}
+			if (reply_all) {
+				// if reply_all then add cc and bcc as well.
+				args.cc += cstr(communication_doc.cc);
+				args.bcc = cstr(communication_doc.bcc);
+			}
 		}
 
 		if (this.frm.doctype === "Communication") {
@@ -582,30 +693,26 @@ class FormTimeline extends BaseTimeline {
 	}
 
 	get_last_email(from_recipient) {
-		let last_email = null;
-		let communications = this.frm.get_docinfo().communications || [];
-		let email = this.get_recipient();
-		// REDESIGN TODO: What is this? Check again
-		communications
-			.sort((a, b) => (a.creation > b.creation ? -1 : 1))
-			.forEach((c) => {
-				if (
-					c.communication_type === "Communication" &&
-					c.communication_medium === "Email"
-				) {
-					if (from_recipient) {
-						if (c.sender.indexOf(email) !== -1) {
-							last_email = c;
-							return false;
-						}
-					} else {
-						last_email = c;
-						return false;
-					}
-				}
-			});
+		/**
+		 * Return the latest email communication.
+		 *
+		 * @param {boolean} from_recipient If true, only considers emails where current form's recipient is the sender.
+		 * @returns {object|null} The latest email communication, or null if no communication is found.
+		 */
 
-		return last_email;
+		const communications = this.frm.get_docinfo().communications || [];
+		const recipient = this.get_recipient();
+
+		const filtered_records = communications
+			.filter(
+				(record) =>
+					record.communication_type === "Communication" &&
+					record.communication_medium === "Email" &&
+					(!from_recipient || record.sender === recipient)
+			)
+			.sort((a, b) => b.creation - a.creation);
+
+		return filtered_records[0] || null;
 	}
 
 	delete_comment(comment_name) {

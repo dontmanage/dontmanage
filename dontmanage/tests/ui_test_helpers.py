@@ -1,5 +1,6 @@
 import dontmanage
 from dontmanage import _
+from dontmanage.permissions import AUTOMATIC_ROLES
 from dontmanage.utils import add_to_date, now
 
 UI_TEST_USER = "dontmanage@example.com"
@@ -77,9 +78,11 @@ def create_todo_records():
 
 
 @whitelist_for_tests
-def clear_notes():
+def prepare_webform_test():
 	for note in dontmanage.get_all("Note", pluck="name"):
 		dontmanage.delete_doc("Note", note, force=True)
+
+	dontmanage.delete_doc_if_exists("Web Form", "note")
 
 
 @whitelist_for_tests
@@ -239,9 +242,7 @@ def create_web_page(title, route, single_thread):
 	web_page = dontmanage.db.exists("Web Page", {"route": route})
 	if web_page:
 		return web_page
-	web_page = dontmanage.get_doc(
-		{"doctype": "Web Page", "title": title, "route": route, "published": True}
-	)
+	web_page = dontmanage.get_doc({"doctype": "Web Page", "title": title, "route": route, "published": True})
 	web_page.save()
 
 	web_page.append(
@@ -398,7 +399,6 @@ def insert_translations():
 
 @whitelist_for_tests
 def create_blog_post():
-
 	blog_category = dontmanage.get_doc(
 		{"name": "general", "doctype": "Blog Category", "title": "general"}
 	).insert(ignore_if_duplicate=True)
@@ -412,7 +412,7 @@ def create_blog_post():
 		}
 	).insert(ignore_if_duplicate=True)
 
-	doc = dontmanage.get_doc(
+	return dontmanage.get_doc(
 		{
 			"name": "test-blog-attachment-post",
 			"doctype": "Blog Post",
@@ -423,15 +423,16 @@ def create_blog_post():
 		},
 	).insert(ignore_if_duplicate=True)
 
-	return doc
 
+@whitelist_for_tests
+def create_test_user(username=None):
+	name = username or UI_TEST_USER
 
-def create_test_user():
-	if dontmanage.db.exists("User", UI_TEST_USER):
+	if dontmanage.db.exists("User", name):
 		return
 
 	user = dontmanage.new_doc("User")
-	user.email = UI_TEST_USER
+	user.email = name
 	user.first_name = "DontManage"
 	user.new_password = dontmanage.local.conf.admin_password
 	user.send_welcome_email = 0
@@ -441,10 +442,9 @@ def create_test_user():
 
 	user.reload()
 
-	blocked_roles = {"Administrator", "Guest", "All"}
 	all_roles = set(dontmanage.get_all("Role", pluck="name"))
 
-	for role in all_roles - blocked_roles:
+	for role in all_roles - set(AUTOMATIC_ROLES):
 		user.append("roles", {"role": role})
 
 	user.save()
@@ -452,7 +452,7 @@ def create_test_user():
 
 @whitelist_for_tests
 def setup_tree_doctype():
-	dontmanage.delete_doc_if_exists("DocType", "Custom Tree")
+	dontmanage.delete_doc_if_exists("DocType", "Custom Tree", force=True)
 
 	dontmanage.get_doc(
 		{
@@ -476,7 +476,7 @@ def setup_tree_doctype():
 
 @whitelist_for_tests
 def setup_image_doctype():
-	dontmanage.delete_doc_if_exists("DocType", "Custom Image")
+	dontmanage.delete_doc_if_exists("DocType", "Custom Image", force=True)
 
 	dontmanage.get_doc(
 		{
@@ -534,12 +534,6 @@ def setup_default_view(view, force_reroute=None):
 
 
 @whitelist_for_tests
-def create_note():
-	if not dontmanage.db.exists("Note", "Routing Test"):
-		dontmanage.get_doc({"doctype": "Note", "title": "Routing Test"}).insert()
-
-
-@whitelist_for_tests
 def create_kanban():
 	if not dontmanage.db.exists("Custom Field", "Note-kanban"):
 		dontmanage.get_doc(
@@ -583,7 +577,16 @@ def create_kanban():
 
 @whitelist_for_tests
 def create_todo(description):
-	dontmanage.get_doc({"doctype": "ToDo", "description": description}).insert()
+	return dontmanage.get_doc({"doctype": "ToDo", "description": description}).insert()
+
+
+@whitelist_for_tests
+def create_todo_with_attachment_limit(description):
+	from dontmanage.custom.doctype.property_setter.property_setter import make_property_setter
+
+	make_property_setter("ToDo", None, "max_attachments", 12, "int", for_doctype=True)
+
+	return dontmanage.get_doc({"doctype": "ToDo", "description": description}).insert()
 
 
 @whitelist_for_tests
@@ -622,3 +625,40 @@ def add_remove_role(action, user, role):
 		user_doc.remove_roles(role)
 	else:
 		user_doc.add_roles(role)
+
+
+@whitelist_for_tests
+def publish_realtime(
+	event=None,
+	message=None,
+	room=None,
+	user=None,
+	doctype=None,
+	docname=None,
+	task_id=None,
+):
+	dontmanage.publish_realtime(
+		event=event,
+		message=message,
+		room=room,
+		user=user,
+		doctype=doctype,
+		docname=docname,
+		task_id=task_id,
+	)
+
+
+@whitelist_for_tests
+def publish_progress(duration=3, title=None, doctype=None, docname=None):
+	# This should consider session user and only show it to current user.
+	dontmanage.enqueue(slow_task, duration=duration, title=title, doctype=doctype, docname=docname)
+
+
+def slow_task(duration, title, doctype, docname):
+	import time
+
+	steps = 10
+
+	for i in range(steps + 1):
+		dontmanage.publish_progress(i * 10, title=title, doctype=doctype, docname=docname)
+		time.sleep(int(duration) / steps)

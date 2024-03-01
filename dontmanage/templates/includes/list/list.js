@@ -6,7 +6,7 @@ dontmanage.ready(function() {
 		var btn = $(this);
 		var data = $.extend(dontmanage.utils.get_query_params(), {
 			doctype: "{{ doctype }}",
-			txt: "{{ txt or '' }}",
+			txt: "{{ (txt or '')|e }}",
 			limit_start: next_start,
 			pathname: location.pathname,
 		});

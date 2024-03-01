@@ -28,15 +28,11 @@ def drop_user_and_database(db_name, root_login=None, root_password=None):
 	if dontmanage.conf.db_type == "postgres":
 		import dontmanage.database.postgres.setup_db
 
-		return dontmanage.database.postgres.setup_db.drop_user_and_database(
-			db_name, root_login, root_password
-		)
+		return dontmanage.database.postgres.setup_db.drop_user_and_database(db_name, root_login, root_password)
 	else:
 		import dontmanage.database.mariadb.setup_db
 
-		return dontmanage.database.mariadb.setup_db.drop_user_and_database(
-			db_name, root_login, root_password
-		)
+		return dontmanage.database.mariadb.setup_db.drop_user_and_database(db_name, root_login, root_password)
 
 
 def get_db(host=None, user=None, password=None, port=None):
@@ -50,16 +46,3 @@ def get_db(host=None, user=None, password=None, port=None):
 		import dontmanage.database.mariadb.database
 
 		return dontmanage.database.mariadb.database.MariaDBDatabase(host, user, password, port=port)
-
-
-def setup_help_database(help_db_name):
-	import dontmanage
-
-	if dontmanage.conf.db_type == "postgres":
-		import dontmanage.database.postgres.setup_db
-
-		return dontmanage.database.postgres.setup_db.setup_help_database(help_db_name)
-	else:
-		import dontmanage.database.mariadb.setup_db
-
-		return dontmanage.database.mariadb.setup_db.setup_help_database(help_db_name)

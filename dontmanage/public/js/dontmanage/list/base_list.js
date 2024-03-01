@@ -44,7 +44,7 @@ dontmanage.views.BaseList = class BaseList {
 		this.user_settings = dontmanage.get_user_settings(this.doctype);
 
 		this.start = 0;
-		this.page_length = 20;
+		this.page_length = dontmanage.is_large_screen() ? 100 : 20;
 		this.data = [];
 		this.method = "dontmanage.desk.reportview.get";
 
@@ -53,8 +53,8 @@ dontmanage.views.BaseList = class BaseList {
 
 		this.fields = [];
 		this.filters = [];
-		this.sort_by = "modified";
-		this.sort_order = "desc";
+		this.sort_by = this.meta.sort_field || "modified";
+		this.sort_order = this.meta.sort_order || "desc";
 
 		// Setup buttons
 		this.primary_action = null;
@@ -132,7 +132,9 @@ dontmanage.views.BaseList = class BaseList {
 			dontmanage.meta.has_field(doctype, fieldname) ||
 			fieldname === "_seen";
 
-		if (!is_valid_field) {
+		let is_virtual = this.meta.fields.find((df) => df.fieldname == fieldname)?.is_virtual;
+
+		if (!is_valid_field || is_virtual) {
 			return;
 		}
 
@@ -180,7 +182,7 @@ dontmanage.views.BaseList = class BaseList {
 	}
 
 	set_title() {
-		this.page.set_title(this.page_title);
+		this.page.set_title(this.page_title, null, true, "", this.meta?.description);
 	}
 
 	setup_view_menu() {
@@ -230,9 +232,14 @@ dontmanage.views.BaseList = class BaseList {
 				$secondary_action.addClass("visible-xs");
 			}
 		} else {
-			this.refresh_button = this.page.add_action_icon("refresh", () => {
-				this.refresh();
-			});
+			this.refresh_button = this.page.add_action_icon(
+				"es-line-reload",
+				() => {
+					this.refresh();
+				},
+				"",
+				__("Reload List")
+			);
 		}
 	}
 
@@ -308,7 +315,9 @@ dontmanage.views.BaseList = class BaseList {
 		this.filter_area = new FilterArea(this);
 
 		if (this.filters && this.filters.length > 0) {
-			return this.filter_area.set(this.filters);
+			return this.filter_area.set(this.filters).catch(() => {
+				this.filter_area.clear(false);
+			});
 		}
 	}
 
@@ -384,20 +393,22 @@ dontmanage.views.BaseList = class BaseList {
 			.find(`.btn-paging[data-value="${this.page_length}"]`)
 			.addClass("btn-info");
 
-		this.$paging_area.on("click", ".btn-paging, .btn-more", (e) => {
+		this.$paging_area.on("click", ".btn-paging", (e) => {
 			const $this = $(e.currentTarget);
 
-			if ($this.is(".btn-paging")) {
-				// set active button
-				this.$paging_area.find(".btn-paging").removeClass("btn-info");
-				$this.addClass("btn-info");
+			// set active button
+			this.$paging_area.find(".btn-paging").removeClass("btn-info");
+			$this.addClass("btn-info");
 
-				this.start = 0;
-				this.page_length = this.selected_page_count = $this.data().value;
-			} else if ($this.is(".btn-more")) {
-				this.start = this.start + this.page_length;
-				this.page_length = this.selected_page_count || 20;
-			}
+			this.start = 0;
+			this.page_length = this.selected_page_count = $this.data().value;
+
+			this.refresh();
+		});
+
+		this.$paging_area.on("click", ".btn-more", (e) => {
+			this.start += this.page_length;
+			this.page_length = this.selected_page_count || 20;
 			this.refresh();
 		});
 	}
@@ -667,8 +678,7 @@ class FilterArea {
 
 		const fields_dict = this.list_view.page.fields_dict;
 
-		let out = filters.reduce((out, filter) => {
-			// eslint-disable-next-line
+		return filters.reduce((out, filter) => {
 			const [dt, fieldname, condition, value] = filter;
 			out.promise = out.promise || Promise.resolve();
 			out.non_standard_filters = out.non_standard_filters || [];
@@ -678,7 +688,9 @@ class FilterArea {
 			if (
 				fields_dict[fieldname] &&
 				(condition === "=" ||
-					(condition === "like" && fields_dict[fieldname]?.df?.fieldtype != "Link"))
+					(condition === "like" && fields_dict[fieldname]?.df?.fieldtype != "Link") ||
+					(condition === "descendants of (inclusive)" &&
+						fields_dict[fieldname]?.df?.fieldtype == "Link"))
 			) {
 				// standard filter
 				out.promise = out.promise.then(() => fields_dict[fieldname].set_value(value));
@@ -688,8 +700,6 @@ class FilterArea {
 			}
 			return out;
 		}, {});
-
-		return out;
 	}
 
 	remove_filters(filters) {
@@ -733,15 +743,17 @@ class FilterArea {
 		this.standard_filters_wrapper = this.list_view.page.page_form.find(
 			".standard-filter-section"
 		);
-		let fields = [
-			{
+		let fields = [];
+
+		if (!this.list_view.settings.hide_name_filter) {
+			fields.push({
 				fieldtype: "Data",
 				label: "ID",
 				condition: "like",
 				fieldname: "name",
 				onchange: () => this.refresh_list_view(),
-			},
-		];
+			});
+		}
 
 		if (this.list_view.custom_filter_configs) {
 			this.list_view.custom_filter_configs.forEach((config) => {
@@ -788,10 +800,17 @@ class FilterArea {
 							options = options.join("\n");
 						}
 					}
+					if (
+						df.fieldtype == "Link" &&
+						df.options &&
+						dontmanage.boot.treeviews.includes(df.options)
+					) {
+						condition = "descendants of (inclusive)";
+					}
 
 					return {
 						fieldtype: fieldtype,
-						label: __(df.label),
+						label: __(df.label, null, df.parent),
 						options: options,
 						fieldname: df.fieldname,
 						condition: condition,
@@ -818,7 +837,7 @@ class FilterArea {
 					value = "%" + value + "%";
 				}
 				filters.push([
-					this.list_view.doctype,
+					field.df.doctype || this.list_view.doctype,
 					field.df.fieldname,
 					field.df.condition || "=",
 					value,
@@ -831,22 +850,31 @@ class FilterArea {
 
 	make_filter_list() {
 		$(`<div class="filter-selector">
-			<button class="btn btn-default btn-sm filter-button">
-				<span class="filter-icon">
-					${dontmanage.utils.icon("filter")}
-				</span>
-				<span class="button-label hidden-xs">
+			<div class="btn-group">
+				<button class="btn btn-default btn-sm filter-button">
+					<span class="filter-icon">
+						${dontmanage.utils.icon("es-line-filter")}
+					</span>
+					<span class="button-label hidden-xs">
 					${__("Filter")}
-				<span>
-			</button>
+					<span>
+				</button>
+				<button class="btn btn-default btn-sm filter-x-button" title="${__("Clear all filters")}">
+					<span class="filter-icon">
+						${dontmanage.utils.icon("es-small-close")}
+					</span>
+				</button>
+			</div>
 		</div>`).appendTo(this.$filter_list_wrapper);
 
 		this.filter_button = this.$filter_list_wrapper.find(".filter-button");
+		this.filter_x_button = this.$filter_list_wrapper.find(".filter-x-button");
 		this.filter_list = new dontmanage.ui.FilterGroup({
 			base_list: this.list_view,
 			parent: this.$filter_list_wrapper,
 			doctype: this.list_view.doctype,
 			filter_button: this.filter_button,
+			filter_x_button: this.filter_x_button,
 			default_filters: [],
 			on_change: () => this.refresh_list_view(),
 		});

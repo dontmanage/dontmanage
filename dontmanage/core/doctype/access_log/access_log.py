@@ -8,7 +8,33 @@ from dontmanage.utils import cstr
 
 
 class AccessLog(Document):
-	pass
+	# begin: auto-generated types
+	# This code is auto-generated. Do not modify anything in this block.
+
+	from typing import TYPE_CHECKING
+
+	if TYPE_CHECKING:
+		from dontmanage.types import DF
+
+		columns: DF.HTMLEditor | None
+		export_from: DF.Data | None
+		file_type: DF.Data | None
+		filters: DF.Code | None
+		method: DF.Data | None
+		page: DF.HTMLEditor | None
+		reference_document: DF.Data | None
+		report_name: DF.Data | None
+		timestamp: DF.Datetime | None
+		user: DF.Link | None
+
+	# end: auto-generated types
+	@staticmethod
+	def clear_old_logs(days=30):
+		from dontmanage.query_builder import Interval
+		from dontmanage.query_builder.functions import Now
+
+		table = dontmanage.qb.DocType("Access Log")
+		dontmanage.db.delete(table, filters=(table.modified < (Now() - Interval(days=days))))
 
 
 @dontmanage.whitelist()
@@ -35,7 +61,11 @@ def make_access_log(
 
 
 @dontmanage.write_only()
-@retry(stop=stop_after_attempt(3), retry=retry_if_exception_type(dontmanage.DuplicateEntryError))
+@retry(
+	stop=stop_after_attempt(3),
+	retry=retry_if_exception_type(dontmanage.DuplicateEntryError),
+	reraise=True,
+)
 def _make_access_log(
 	doctype=None,
 	document=None,
@@ -49,7 +79,7 @@ def _make_access_log(
 	user = dontmanage.session.user
 	in_request = dontmanage.request and dontmanage.request.method == "GET"
 
-	dontmanage.get_doc(
+	access_log = dontmanage.get_doc(
 		{
 			"doctype": "Access Log",
 			"user": user,
@@ -62,7 +92,13 @@ def _make_access_log(
 			"filters": cstr(filters) or None,
 			"columns": columns,
 		}
-	).db_insert()
+	)
+
+	if dontmanage.flags.read_only:
+		access_log.deferred_insert()
+		return
+	else:
+		access_log.db_insert()
 
 	# `dontmanage.db.commit` added because insert doesnt `commit` when called in GET requests like `printview`
 	# dont commit in test mode. It must be tempting to put this block along with the in_request in the

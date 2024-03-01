@@ -38,6 +38,46 @@ communication_mapping = {
 
 
 class Event(Document):
+	# begin: auto-generated types
+	# This code is auto-generated. Do not modify anything in this block.
+
+	from typing import TYPE_CHECKING
+
+	if TYPE_CHECKING:
+		from dontmanage.desk.doctype.event_participants.event_participants import EventParticipants
+		from dontmanage.types import DF
+
+		add_video_conferencing: DF.Check
+		all_day: DF.Check
+		color: DF.Color | None
+		description: DF.TextEditor | None
+		ends_on: DF.Datetime | None
+		event_category: DF.Literal["Event", "Meeting", "Call", "Sent/Received Email", "Other"]
+		event_participants: DF.Table[EventParticipants]
+		event_type: DF.Literal["Private", "Public"]
+		friday: DF.Check
+		google_calendar: DF.Link | None
+		google_calendar_event_id: DF.Data | None
+		google_calendar_id: DF.Data | None
+		google_meet_link: DF.Data | None
+		monday: DF.Check
+		pulled_from_google_calendar: DF.Check
+		repeat_on: DF.Literal["", "Daily", "Weekly", "Monthly", "Yearly"]
+		repeat_this_event: DF.Check
+		repeat_till: DF.Date | None
+		saturday: DF.Check
+		send_reminder: DF.Check
+		sender: DF.Data | None
+		starts_on: DF.Datetime
+		status: DF.Literal["Open", "Completed", "Closed", "Cancelled"]
+		subject: DF.SmallText
+		sunday: DF.Check
+		sync_with_google_calendar: DF.Check
+		thursday: DF.Check
+		tuesday: DF.Check
+		wednesday: DF.Check
+
+	# end: auto-generated types
 	def validate(self):
 		if not self.starts_on:
 			self.starts_on = now_datetime()
@@ -48,9 +88,7 @@ class Event(Document):
 		if self.starts_on and self.ends_on:
 			self.validate_from_to_dates("starts_on", "ends_on")
 
-		if (
-			self.repeat_on == "Daily" and self.ends_on and getdate(self.starts_on) != getdate(self.ends_on)
-		):
+		if self.repeat_on == "Daily" and self.ends_on and getdate(self.starts_on) != getdate(self.ends_on):
 			dontmanage.throw(_("Daily Events should finish on the Same Day."))
 
 		if self.sync_with_google_calendar and not self.google_calendar:
@@ -82,9 +120,7 @@ class Event(Document):
 					["Communication Link", "link_doctype", "=", participant.reference_doctype],
 					["Communication Link", "link_name", "=", participant.reference_docname],
 				]
-				comms = dontmanage.get_all("Communication", filters=filters, fields=["name"])
-
-				if comms:
+				if comms := dontmanage.get_all("Communication", filters=filters, fields=["name"], distinct=True):
 					for comm in comms:
 						communication = dontmanage.get_doc("Communication", comm.name)
 						self.update_communication(participant, communication)
@@ -184,9 +220,7 @@ def delete_communication(event, reference_doctype, reference_docname):
 def get_permission_query_conditions(user):
 	if not user:
 		user = dontmanage.session.user
-	return """(`tabEvent`.`event_type`='Public' or `tabEvent`.`owner`={user})""".format(
-		user=dontmanage.db.escape(user),
-	)
+	return f"""(`tabEvent`.`event_type`='Public' or `tabEvent`.`owner`={dontmanage.db.escape(user)})"""
 
 
 def has_permission(doc, user):
@@ -228,7 +262,7 @@ def send_event_digest():
 
 
 @dontmanage.whitelist()
-def get_events(start, end, user=None, for_reminder=False, filters=None):
+def get_events(start, end, user=None, for_reminder=False, filters=None) -> list[dontmanage._dict]:
 	if not user:
 		user = dontmanage.session.user
 
@@ -321,9 +355,7 @@ def get_events(start, end, user=None, for_reminder=False, filters=None):
 		)
 
 		new_event.starts_on = date + " " + e.starts_on.split(" ")[1]
-		new_event.ends_on = new_event.ends_on = (
-			enddate + " " + e.ends_on.split(" ")[1] if e.ends_on else None
-		)
+		new_event.ends_on = new_event.ends_on = enddate + " " + e.ends_on.split(" ")[1] if e.ends_on else None
 
 		add_events.append(new_event)
 
@@ -442,12 +474,9 @@ def delete_events(ref_type, ref_name, delete_event=False):
 
 # Close events if ends_on or repeat_till is less than now_datetime
 def set_status_of_events():
-	events = dontmanage.get_list(
-		"Event", filters={"status": "Open"}, fields=["name", "ends_on", "repeat_till"]
-	)
+	events = dontmanage.get_list("Event", filters={"status": "Open"}, fields=["name", "ends_on", "repeat_till"])
 	for event in events:
 		if (event.ends_on and getdate(event.ends_on) < getdate(nowdate())) or (
 			event.repeat_till and getdate(event.repeat_till) < getdate(nowdate())
 		):
-
 			dontmanage.db.set_value("Event", event.name, "status", "Closed")

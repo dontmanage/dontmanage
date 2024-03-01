@@ -28,7 +28,7 @@
 				</div>
 			</div>
 			{% if dontmanage.form_dict.scope %}
-				<input type="text" hidden name="scope" value="{{ dontmanage.sanitize_html(dontmanage.form_dict.scope) }}">
+				<input type="text" hidden name="scope" value="{{ dontmanage.utils.escape_html(dontmanage.form_dict.scope) }}">
 			{% endif %}
 		</form>
 	</div>

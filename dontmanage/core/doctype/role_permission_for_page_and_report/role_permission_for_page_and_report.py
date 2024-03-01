@@ -2,11 +2,29 @@
 # License: MIT. See LICENSE
 
 import dontmanage
-from dontmanage.core.doctype.report.report import is_prepared_report_disabled
+from dontmanage.core.doctype.report.report import is_prepared_report_enabled
 from dontmanage.model.document import Document
+from dontmanage.permissions import ALL_USER_ROLE
+from dontmanage.utils import cint
 
 
 class RolePermissionforPageandReport(Document):
+	# begin: auto-generated types
+	# This code is auto-generated. Do not modify anything in this block.
+
+	from typing import TYPE_CHECKING
+
+	if TYPE_CHECKING:
+		from dontmanage.core.doctype.has_role.has_role import HasRole
+		from dontmanage.types import DF
+
+		enable_prepared_report: DF.Check
+		page: DF.Link | None
+		report: DF.Link | None
+		roles: DF.Table[HasRole]
+		set_role_for: DF.Literal["", "Page", "Report"]
+
+	# end: auto-generated types
 	@dontmanage.whitelist()
 	def set_report_page_data(self):
 		self.set_custom_roles()
@@ -27,7 +45,7 @@ class RolePermissionforPageandReport(Document):
 
 	def check_prepared_report_disabled(self):
 		if self.report:
-			self.disable_prepared_report = is_prepared_report_disabled(self.report)
+			self.enable_prepared_report = is_prepared_report_enabled(self.report)
 
 	def get_standard_roles(self):
 		doctype = self.set_role_for
@@ -67,9 +85,9 @@ class RolePermissionforPageandReport(Document):
 		if self.report:
 			# intentionally written update query in dontmanage.db.sql instead of dontmanage.db.set_value
 			dontmanage.db.sql(
-				""" update `tabReport` set disable_prepared_report = %s
+				"""update `tabReport` set prepared_report = %s
 				where name = %s""",
-				(self.disable_prepared_report, self.report),
+				(self.enable_prepared_report, self.report),
 			)
 
 	def get_args(self, row=None):
@@ -79,11 +97,11 @@ class RolePermissionforPageandReport(Document):
 		return {check_for_field: name}
 
 	def get_roles(self):
-		roles = []
-		for data in self.roles:
-			if data.role != "All":
-				roles.append({"role": data.role, "parenttype": "Custom Role"})
-		return roles
+		return [
+			{"role": data.role, "parenttype": "Custom Role"}
+			for data in self.roles
+			if data.role != ALL_USER_ROLE
+		]
 
 	def update_status(self):
 		return dontmanage.render_template

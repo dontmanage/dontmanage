@@ -16,38 +16,27 @@ dontmanage.ui.form.on("Bulk Update", {
 			if (!frm.doc.update_value) {
 				dontmanage.throw(__('Field "value" is mandatory. Please specify value to be updated'));
 			} else {
-				dontmanage
-					.call({
-						method: "dontmanage.desk.doctype.bulk_update.bulk_update.update",
-						args: {
-							doctype: frm.doc.document_type,
-							field: frm.doc.field,
-							value: frm.doc.update_value,
-							condition: frm.doc.condition,
-							limit: frm.doc.limit,
-						},
-					})
-					.then((r) => {
-						let failed = r.message;
-						if (!failed) failed = [];
+				frm.call("bulk_update").then((r) => {
+					let failed = r.message;
+					if (!failed) failed = [];
 
-						if (failed.length && !r._server_messages) {
-							dontmanage.throw(
-								__("Cannot update {0}", [
-									failed.map((f) => (f.bold ? f.bold() : f)).join(", "),
-								])
-							);
-						} else {
-							dontmanage.msgprint({
-								title: __("Success"),
-								message: __("Updated Successfully"),
-								indicator: "green",
-							});
-						}
+					if (failed.length && !r._server_messages) {
+						dontmanage.throw(
+							__("Cannot update {0}", [
+								failed.map((f) => (f.bold ? f.bold() : f)).join(", "),
+							])
+						);
+					} else {
+						dontmanage.msgprint({
+							title: __("Success"),
+							message: __("Updated Successfully"),
+							indicator: "green",
+						});
+					}
 
-						dontmanage.hide_progress();
-						frm.save();
-					});
+					dontmanage.hide_progress();
+					frm.save();
+				});
 			}
 		});
 	},

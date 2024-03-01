@@ -17,10 +17,11 @@ from dontmanage.website.utils import can_cache, get_home_page
 
 
 class PathResolver:
-	__slots__ = ("path",)
+	__slots__ = ("path", "http_status_code")
 
-	def __init__(self, path):
+	def __init__(self, path, http_status_code=None):
 		self.path = path.strip("/ ")
+		self.http_status_code = http_status_code
 
 	def resolve(self):
 		"""Returns endpoint and a renderer instance that can render the endpoint"""
@@ -29,7 +30,7 @@ class PathResolver:
 			request = dontmanage.local.request or request
 
 		# check if the request url is in 404 list
-		if request.url and can_cache() and dontmanage.cache().hget("website_404", request.url):
+		if request.url and can_cache() and dontmanage.cache.hget("website_404", request.url):
 			return self.path, NotFoundPage(self.path)
 
 		try:
@@ -37,25 +38,29 @@ class PathResolver:
 		except dontmanage.Redirect:
 			return dontmanage.flags.redirect_location, RedirectPage(self.path)
 
-		endpoint = resolve_path(self.path)
+		if dontmanage.get_hooks("website_path_resolver"):
+			for handler in dontmanage.get_hooks("website_path_resolver"):
+				endpoint = dontmanage.get_attr(handler)(self.path)
+		else:
+			endpoint = resolve_path(self.path)
 
 		# WARN: Hardcoded for better performance
 		if endpoint == "app":
-			return endpoint, TemplatePage(endpoint, 200)
+			return endpoint, TemplatePage(endpoint, self.http_status_code)
 
 		custom_renderers = self.get_custom_page_renderers()
-		renderers = custom_renderers + [
+		renderers = [
+			*custom_renderers,
 			StaticPage,
 			WebFormPage,
 			DocumentPage,
 			TemplatePage,
 			ListPage,
 			PrintPage,
-			NotFoundPage,
 		]
 
 		for renderer in renderers:
-			renderer_instance = renderer(endpoint, 200)
+			renderer_instance = renderer(endpoint, self.http_status_code)
 			if renderer_instance.can_render():
 				return endpoint, renderer_instance
 
@@ -92,17 +97,17 @@ def resolve_redirect(path, query_string=None):
 
 	Example:
 
-	        website_redirect = [
-	                # absolute location
-	                {"source": "/from", "target": "https://mysite/from"},
+	                website_redirect = [
+	                                # absolute location
+	                                {"source": "/from", "target": "https://mysite/from"},
 
-	                # relative location
-	                {"source": "/from", "target": "/main"},
+	                                # relative location
+	                                {"source": "/from", "target": "/main"},
 
-	                # use regex
-	                {"source": r"/from/(.*)", "target": r"/main/\1"}
-	                # use r as a string prefix if you use regex groups or want to escape any string literal
-	        ]
+	                                # use regex
+	                                {"source": r"/from/(.*)", "target": r"/main/\1"}
+	                                # use r as a string prefix if you use regex groups or want to escape any string literal
+	                ]
 	"""
 	redirects = dontmanage.get_hooks("website_redirects")
 	redirects += dontmanage.get_all("Website Route Redirect", ["source", "target"], order_by=None)
@@ -110,7 +115,7 @@ def resolve_redirect(path, query_string=None):
 	if not redirects:
 		return
 
-	redirect_to = dontmanage.cache().hget("website_redirects", path)
+	redirect_to = dontmanage.cache.hget("website_redirects", path)
 
 	if redirect_to:
 		dontmanage.flags.redirect_location = redirect_to
@@ -122,10 +127,15 @@ def resolve_redirect(path, query_string=None):
 		if rule.get("match_with_query_string"):
 			path_to_match = path + "?" + dontmanage.safe_decode(query_string)
 
-		if re.match(pattern, path_to_match):
+		try:
+			match = re.match(pattern, path_to_match)
+		except re.error:
+			dontmanage.log_error("Broken Redirect: " + pattern)
+
+		if match:
 			redirect_to = re.sub(pattern, rule["target"], path_to_match)
 			dontmanage.flags.redirect_location = redirect_to
-			dontmanage.cache().hset("website_redirects", path_to_match, redirect_to)
+			dontmanage.cache.hset("website_redirects", path_to_match, redirect_to)
 			raise dontmanage.Redirect
 
 
@@ -150,8 +160,7 @@ def resolve_path(path):
 def resolve_from_map(path):
 	"""transform dynamic route to a static one from hooks and route defined in doctype"""
 	rules = [
-		Rule(r["from_route"], endpoint=r["to_route"], defaults=r.get("defaults"))
-		for r in get_website_rules()
+		Rule(r["from_route"], endpoint=r["to_route"], defaults=r.get("defaults")) for r in get_website_rules()
 	]
 
 	return evaluate_dynamic_routes(rules, path) or path
@@ -172,4 +181,4 @@ def get_website_rules():
 		# dont cache in development
 		return _get()
 
-	return dontmanage.cache().get_value("website_route_rules", _get)
+	return dontmanage.cache.get_value("website_route_rules", _get)

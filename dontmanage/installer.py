@@ -16,6 +16,7 @@ import dontmanage
 from dontmanage.defaults import _clear_cache
 from dontmanage.utils import cint, is_git_url
 from dontmanage.utils.dashboard import sync_dashboards
+from dontmanage.utils.synchronization import filelock
 
 
 def _is_scheduler_enabled() -> bool:
@@ -65,7 +66,12 @@ def _new_site(
 	if not db_name:
 		import hashlib
 
-		db_name = "_" + hashlib.sha1(os.path.realpath(dontmanage.get_site_path()).encode()).hexdigest()[:16]
+		db_name = (
+			"_"
+			+ hashlib.sha1(
+				os.path.realpath(dontmanage.get_site_path()).encode(), usedforsecurity=False
+			).hexdigest()[:16]
+		)
 
 	try:
 		# enable scheduler post install?
@@ -75,40 +81,36 @@ def _new_site(
 
 	make_site_dirs()
 
-	installing = touch_file(get_site_path("locks", "installing.lock"))
+	with filelock("bench_new_site", timeout=1):
+		install_db(
+			root_login=db_root_username,
+			root_password=db_root_password,
+			db_name=db_name,
+			admin_password=admin_password,
+			verbose=verbose,
+			source_sql=source_sql,
+			force=force,
+			reinstall=reinstall,
+			db_password=db_password,
+			db_type=db_type,
+			db_host=db_host,
+			db_port=db_port,
+			no_mariadb_socket=no_mariadb_socket,
+		)
 
-	install_db(
-		root_login=db_root_username,
-		root_password=db_root_password,
-		db_name=db_name,
-		admin_password=admin_password,
-		verbose=verbose,
-		source_sql=source_sql,
-		force=force,
-		reinstall=reinstall,
-		db_password=db_password,
-		db_type=db_type,
-		db_host=db_host,
-		db_port=db_port,
-		no_mariadb_socket=no_mariadb_socket,
-	)
-	apps_to_install = (
-		["dontmanage"] + (dontmanage.conf.get("install_apps") or []) + (list(install_apps) or [])
-	)
+		apps_to_install = ["dontmanage"] + (dontmanage.conf.get("install_apps") or []) + (list(install_apps) or [])
 
-	for app in apps_to_install:
-		# NOTE: not using force here for 2 reasons:
-		# 	1. It's not really needed here as we've freshly installed a new db
-		# 	2. If someone uses a sql file to do restore and that file already had
-		# 		installed_apps then it might cause problems as that sql file can be of any previous version(s)
-		# 		which might be incompatible with the current version and using force might cause problems.
-		# 		Example: the DocType DocType might not have `migration_hash` column which will cause failure in the restore.
-		install_app(app, verbose=verbose, set_as_patched=not source_sql, force=False)
+		for app in apps_to_install:
+			# NOTE: not using force here for 2 reasons:
+			# 	1. It's not really needed here as we've freshly installed a new db
+			# 	2. If someone uses a sql file to do restore and that file already had
+			# 		installed_apps then it might cause problems as that sql file can be of any previous version(s)
+			# 		which might be incompatible with the current version and using force might cause problems.
+			# 		Example: the DocType DocType might not have `migration_hash` column which will cause failure in the restore.
+			install_app(app, verbose=verbose, set_as_patched=not source_sql, force=False)
 
-	os.remove(installing)
-
-	scheduler.toggle_scheduler(enable_scheduler)
-	dontmanage.db.commit()
+		scheduler.toggle_scheduler(enable_scheduler)
+		dontmanage.db.commit()
 
 	scheduler_status = "disabled" if dontmanage.utils.scheduler.is_scheduler_disabled() else "enabled"
 	print("*** Scheduler is", scheduler_status, "***")
@@ -134,7 +136,7 @@ def install_db(
 	from dontmanage.database import setup_database
 
 	if not db_type:
-		db_type = dontmanage.conf.db_type or "mariadb"
+		db_type = dontmanage.conf.db_type
 
 	if not root_login and db_type == "mariadb":
 		root_login = "root"
@@ -212,7 +214,7 @@ def fetch_details_from_tag(_tag: str) -> tuple[str, str, str]:
 	try:
 		repo, tag = app_tag
 	except ValueError:
-		repo, tag = app_tag + [None]
+		repo, tag = [*app_tag, None]
 
 	try:
 		org, repo = org_repo
@@ -266,7 +268,7 @@ def install_app(name, verbose=False, set_as_patched=True, force=False):
 	if app_hooks.required_apps:
 		for app in app_hooks.required_apps:
 			required_app = parse_app_name(app)
-			install_app(required_app, verbose=verbose, force=force)
+			install_app(required_app, verbose=verbose)
 
 	dontmanage.flags.in_install = name
 	dontmanage.clear_cache()
@@ -288,6 +290,9 @@ def install_app(name, verbose=False, set_as_patched=True, force=False):
 		if out is False:
 			return
 
+	for fn in dontmanage.get_hooks("before_app_install"):
+		dontmanage.get_attr(fn)(name)
+
 	if name != "dontmanage":
 		add_module_defs(name, ignore_if_duplicate=force)
 
@@ -302,6 +307,9 @@ def install_app(name, verbose=False, set_as_patched=True, force=False):
 
 	for after_install in app_hooks.after_install or []:
 		dontmanage.get_attr(after_install)()
+
+	for fn in dontmanage.get_hooks("after_app_install"):
+		dontmanage.get_attr(fn)(name)
 
 	sync_jobs()
 	sync_fixtures(name)
@@ -370,6 +378,9 @@ def remove_app(app_name, dry_run=False, yes=False, no_backup=False, force=False)
 	for before_uninstall in app_hooks.before_uninstall or []:
 		dontmanage.get_attr(before_uninstall)()
 
+	for fn in dontmanage.get_hooks("before_app_uninstall"):
+		dontmanage.get_attr(fn)(app_name)
+
 	modules = dontmanage.get_all("Module Def", filters={"app_name": app_name}, pluck="name")
 
 	drop_doctypes = _delete_modules(modules, dry_run=dry_run)
@@ -382,6 +393,9 @@ def remove_app(app_name, dry_run=False, yes=False, no_backup=False, force=False)
 
 	for after_uninstall in app_hooks.after_uninstall or []:
 		dontmanage.get_attr(after_uninstall)()
+
+	for fn in dontmanage.get_hooks("after_app_uninstall"):
+		dontmanage.get_attr(fn)(app_name)
 
 	click.secho(f"Uninstalled App {app_name} from Site {site}", fg="green")
 	dontmanage.flags.in_uninstall = False
@@ -406,7 +420,7 @@ def _delete_modules(modules: list[str], dry_run: bool) -> list[str]:
 
 			if not dry_run:
 				if doctype.issingle:
-					dontmanage.delete_doc("DocType", doctype.name, ignore_on_trash=True)
+					dontmanage.delete_doc("DocType", doctype.name, ignore_on_trash=True, force=True)
 				else:
 					drop_doctypes.append(doctype.name)
 
@@ -419,10 +433,7 @@ def _delete_modules(modules: list[str], dry_run: bool) -> list[str]:
 	return drop_doctypes
 
 
-def _delete_linked_documents(
-	module_name: str, doctype_linkfield_map: dict[str, str], dry_run: bool
-) -> None:
-
+def _delete_linked_documents(module_name: str, doctype_linkfield_map: dict[str, str], dry_run: bool) -> None:
 	"""Deleted all records linked with module def"""
 	for doctype, fieldname in doctype_linkfield_map.items():
 		for record in dontmanage.get_all(doctype, filters={fieldname: module_name}, pluck="name"):
@@ -464,7 +475,7 @@ def _delete_doctypes(doctypes: list[str], dry_run: bool) -> None:
 	for doctype in set(doctypes):
 		print(f"* dropping Table for '{doctype}'...")
 		if not dry_run:
-			dontmanage.delete_doc("DocType", doctype, ignore_on_trash=True)
+			dontmanage.delete_doc("DocType", doctype, ignore_on_trash=True, force=True)
 			dontmanage.db.sql_ddl(f"DROP TABLE IF EXISTS `tab{doctype}`")
 
 
@@ -505,13 +516,9 @@ def init_singles():
 			continue
 
 
-def make_conf(
-	db_name=None, db_password=None, site_config=None, db_type=None, db_host=None, db_port=None
-):
+def make_conf(db_name=None, db_password=None, site_config=None, db_type=None, db_host=None, db_port=None):
 	site = dontmanage.local.site
-	make_site_config(
-		db_name, db_password, site_config, db_type=db_type, db_host=db_host, db_port=db_port
-	)
+	make_site_config(db_name, db_password, site_config, db_type=db_type, db_host=db_host, db_port=db_port)
 	sites_path = dontmanage.local.sites_path
 	dontmanage.destroy()
 	dontmanage.init(site, sites_path=sites_path)
@@ -606,7 +613,6 @@ def make_site_dirs():
 		os.path.join("public", "files"),
 		os.path.join("private", "backups"),
 		os.path.join("private", "files"),
-		"error-snapshots",
 		"locks",
 		"logs",
 	]:
@@ -716,8 +722,8 @@ def _guess_mariadb_version() -> tuple[int] | None:
 	# in non-interactive mode.
 	# Use db.sql("select version()") instead if connection is available.
 	with suppress(Exception):
-		mysql = which("mysql")
-		version_output = subprocess.getoutput(f"{mysql} --version")
+		mariadb = which("mariadb")
+		version_output = subprocess.getoutput(f"{mariadb} --version")
 		version_regex = r"(?P<version>\d+\.\d+\.\d+)-MariaDB"
 
 		version = re.search(version_regex, version_output).group("version")
@@ -762,45 +768,26 @@ def is_downgrade(sql_file_path, verbose=False):
 
 	# This function is only tested with mariadb
 	# TODO: Add postgres support
-	if dontmanage.conf.db_type not in (None, "mariadb"):
+	if dontmanage.conf.db_type != "mariadb":
 		return False
 
 	from semantic_version import Version
 
-	head = "INSERT INTO `tabInstalled Application` VALUES"
-
 	with open(sql_file_path) as f:
-		for line in f:
-			if head in line:
-				# 'line' (str) format: ('2056588823','2020-05-11 18:21:31.488367','2020-06-12 11:49:31.079506','Administrator','Administrator',0,'Installed Applications','installed_applications','Installed Applications',1,'dontmanage','v10.1.71-74 (3c50d5e) (v10.x.x)','v10.x.x'),('855c640b8e','2020-05-11 18:21:31.488367','2020-06-12 11:49:31.079506','Administrator','Administrator',0,'Installed Applications','installed_applications','Installed Applications',2,'your_custom_app','0.0.1','master')
-				line = line.strip().lstrip(head).rstrip(";").strip()
-				app_rows = dontmanage.safe_eval(line)
-				# check if iterable consists of tuples before trying to transform
-				apps_list = (
-					app_rows
-					if all(isinstance(app_row, (tuple, list, set)) for app_row in app_rows)
-					else (app_rows,)
-				)
-				# 'all_apps' (list) format: [('dontmanage', '12.x.x-develop ()', 'develop'), ('your_custom_app', '0.0.1', 'master')]
-				all_apps = [x[-3:] for x in apps_list]
+		header = f.readline()
+		# Example first line:
+		# -- Backup generated by DontManage 15.1.0 on branch fix-backup-restore
 
-				for app in all_apps:
-					app_name = app[0]
-					app_version = app[1].split(" ", 1)[0]
+		if match := re.search(r"DontManage (\d+\.\d+\.\d+)", header):
+			backup_version = Version(match.group(1))
+			current_version = Version(dontmanage.__version__)
 
-					if app_name == "dontmanage":
-						try:
-							current_version = Version(dontmanage.__version__)
-							backup_version = Version(app_version[1:] if app_version[0] == "v" else app_version)
-						except ValueError:
-							return False
+			downgrade = backup_version > current_version
 
-						downgrade = backup_version > current_version
+			if verbose and downgrade:
+				print(f"Your site will be downgraded from DontManage {backup_version} to {current_version}")
 
-						if verbose and downgrade:
-							print(f"Your site will be downgraded from DontManage {backup_version} to {current_version}")
-
-						return downgrade
+			return downgrade
 
 
 def is_partial(sql_file_path):
@@ -814,7 +801,7 @@ def is_partial(sql_file_path):
 def partial_restore(sql_file_path, verbose=False):
 	sql_file = extract_sql_from_archive(sql_file_path)
 
-	if dontmanage.conf.db_type in (None, "mariadb"):
+	if dontmanage.conf.db_type == "mariadb":
 		from dontmanage.database.mariadb.setup_db import import_db_from_sql
 	elif dontmanage.conf.db_type == "postgres":
 		import warnings
@@ -826,7 +813,7 @@ def partial_restore(sql_file_path, verbose=False):
 			" partial restore operation for PostreSQL databases",
 			fg="yellow",
 		)
-		warnings.warn(warn)
+		warnings.warn(warn, stacklevel=1)
 
 	import_db_from_sql(source_sql=sql_file, verbose=verbose)
 

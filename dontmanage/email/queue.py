@@ -3,10 +3,14 @@
 
 import dontmanage
 from dontmanage import _, msgprint
-from dontmanage.query_builder import DocType, Interval
-from dontmanage.query_builder.functions import Now
-from dontmanage.utils import cint, get_url, now_datetime
+from dontmanage.utils import cint, cstr, get_url, now_datetime
+from dontmanage.utils.data import getdate
 from dontmanage.utils.verified_command import get_signed_params, verify_request
+
+# After this percent of failures in every batch, entire batch is aborted.
+# This usually indicates a systemic failure so we shouldn't keep trying to send emails.
+EMAIL_QUEUE_BATCH_FAILURE_THRESHOLD_PERCENT = 0.33
+EMAIL_QUEUE_BATCH_FAILURE_THRESHOLD_COUNT = 10
 
 
 def get_emails_sent_this_month(email_account=None):
@@ -16,26 +20,17 @@ def get_emails_sent_this_month(email_account=None):
 
 	if email_account=None, email account filter is not applied while counting
 	"""
-	q = """
-		SELECT
-			COUNT(*)
-		FROM
-			`tabEmail Queue`
-		WHERE
-			`status`='Sent'
-			AND
-			EXTRACT(YEAR_MONTH FROM `creation`) = EXTRACT(YEAR_MONTH FROM NOW())
-	"""
+	today = getdate()
+	month_start = today.replace(day=1)
 
-	q_args = {}
-	if email_account is not None:
-		if email_account:
-			q += " AND email_account = %(email_account)s"
-			q_args["email_account"] = email_account
-		else:
-			q += " AND (email_account is null OR email_account='')"
+	filters = {
+		"status": "Sent",
+		"creation": [">=", str(month_start)],
+	}
+	if email_account:
+		filters["email_account"] = email_account
 
-	return dontmanage.db.sql(q, q_args)[0][0]
+	return dontmanage.db.count("Email Queue", filters=filters)
 
 
 def get_emails_sent_today(email_account=None):
@@ -67,9 +62,7 @@ def get_emails_sent_today(email_account=None):
 	return dontmanage.db.sql(q, q_args)[0][0]
 
 
-def get_unsubscribe_message(
-	unsubscribe_message: str, expose_recipients: str
-) -> "dontmanage._dict[str, str]":
+def get_unsubscribe_message(unsubscribe_message: str, expose_recipients: str) -> "dontmanage._dict[str, str]":
 	unsubscribe_message = unsubscribe_message or _("Unsubscribe")
 	unsubscribe_link = f'<a href="<!--unsubscribe_url-->" target="_blank">{unsubscribe_message}</a>'
 	unsubscribe_html = _("{0} to stop receiving emails of this type").format(unsubscribe_link)
@@ -87,21 +80,14 @@ def get_unsubscribe_message(
 	return dontmanage._dict(html=html, text=text)
 
 
-def get_unsubcribed_url(
-	reference_doctype, reference_name, email, unsubscribe_method, unsubscribe_params
-):
+def get_unsubcribed_url(reference_doctype, reference_name, email, unsubscribe_method, unsubscribe_params):
 	params = {
-		"email": email.encode("utf-8"),
-		"doctype": reference_doctype.encode("utf-8"),
-		"name": reference_name.encode("utf-8"),
+		"email": cstr(email),
+		"doctype": cstr(reference_doctype),
+		"name": cstr(reference_name),
 	}
 	if unsubscribe_params:
 		params.update(unsubscribe_params)
-
-	query_string = get_signed_params(params)
-
-	# for test
-	dontmanage.local.flags.signed_query_string = query_string
 
 	return get_url(unsubscribe_method + "?" + get_signed_params(params))
 
@@ -139,45 +125,46 @@ def return_unsubscribed_page(email, doctype, name):
 	)
 
 
-def flush(from_test=False):
-	"""flush email queue, every time: called from scheduler"""
-	from dontmanage.email.doctype.email_queue.email_queue import send_mail
-	from dontmanage.utils.background_jobs import get_jobs
+def flush():
+	"""flush email queue, every time: called from scheduler.
+
+	This should not be called outside of background jobs.
+	"""
+	from dontmanage.email.doctype.email_queue.email_queue import EmailQueue
 
 	# To avoid running jobs inside unit tests
 	if dontmanage.are_emails_muted():
 		msgprint(_("Emails are muted"))
-		from_test = True
 
 	if cint(dontmanage.db.get_default("suspend_email_queue")) == 1:
 		return
 
-	try:
-		queued_jobs = set(get_jobs(site=dontmanage.local.site, key="job_name")[dontmanage.local.site])
-	except Exception:
-		queued_jobs = set()
+	email_queue_batch = get_queue()
+	if not email_queue_batch:
+		return
 
-	for row in get_queue():
+	failed_email_queues = []
+	for row in email_queue_batch:
 		try:
-			job_name = f"email_queue_sendmail_{row.name}"
-			if job_name not in queued_jobs:
-				dontmanage.enqueue(
-					method=send_mail,
-					email_queue_name=row.name,
-					is_background_task=not from_test,
-					now=from_test,
-					job_name=job_name,
-					queue="short",
-				)
-			else:
-				dontmanage.logger().debug(f"Not queueing job {job_name} because it is in queue already")
+			email_queue: EmailQueue = dontmanage.get_doc("Email Queue", row.name)
+			email_queue.send()
 		except Exception:
 			dontmanage.get_doc("Email Queue", row.name).log_error()
+			failed_email_queues.append(row.name)
+
+			if (
+				len(failed_email_queues) / len(email_queue_batch)
+				> EMAIL_QUEUE_BATCH_FAILURE_THRESHOLD_PERCENT
+				and len(failed_email_queues) > EMAIL_QUEUE_BATCH_FAILURE_THRESHOLD_COUNT
+			):
+				dontmanage.throw(_("Email Queue flushing aborted due to too many failures."))
 
 
 def get_queue():
+	batch_size = cint(dontmanage.conf.email_queue_batch_size) or 500
+
 	return dontmanage.db.sql(
-		"""select
+		f"""select
 			name, sender
 		from
 			`tabEmail Queue`
@@ -185,24 +172,8 @@ def get_queue():
 			(status='Not Sent' or status='Partially Sent') and
 			(send_after is null or send_after < %(now)s)
 		order
-			by priority desc, creation asc
-		limit 500""",
+			by priority desc, retry asc, creation asc
+		limit {batch_size}""",
 		{"now": now_datetime()},
 		as_dict=True,
-	)
-
-
-def set_expiry_for_email_queue():
-	"""Mark emails as expire that has not sent for 7 days.
-	Called daily via scheduler.
-	"""
-
-	dontmanage.db.sql(
-		"""
-		UPDATE `tabEmail Queue`
-		SET `status`='Expired'
-		WHERE `modified` < (NOW() - INTERVAL '7' DAY)
-		AND `status`='Not Sent'
-		AND (`send_after` IS NULL OR `send_after` < %(now)s)""",
-		{"now": now_datetime()},
 	)

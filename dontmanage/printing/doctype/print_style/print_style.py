@@ -6,13 +6,27 @@ from dontmanage.model.document import Document
 
 
 class PrintStyle(Document):
+	# begin: auto-generated types
+	# This code is auto-generated. Do not modify anything in this block.
+
+	from typing import TYPE_CHECKING
+
+	if TYPE_CHECKING:
+		from dontmanage.types import DF
+
+		css: DF.Code
+		disabled: DF.Check
+		preview: DF.AttachImage | None
+		print_style_name: DF.Data
+		standard: DF.Check
+
+	# end: auto-generated types
 	def validate(self):
 		if (
 			self.standard == 1
 			and not dontmanage.local.conf.get("developer_mode")
 			and not (dontmanage.flags.in_import or dontmanage.flags.in_test)
 		):
-
 			dontmanage.throw(dontmanage._("Standard Print Style cannot be changed. Please duplicate to edit."))
 
 	def on_update(self):

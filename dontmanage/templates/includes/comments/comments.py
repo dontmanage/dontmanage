@@ -18,10 +18,17 @@ EMAIL_PATTERN = re.compile(r"(^[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+$)"
 @dontmanage.whitelist(allow_guest=True)
 @rate_limit(key="reference_name", limit=get_comment_limit, seconds=60 * 60)
 def add_comment(comment, comment_email, comment_by, reference_doctype, reference_name, route):
-	doc = dontmanage.get_doc(reference_doctype, reference_name)
+	if dontmanage.session.user == "Guest":
+		if reference_doctype not in ("Blog Post", "Web Page"):
+			return
 
-	if dontmanage.session.user == "Guest" and doc.doctype not in ["Blog Post", "Web Page"]:
-		return
+		if reference_doctype == "Blog Post" and not dontmanage.db.get_single_value(
+			"Blog Settings", "allow_guest_to_comment"
+		):
+			return
+
+		if dontmanage.db.exists("User", comment_email):
+			dontmanage.throw(_("Please login to post a comment."))
 
 	if not comment.strip():
 		dontmanage.msgprint(_("The comment cannot be empty"))
@@ -31,9 +38,8 @@ def add_comment(comment, comment_email, comment_by, reference_doctype, reference
 		dontmanage.msgprint(_("Comments cannot have links or email addresses"))
 		return False
 
-	comment = doc.add_comment(
-		text=clean_html(comment), comment_email=comment_email, comment_by=comment_by
-	)
+	doc = dontmanage.get_doc(reference_doctype, reference_name)
+	comment = doc.add_comment(text=clean_html(comment), comment_email=comment_email, comment_by=comment_by)
 
 	comment.db_set("published", 1)
 
@@ -50,9 +56,7 @@ def add_comment(comment, comment_email, comment_by, reference_doctype, reference
 		url, _("View Comment")
 	)
 
-	if doc.doctype == "Blog Post" and not doc.enable_email_notification:
-		pass
-	else:
+	if doc.doctype != "Blog Post" or doc.enable_email_notification:
 		# notify creator
 		creator_email = dontmanage.db.get_value("User", doc.owner, "email") or doc.owner
 		subject = _("New Comment on {0}: {1}").format(doc.doctype, doc.get_title())

@@ -37,6 +37,7 @@ dontmanage.ui.form.ControlAutocomplete = class ControlAutoComplete extends dontm
 	get_awesomplete_settings() {
 		var me = this;
 		return {
+			tabSelect: true,
 			minChars: 0,
 			maxItems: this.df.max_items || 99,
 			autoFirst: true,
@@ -66,7 +67,7 @@ dontmanage.ui.form.ControlAutocomplete = class ControlAutoComplete extends dontm
 					d.label = d.value;
 				}
 
-				var _label = me.translate_values ? __(d.label) : d.label;
+				var _label = me.translate_values ? __(d.label, null, d.parent) : d.label;
 				var html = "<strong>" + _label + "</strong>";
 				if (d.description) {
 					html += '<br><span class="small">' + __(d.description) + "</span>";
@@ -174,6 +175,15 @@ dontmanage.ui.form.ControlAutocomplete = class ControlAutoComplete extends dontm
 		if (typeof options[0] === "string") {
 			options = options.map((o) => ({ label: o, value: o }));
 		}
+
+		options = options.map((o) => {
+			if (typeof o !== "string") {
+				o.label = __(cstr(o.label));
+				o.value = cstr(o.value);
+			}
+			return o;
+		});
+
 		return options;
 	}
 

@@ -11,6 +11,26 @@ from dontmanage.model.document import Document
 
 
 class NotificationLog(Document):
+	# begin: auto-generated types
+	# This code is auto-generated. Do not modify anything in this block.
+
+	from typing import TYPE_CHECKING
+
+	if TYPE_CHECKING:
+		from dontmanage.types import DF
+
+		attached_file: DF.Code | None
+		document_name: DF.Data | None
+		document_type: DF.Link | None
+		email_content: DF.TextEditor | None
+		for_user: DF.Link | None
+		from_user: DF.Link | None
+		link: DF.Data | None
+		read: DF.Check
+		subject: DF.Text | None
+		type: DF.Literal["Mention", "Energy Point", "Assignment", "Share", "Alert"]
+
+	# end: auto-generated types
 	def after_insert(self):
 		dontmanage.publish_realtime("notification", after_commit=True, user=self.for_user)
 		set_notifications_as_unseen(self.for_user)
@@ -42,8 +62,7 @@ def get_permission_query_conditions(for_user):
 def get_title(doctype, docname, title_field=None):
 	if not title_field:
 		title_field = dontmanage.get_meta(doctype).get_title_field()
-	title = docname if title_field == "name" else dontmanage.db.get_value(doctype, docname, title_field)
-	return title
+	return docname if title_field == "name" else dontmanage.db.get_value(doctype, docname, title_field)
 
 
 def get_title_html(title):
@@ -97,45 +116,47 @@ def _get_user_ids(user_emails):
 	return [user for user in user_names if is_notifications_enabled(user)]
 
 
-def send_notification_email(doc):
-
+def send_notification_email(doc: NotificationLog):
 	if doc.type == "Energy Point" and doc.email_content is None:
 		return
 
 	from dontmanage.utils import get_url_to_form, strip_html
 
-	email = dontmanage.db.get_value("User", doc.for_user, "email")
-	if not email:
+	user = dontmanage.db.get_value("User", doc.for_user, fieldname=["email", "language"], as_dict=True)
+	if not user:
 		return
 
-	doc_link = get_url_to_form(doc.document_type, doc.document_name)
-	header = get_email_header(doc)
+	header = get_email_header(doc, user.language)
 	email_subject = strip_html(doc.subject)
+	args = {
+		"body_content": doc.subject,
+		"description": doc.email_content,
+	}
+	if doc.link:
+		args["doc_link"] = doc.link
+	else:
+		args["document_type"] = doc.document_type
+		args["document_name"] = doc.document_name
+		args["doc_link"] = get_url_to_form(doc.document_type, doc.document_name)
 
 	dontmanage.sendmail(
-		recipients=email,
+		recipients=user.email,
 		subject=email_subject,
 		template="new_notification",
-		args={
-			"body_content": doc.subject,
-			"description": doc.email_content,
-			"document_type": doc.document_type,
-			"document_name": doc.document_name,
-			"doc_link": doc_link,
-		},
+		args=args,
 		header=[header, "orange"],
 		now=dontmanage.flags.in_test,
 	)
 
 
-def get_email_header(doc):
+def get_email_header(doc, language: str | None = None):
 	docname = doc.document_name
 	header_map = {
-		"Default": _("New Notification"),
-		"Mention": _("New Mention on {0}").format(docname),
-		"Assignment": _("Assignment Update on {0}").format(docname),
-		"Share": _("New Document Shared {0}").format(docname),
-		"Energy Point": _("Energy Point Update on {0}").format(docname),
+		"Default": _("New Notification", lang=language),
+		"Mention": _("New Mention on {0}", lang=language).format(docname),
+		"Assignment": _("Assignment Update on {0}", lang=language).format(docname),
+		"Share": _("New Document Shared {0}", lang=language).format(docname),
+		"Energy Point": _("Energy Point Update on {0}", lang=language).format(docname),
 	}
 
 	return header_map[doc.type or "Default"]
@@ -169,9 +190,12 @@ def mark_all_as_read():
 
 
 @dontmanage.whitelist()
-def mark_as_read(docname):
+def mark_as_read(docname: str):
+	if dontmanage.flags.read_only:
+		return
+
 	if docname:
-		dontmanage.db.set_value("Notification Log", docname, "read", 1, update_modified=False)
+		dontmanage.db.set_value("Notification Log", str(docname), "read", 1, update_modified=False)
 
 
 @dontmanage.whitelist()

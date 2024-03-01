@@ -1,4 +1,4 @@
-from typing import Callable
+from collections.abc import Callable
 
 import dontmanage
 from dontmanage.model import child_table_fields

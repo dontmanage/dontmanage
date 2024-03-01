@@ -6,11 +6,23 @@ from dontmanage.model.document import Document
 
 
 class DomainSettings(Document):
+	# begin: auto-generated types
+	# This code is auto-generated. Do not modify anything in this block.
+
+	from typing import TYPE_CHECKING
+
+	if TYPE_CHECKING:
+		from dontmanage.core.doctype.has_domain.has_domain import HasDomain
+		from dontmanage.types import DF
+
+		active_domains: DF.Table[HasDomain]
+
+	# end: auto-generated types
 	def set_active_domains(self, domains):
 		active_domains = [d.domain for d in self.active_domains]
 		added = False
 		for d in domains:
-			if not d in active_domains:
+			if d not in active_domains:
 				self.append("active_domains", dict(domain=d))
 				added = True
 
@@ -73,7 +85,7 @@ def get_active_domains():
 		active_domains.append("")
 		return active_domains
 
-	return dontmanage.cache().get_value("active_domains", _get_active_domains)
+	return dontmanage.cache.get_value("active_domains", _get_active_domains)
 
 
 def get_active_modules():
@@ -87,4 +99,4 @@ def get_active_modules():
 				active_modules.append(m.name)
 		return active_modules
 
-	return dontmanage.cache().get_value("active_modules", _get_active_modules)
+	return dontmanage.cache.get_value("active_modules", _get_active_modules)

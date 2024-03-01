@@ -1,5 +1,6 @@
 import dontmanage
 from dontmanage.model.document import get_controller
+from dontmanage.utils.caching import redis_cache
 from dontmanage.website.page_renderers.base_template_page import BaseTemplatePage
 from dontmanage.website.router import (
 	get_doctypes_with_web_view,
@@ -22,27 +23,15 @@ class DocumentPage(BaseTemplatePage):
 		return False
 
 	def search_in_doctypes_with_web_view(self):
-		for doctype in get_doctypes_with_web_view():
-			filters = dict(route=self.path)
-			meta = dontmanage.get_meta(doctype)
-			condition_field = self.get_condition_field(meta)
-
-			if condition_field:
-				filters[condition_field] = 1
-
-			try:
-				self.docname = dontmanage.db.get_value(doctype, filters, "name")
-				if self.docname:
-					self.doctype = doctype
-					return True
-			except Exception as e:
-				if not dontmanage.db.is_missing_column(e):
-					raise e
+		if document := _find_matching_document_webview(self.path):
+			self.doctype, self.docname = document
+			doc = dontmanage.get_cached_doc(self.doctype, self.docname)
+			return doc.meta.allow_guest_to_view or doc.has_permission() or dontmanage.has_website_permission(doc)
 
 	def search_web_page_dynamic_routes(self):
 		d = get_page_info_from_web_page_with_dynamic_routes(self.path)
 		if d:
-			self.doctype = "Web Page"
+			self.doctype = d.doctype
 			self.docname = d.name
 			return True
 		else:
@@ -60,8 +49,7 @@ class DocumentPage(BaseTemplatePage):
 		self.init_context()
 		self.update_context()
 		self.post_process_context()
-		html = dontmanage.get_template(self.template_path).render(self.context)
-		return html
+		return dontmanage.get_template(self.template_path).render(self.context)
 
 	def update_context(self):
 		self.context.doc = self.doc
@@ -83,7 +71,8 @@ class DocumentPage(BaseTemplatePage):
 			if prop not in self.context:
 				self.context[prop] = getattr(self.doc, prop, False)
 
-	def get_condition_field(self, meta):
+	@staticmethod
+	def get_condition_field(meta):
 		condition_field = None
 		if meta.is_published_field:
 			condition_field = meta.is_published_field
@@ -92,3 +81,28 @@ class DocumentPage(BaseTemplatePage):
 			condition_field = controller.website.condition_field
 
 		return condition_field
+
+
+@redis_cache(ttl=60 * 60)
+def _find_matching_document_webview(route: str) -> tuple[str, str] | None:
+	for doctype in get_doctypes_with_web_view():
+		filters = dict(route=route)
+		meta = dontmanage.get_meta(doctype)
+		condition_field = DocumentPage.get_condition_field(meta)
+
+		if condition_field:
+			filters[condition_field] = 1
+
+		try:
+			docname = None
+			if meta.is_virtual:
+				if doclist := dontmanage.get_all(doctype, filters=filters, fields=["name"], limit=1):
+					docname = doclist[0].get("name")
+			else:
+				docname = dontmanage.db.get_value(doctype, filters, "name")
+
+			if docname:
+				return (doctype, docname)
+		except Exception as e:
+			if not dontmanage.db.is_missing_column(e):
+				raise e

@@ -132,7 +132,7 @@ dontmanage.ui.form.Review = class Review {
 					</span>
 				</div>
 			`);
-			this.reviews.prepend(review_pill);
+			this.reviews.append(review_pill);
 			this.setup_detail_popover(review_pill, log);
 		});
 	}

@@ -32,14 +32,14 @@ def get(args=None):
 		filters={
 			"reference_type": args.get("doctype"),
 			"reference_name": args.get("name"),
-			"status": ("!=", "Cancelled"),
+			"status": ("not in", ("Cancelled", "Closed")),
 		},
 		limit=5,
 	)
 
 
 @dontmanage.whitelist()
-def add(args=None):
+def add(args=None, *, ignore_permissions=False):
 	"""add in someone's to do list
 	args = {
 	        "assign_to": [],
@@ -63,6 +63,8 @@ def add(args=None):
 			"status": "Open",
 			"allocated_to": assign_to,
 		}
+		if not ignore_permissions:
+			dontmanage.get_doc(args["doctype"], args["name"]).check_permission()
 
 		if dontmanage.get_all("ToDo", filters=filters):
 			users_with_duplicate_todo.append(assign_to)
@@ -93,10 +95,19 @@ def add(args=None):
 
 			doc = dontmanage.get_doc(args["doctype"], args["name"])
 
-			# if assignee does not have permissions, share
+			# if assignee does not have permissions, share or inform
 			if not dontmanage.has_permission(doc=doc, user=assign_to):
-				dontmanage.share.add(doc.doctype, doc.name, assign_to)
-				shared_with_users.append(assign_to)
+				if dontmanage.get_system_settings("disable_document_sharing"):
+					msg = _("User {0} is not permitted to access this document.").format(
+						dontmanage.bold(assign_to)
+					)
+					msg += "<br>" + _(
+						"As document sharing is disabled, please give them the required permissions before assigning."
+					)
+					dontmanage.throw(msg, title=_("Missing Permission"))
+				else:
+					dontmanage.share.add(doc.doctype, doc.name, assign_to)
+					shared_with_users.append(assign_to)
 
 			# make this document followed by assigned user
 			if dontmanage.get_cached_value("User", assign_to, "follow_assigned_documents"):
@@ -137,38 +148,57 @@ def add_multiple(args=None):
 		add(args)
 
 
-def close_all_assignments(doctype, name):
+def close_all_assignments(doctype, name, ignore_permissions=False):
 	assignments = dontmanage.get_all(
 		"ToDo",
-		fields=["allocated_to"],
+		fields=["allocated_to", "name"],
 		filters=dict(reference_type=doctype, reference_name=name, status=("!=", "Cancelled")),
 	)
 	if not assignments:
 		return False
 
 	for assign_to in assignments:
-		set_status(doctype, name, assign_to.allocated_to, status="Closed")
+		set_status(
+			doctype,
+			name,
+			todo=assign_to.name,
+			assign_to=assign_to.allocated_to,
+			status="Closed",
+			ignore_permissions=ignore_permissions,
+		)
 
 	return True
 
 
 @dontmanage.whitelist()
-def remove(doctype, name, assign_to):
-	return set_status(doctype, name, assign_to, status="Cancelled")
+def remove(doctype, name, assign_to, ignore_permissions=False):
+	return set_status(doctype, name, "", assign_to, status="Cancelled", ignore_permissions=ignore_permissions)
 
 
-def set_status(doctype, name, assign_to, status="Cancelled"):
+@dontmanage.whitelist()
+def close(doctype: str, name: str, assign_to: str, ignore_permissions=False):
+	if assign_to != dontmanage.session.user:
+		dontmanage.throw(_("Only the assignee can complete this to-do."))
+
+	return set_status(doctype, name, "", assign_to, status="Closed", ignore_permissions=ignore_permissions)
+
+
+def set_status(doctype, name, todo=None, assign_to=None, status="Cancelled", ignore_permissions=False):
 	"""remove from todo"""
+
+	if not ignore_permissions:
+		dontmanage.get_doc(doctype, name).check_permission()
 	try:
-		todo = dontmanage.db.get_value(
-			"ToDo",
-			{
-				"reference_type": doctype,
-				"reference_name": name,
-				"allocated_to": assign_to,
-				"status": ("!=", status),
-			},
-		)
+		if not todo:
+			todo = dontmanage.db.get_value(
+				"ToDo",
+				{
+					"reference_type": doctype,
+					"reference_name": name,
+					"allocated_to": assign_to,
+					"status": ("!=", status),
+				},
+			)
 		if todo:
 			todo = dontmanage.get_doc("ToDo", todo)
 			todo.status = status
@@ -179,39 +209,48 @@ def set_status(doctype, name, assign_to, status="Cancelled"):
 		pass
 
 	# clear assigned_to if field exists
-	if dontmanage.get_meta(doctype).get_field("assigned_to") and status == "Cancelled":
+	if dontmanage.get_meta(doctype).get_field("assigned_to") and status in ("Cancelled", "Closed"):
 		dontmanage.db.set_value(doctype, name, "assigned_to", None)
 
 	return get({"doctype": doctype, "name": name})
 
 
-def clear(doctype, name):
+def clear(doctype, name, ignore_permissions=False):
 	"""
 	Clears assignments, return False if not assigned.
 	"""
 	assignments = dontmanage.get_all(
-		"ToDo", fields=["allocated_to"], filters=dict(reference_type=doctype, reference_name=name)
+		"ToDo",
+		fields=["allocated_to", "name"],
+		filters=dict(reference_type=doctype, reference_name=name),
 	)
 	if not assignments:
 		return False
 
 	for assign_to in assignments:
-		set_status(doctype, name, assign_to.allocated_to, "Cancelled")
+		set_status(
+			doctype,
+			name,
+			todo=assign_to.name,
+			assign_to=assign_to.allocated_to,
+			status="Cancelled",
+			ignore_permissions=ignore_permissions,
+		)
 
 	return True
 
 
-def notify_assignment(
-	assigned_by, allocated_to, doc_type, doc_name, action="CLOSE", description=None
-):
+def notify_assignment(assigned_by, allocated_to, doc_type, doc_name, action="CLOSE", description=None):
 	"""
 	Notify assignee that there is a change in assignment
 	"""
 	if not (assigned_by and allocated_to and doc_type and doc_name):
 		return
 
+	assigned_user = dontmanage.db.get_value("User", allocated_to, ["language", "enabled"], as_dict=True)
+
 	# return if self assigned or user disabled
-	if assigned_by == allocated_to or not dontmanage.db.get_value("User", allocated_to, "enabled"):
+	if assigned_by == allocated_to or not assigned_user.enabled:
 		return
 
 	# Search for email address in description -- i.e. assignee
@@ -220,14 +259,16 @@ def notify_assignment(
 	description_html = f"<div>{description}</div>" if description else None
 
 	if action == "CLOSE":
-		subject = _("Your assignment on {0} {1} has been removed by {2}").format(
-			dontmanage.bold(doc_type), get_title_html(title), dontmanage.bold(user_name)
+		subject = _("Your assignment on {0} {1} has been removed by {2}", lang=assigned_user.language).format(
+			dontmanage.bold(_(doc_type)), get_title_html(title), dontmanage.bold(user_name)
 		)
 	else:
 		user_name = dontmanage.bold(user_name)
-		document_type = dontmanage.bold(doc_type)
+		document_type = dontmanage.bold(_(doc_type, lang=assigned_user.language))
 		title = get_title_html(title)
-		subject = _("{0} assigned a new task {1} {2} to you").format(user_name, document_type, title)
+		subject = _("{0} assigned a new task {1} {2} to you", lang=assigned_user.language).format(
+			user_name, document_type, title
+		)
 
 	notification_doc = {
 		"type": "Assignment",

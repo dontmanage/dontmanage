@@ -19,11 +19,19 @@
 				max-width: 800px;
 				margin: auto;
 
+				.tooltip-content {
+					display: none;
+				}
+
 				h1 {
 					font-size: 2.25rem;
 					margin-top: 0;
 					margin-bottom: 0;
 					padding-bottom: 2px;
+
+					@include media-breakpoint-down(sm) {
+						font-size: 1.25rem;
+					}
 				}
 
 				.web-form-header {
@@ -33,6 +41,10 @@
 					border-top-right-radius: var(--border-radius-md);
 					background-color: var(--fg-color);
 					padding: 2rem 2rem 0;
+
+					@include media-breakpoint-down(sm) {
+						padding: 1.5rem 1.5rem 0;
+					}
 
 					.breadcrumb-container {
 						padding: 0px;
@@ -68,7 +80,7 @@
 								flex: 1;
 
 								.btn {
-									font-size: var(--text-base);
+									@include get_textstyle("base", "regular");
 								}
 							}
 						}
@@ -79,6 +91,10 @@
 
 							p {
 								color: var(--text-muted);
+
+								@include media-breakpoint-down(sm) {
+									font-size: var(--text-xs);
+								}
 							}
 						}
 					}
@@ -92,10 +108,18 @@
 					border-bottom-left-radius: var(--border-radius);
 					border-bottom-right-radius: var(--border-radius);
 
+					@include media-breakpoint-down(sm) {
+						padding: 1rem 1.5rem 1.5rem;
+					}
+
 					.web-form-wrapper {
 						.form-control {
 							color: var(--text-color);
 							background-color: var(--control-bg);
+
+							@include media-breakpoint-down(sm) {
+								@include get_textstyle("sm", "regular");
+							}
 						}
 
 						.form-section {
@@ -109,8 +133,18 @@
 						.form-column {
 							padding: 0 var(--padding-sm);
 
+							.form-group {
+								@include media-breakpoint-down(sm) {
+									margin-bottom: 0.5rem;
+								}
+							}
+
 							.dontmanage-control {
 								position: relative;
+
+								@include media-breakpoint-down(sm) {
+									@include get_textstyle("sm", "regular");
+								}
 
 								&[data-fieldtype="Rating"] {
 									.like-disabled-input {
@@ -190,13 +224,21 @@
 					.web-form-footer {
 						margin-top: 1rem;
 
+						@include media-breakpoint-down(sm) {
+							margin-top: 0.5rem;
+						}
+
 						.web-form-actions {
 							display: flex;
 							justify-content: space-between;
 							flex-wrap: wrap;
 
 							.btn {
-								font-size: var(--text-base);
+								@include get_textstyle("base", "regular");
+
+								@include media-breakpoint-down(sm) {
+									@include get_textstyle("sm", "regular");
+								}
 							}
 
 							.btn-link {
@@ -213,14 +255,14 @@
 								flex: 1;
 
 								@include media-breakpoint-down(sm) {
-									order: 1
+									order: 1;
 								}
 							}
 
 							.center-area {
 								display: flex;
 								align-items: center;
-								font-size: var(--text-base);
+								@include get_textstyle("base", "regular");
 
 								.slides-progress {
 									display: flex;
@@ -290,6 +332,10 @@
 									width: 100%;
 									justify-content: center;
 									margin-bottom: 1.5rem;
+
+									&:empty {
+										margin: 0;
+									}
 								}
 							}
 
@@ -299,7 +345,7 @@
 								flex: 1;
 
 								@include media-breakpoint-down(sm) {
-									order: 2
+									order: 2;
 								}
 							}
 						}
@@ -317,7 +363,7 @@
 						justify-content: space-between;
 						gap: 6px;
 						color: var(--text-muted);
-						font-size: var(--text-md);
+						@include get_textstyle("base", "regular");
 
 						&:hover {
 							text-decoration: none;
@@ -449,7 +495,8 @@
 									border-top: 1px solid var(--border-color);
 									max-width: 160px;
 
-									.ql-editor, p {
+									.ql-editor,
+									p {
 										width: max-content;
 										max-width: 150px;
 										margin-bottom: 0;

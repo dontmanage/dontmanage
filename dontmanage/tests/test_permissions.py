@@ -9,6 +9,10 @@ from dontmanage.core.doctype.user_permission.user_permission import clear_user_p
 from dontmanage.core.page.permission_manager.permission_manager import reset, update
 from dontmanage.desk.form.load import getdoc
 from dontmanage.permissions import (
+	ALL_USER_ROLE,
+	AUTOMATIC_ROLES,
+	GUEST_ROLE,
+	SYSTEM_USER_ROLE,
 	add_permission,
 	add_user_permission,
 	clear_user_permissions_for_doctype,
@@ -87,6 +91,11 @@ class TestPermissions(DontManageTestCase):
 		# validate does not have read and write perm
 		self.assertFalse(post.has_permission("read"))
 		self.assertRaises(dontmanage.PermissionError, post.save)
+
+		permitted_record = dontmanage.get_list("Blog Post", fields="*", limit=1)[0]
+		full_record = dontmanage.get_all("Blog Post", fields="*", limit=1)[0]
+		self.assertNotEqual(permitted_record, full_record)
+		self.assertSequenceSubset(post.meta.get_search_fields(), permitted_record)
 
 	def test_user_permissions_in_doc(self):
 		add_user_permission("Blog Category", "-test-blog-category-1", "test2@example.com")
@@ -438,9 +447,7 @@ class TestPermissions(DontManageTestCase):
 		# should be applicable for across all doctypes
 		add_user_permission("Blogger", "_Test Blogger", "test2@example.com")
 		# should be applicable only while accessing Blog Post
-		add_user_permission(
-			"Blogger", "_Test Blogger 1", "test2@example.com", applicable_for="Blog Post"
-		)
+		add_user_permission("Blogger", "_Test Blogger 1", "test2@example.com", applicable_for="Blog Post")
 		# should be applicable only while accessing User
 		add_user_permission("Blogger", "_Test Blogger 2", "test2@example.com", applicable_for="User")
 
@@ -468,9 +475,9 @@ class TestPermissions(DontManageTestCase):
 		# check if user is not granted access if the user is not the owner of the doc
 		# Blogger has only read access on the blog post unless he is the owner of the blog
 		update("Blog Post", "Blogger", 0, "if_owner", 1)
-		update("Blog Post", "Blogger", 0, "read", 1)
-		update("Blog Post", "Blogger", 0, "write", 1)
-		update("Blog Post", "Blogger", 0, "delete", 1)
+		update("Blog Post", "Blogger", 0, "read", 1, 1)
+		update("Blog Post", "Blogger", 0, "write", 1, 1)
+		update("Blog Post", "Blogger", 0, "delete", 1, 1)
 
 		# currently test2 user has not created any document
 		# still he should be able to do get_list query which should
@@ -579,9 +586,9 @@ class TestPermissions(DontManageTestCase):
 
 	def test_if_owner_permission_on_delete(self):
 		update("Blog Post", "Blogger", 0, "if_owner", 1)
-		update("Blog Post", "Blogger", 0, "read", 1)
-		update("Blog Post", "Blogger", 0, "write", 1)
-		update("Blog Post", "Blogger", 0, "delete", 1)
+		update("Blog Post", "Blogger", 0, "read", 1, 1)
+		update("Blog Post", "Blogger", 0, "write", 1, 1)
+		update("Blog Post", "Blogger", 0, "delete", 1, 1)
 
 		# Remove delete perm
 		update("Blog Post", "Website Manager", 0, "delete", 0)
@@ -618,7 +625,7 @@ class TestPermissions(DontManageTestCase):
 
 		dontmanage.set_user("test2@example.com")
 		dontmanage.delete_doc("Blog Post", "-test-blog-post-title-new-1")
-		update("Blog Post", "Website Manager", 0, "delete", 1)
+		update("Blog Post", "Website Manager", 0, "delete", 1, 1)
 
 	def test_clear_user_permissions(self):
 		current_user = dontmanage.session.user
@@ -711,3 +718,28 @@ class TestPermissions(DontManageTestCase):
 		self.assertNotIn("test1@example.com", users)
 		self.assertIn("test2@example.com", users)
 		self.assertIn("test3@example.com", users)
+
+	def test_automatic_permissions(self):
+		def assertHasRole(*roles: str | tuple[str, ...]):
+			for role in roles:
+				self.assertIn(role, dontmanage.get_roles())
+
+		dontmanage.set_user("Administrator")
+		assertHasRole(*AUTOMATIC_ROLES)
+
+		dontmanage.set_user("Guest")
+		assertHasRole(GUEST_ROLE)
+
+		website_user = dontmanage.db.get_value(
+			"User",
+			{"user_type": "Website User", "enabled": 1, "name": ("not in", AUTOMATIC_ROLES)},
+		)
+		dontmanage.set_user(website_user)
+		assertHasRole(GUEST_ROLE, ALL_USER_ROLE)
+
+		system_user = dontmanage.db.get_value(
+			"User",
+			{"user_type": "System User", "enabled": 1, "name": ("not in", AUTOMATIC_ROLES)},
+		)
+		dontmanage.set_user(system_user)
+		assertHasRole(GUEST_ROLE, ALL_USER_ROLE, SYSTEM_USER_ROLE)

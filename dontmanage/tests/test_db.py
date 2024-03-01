@@ -2,7 +2,6 @@
 # License: MIT. See LICENSE
 
 import datetime
-import inspect
 from math import ceil
 from random import choice
 from unittest.mock import patch
@@ -11,13 +10,13 @@ import dontmanage
 from dontmanage.core.utils import find
 from dontmanage.custom.doctype.custom_field.custom_field import create_custom_field
 from dontmanage.database import savepoint
-from dontmanage.database.database import Database, get_query_execution_timeout
+from dontmanage.database.database import get_query_execution_timeout
 from dontmanage.database.utils import FallBackDateTimeStr
 from dontmanage.query_builder import Field
 from dontmanage.query_builder.functions import Concat_ws
 from dontmanage.tests.test_query_builder import db_type_is, run_only_if
 from dontmanage.tests.utils import DontManageTestCase
-from dontmanage.utils import add_days, cint, now, random_string, set_request
+from dontmanage.utils import add_days, now, random_string, set_request
 from dontmanage.utils.testutils import clear_custom_fields
 
 
@@ -57,6 +56,17 @@ class TestDB(DontManageTestCase):
 			dontmanage.db.rollback(save_point=savepoint)
 			self.fail("Long running queries not timing out")
 
+	def test_skip_locking(self):
+		first_conn = dontmanage.local.db
+		name = dontmanage.db.get_value("User", "Administrator", "name", for_update=True, skip_locked=True)
+		self.assertEqual(name, "Administrator")
+
+		dontmanage.connect()  # Create a 2nd connection
+		second_conn = dontmanage.local.db
+		self.assertIsNot(first_conn, second_conn)
+		name = dontmanage.db.get_value("User", "Administrator", "name", for_update=True, skip_locked=True)
+		self.assertFalse(name)
+
 	@patch.dict(dontmanage.conf, {"http_timeout": 20, "enable_db_statement_timeout": 1})
 	def test_db_timeout_computation(self):
 		set_request(method="GET", path="/")
@@ -80,9 +90,7 @@ class TestDB(DontManageTestCase):
 		)
 		self.assertIn(
 			"for update",
-			dontmanage.db.get_value(
-				"User", Field("name") == "Administrator", for_update=True, run=False
-			).lower(),
+			dontmanage.db.get_value("User", Field("name") == "Administrator", for_update=True, run=False).lower(),
 		)
 		user_doctype = dontmanage.qb.DocType("User")
 		self.assertEqual(
@@ -140,27 +148,6 @@ class TestDB(DontManageTestCase):
 			dontmanage.db.get_value("DocType", "DocField", order_by="creation desc, modified asc, name", run=0),
 		)
 
-	def test_get_value_limits(self):
-		# check both dict and list style filters
-		filters = [{"enabled": 1}, [["enabled", "=", 1]]]
-		for filter in filters:
-			self.assertEqual(1, len(dontmanage.db.get_values("User", filters=filter, limit=1)))
-			# count of last touched rows as per DB-API 2.0 https://peps.python.org/pep-0249/#rowcount
-			self.assertGreaterEqual(1, cint(dontmanage.db._cursor.rowcount))
-			self.assertEqual(2, len(dontmanage.db.get_values("User", filters=filter, limit=2)))
-			self.assertGreaterEqual(2, cint(dontmanage.db._cursor.rowcount))
-
-			# without limits length == count
-			self.assertEqual(
-				len(dontmanage.db.get_values("User", filters=filter)), dontmanage.db.count("User", filter)
-			)
-
-			dontmanage.db.get_value("User", filters=filter)
-			self.assertGreaterEqual(1, cint(dontmanage.db._cursor.rowcount))
-
-			dontmanage.db.exists("User", filter)
-			self.assertGreaterEqual(1, cint(dontmanage.db._cursor.rowcount))
-
 	def test_escape(self):
 		dontmanage.db.escape("香港濟生堂製藥有限公司 - IT".encode())
 
@@ -176,9 +163,7 @@ class TestDB(DontManageTestCase):
 			"Datetime": datetime.datetime.now(),
 			"Time": datetime.timedelta(hours=9, minutes=45, seconds=10),
 		}
-		test_inputs = [
-			{"fieldtype": fieldtype, "value": value} for fieldtype, value in values_dict.items()
-		]
+		test_inputs = [{"fieldtype": fieldtype, "value": value} for fieldtype, value in values_dict.items()]
 		for fieldtype in values_dict:
 			create_custom_field(
 				"Print Settings",
@@ -192,16 +177,23 @@ class TestDB(DontManageTestCase):
 		# test
 		for inp in test_inputs:
 			fieldname = f"test_{inp['fieldtype'].lower()}"
-			dontmanage.db.set_value("Print Settings", "Print Settings", fieldname, inp["value"])
+			dontmanage.db.set_single_value("Print Settings", fieldname, inp["value"])
 			self.assertEqual(dontmanage.db.get_single_value("Print Settings", fieldname), inp["value"])
 
 		# teardown
 		clear_custom_fields("Print Settings")
 
+	def test_get_single_value_destructuring(self):
+		[[lang, date_format]] = dontmanage.db.get_values_from_single(
+			["language", "date_format"], None, "System Settings"
+		)
+		self.assertEqual(lang, dontmanage.db.get_single_value("System Settings", "language"))
+		self.assertEqual(date_format, dontmanage.db.get_single_value("System Settings", "date_format"))
+
 	def test_log_touched_tables(self):
 		dontmanage.flags.in_migrate = True
 		dontmanage.flags.touched_tables = set()
-		dontmanage.db.set_value("System Settings", "System Settings", "backup_limit", 5)
+		dontmanage.db.set_single_value("System Settings", "backup_limit", 5)
 		self.assertIn("tabSingles", dontmanage.flags.touched_tables)
 
 		dontmanage.flags.touched_tables = set()
@@ -354,38 +346,40 @@ class TestDB(DontManageTestCase):
 		random_value = random_string(20)
 
 		# Testing read
+		self.assertEqual(next(iter(dontmanage.get_all("ToDo", fields=[random_field], limit=1)[0])), random_field)
 		self.assertEqual(
-			list(dontmanage.get_all("ToDo", fields=[random_field], limit=1)[0])[0], random_field
-		)
-		self.assertEqual(
-			list(dontmanage.get_all("ToDo", fields=[f"`{random_field}` as total"], limit=1)[0])[0], "total"
+			next(iter(dontmanage.get_all("ToDo", fields=[f"`{random_field}` as total"], limit=1)[0])), "total"
 		)
 
 		# Testing read for distinct and sql functions
 		self.assertEqual(
-			list(
-				dontmanage.get_all(
-					"ToDo",
-					fields=[f"`{random_field}` as total"],
-					distinct=True,
-					limit=1,
-				)[0]
-			)[0],
+			next(
+				iter(
+					dontmanage.get_all(
+						"ToDo",
+						fields=[f"`{random_field}` as total"],
+						distinct=True,
+						limit=1,
+					)[0]
+				)
+			),
 			"total",
 		)
 		self.assertEqual(
-			list(
-				dontmanage.get_all(
-					"ToDo",
-					fields=[f"`{random_field}`"],
-					distinct=True,
-					limit=1,
-				)[0]
-			)[0],
+			next(
+				iter(
+					dontmanage.get_all(
+						"ToDo",
+						fields=[f"`{random_field}`"],
+						distinct=True,
+						limit=1,
+					)[0]
+				)
+			),
 			random_field,
 		)
 		self.assertEqual(
-			list(dontmanage.get_all("ToDo", fields=[f"count(`{random_field}`)"], limit=1)[0])[0],
+			next(iter(dontmanage.get_all("ToDo", fields=[f"count(`{random_field}`)"], limit=1)[0])),
 			"count" if dontmanage.conf.db_type == "postgres" else f"count(`{random_field}`)",
 		)
 
@@ -453,7 +447,7 @@ class TestDB(DontManageTestCase):
 		dontmanage.db.MAX_WRITES_PER_TRANSACTION = 1
 		note = dontmanage.get_last_doc("ToDo")
 		note.description = "changed"
-		with self.assertRaises(dontmanage.TooManyWritesError) as tmw:
+		with self.assertRaises(dontmanage.TooManyWritesError):
 			note.save()
 
 		dontmanage.db.MAX_WRITES_PER_TRANSACTION = Database.MAX_WRITES_PER_TRANSACTION
@@ -545,7 +539,7 @@ class TestDB(DontManageTestCase):
 		self.assertEqual((dontmanage.db.count("Note")), 2)
 
 		# simple filters
-		self.assertEqual((dontmanage.db.count("Note", ["title", "=", "note1"])), 1)
+		self.assertEqual((dontmanage.db.count("Note", [["title", "=", "note1"]])), 1)
 
 		dontmanage.get_doc(doctype="Note", title="note3", content="something other").insert()
 
@@ -572,9 +566,7 @@ class TestDB(DontManageTestCase):
 			modify_query(query),
 		)
 
-		query = (
-			'select locate(".io", "dontmanage.io"), locate("3", cast(3 as varchar)), locate("3", 3::varchar)'
-		)
+		query = 'select locate(".io", "dontmanage.io"), locate("3", cast(3 as varchar)), locate("3", 3::varchar)'
 		self.assertEqual(
 			'select strpos( "dontmanage.io", ".io"), strpos( cast(3 as varchar), "3"), strpos( 3::varchar, "3")',
 			modify_query(query),
@@ -592,6 +584,37 @@ class TestDB(DontManageTestCase):
 			["23", 23.0, 23.00004345, "wow", ("1", "2", "3", "abc")],
 			modify_values((23, 23.0, 23.00004345, "wow", [1, 2, 3, "abc"])),
 		)
+
+	def test_callbacks(self):
+		order_of_execution = []
+
+		def f(val):
+			nonlocal order_of_execution
+			order_of_execution.append(val)
+
+		dontmanage.db.before_commit.add(lambda: f(0))
+		dontmanage.db.before_commit.add(lambda: f(1))
+
+		dontmanage.db.after_commit.add(lambda: f(2))
+		dontmanage.db.after_commit.add(lambda: f(3))
+
+		dontmanage.db.before_rollback.add(lambda: f("IGNORED"))
+		dontmanage.db.before_rollback.add(lambda: f("IGNORED"))
+
+		dontmanage.db.commit()
+
+		dontmanage.db.after_commit.add(lambda: f("IGNORED"))
+		dontmanage.db.after_commit.add(lambda: f("IGNORED"))
+
+		dontmanage.db.before_rollback.add(lambda: f(4))
+		dontmanage.db.before_rollback.add(lambda: f(5))
+		dontmanage.db.after_rollback.add(lambda: f(6))
+		dontmanage.db.after_rollback.add(lambda: f(7))
+		dontmanage.db.after_rollback(lambda: f(8))
+
+		dontmanage.db.rollback()
+
+		self.assertEqual(order_of_execution, list(range(0, 9)))
 
 
 @run_only_if(db_type_is.MARIADB)
@@ -668,14 +691,7 @@ class TestDBSetValue(DontManageTestCase):
 		value = dontmanage.db.get_single_value("System Settings", "deny_multiple_sessions")
 		changed_value = not value
 
-		dontmanage.db.set_value(
-			"System Settings", "System Settings", "deny_multiple_sessions", changed_value
-		)
-		current_value = dontmanage.db.get_single_value("System Settings", "deny_multiple_sessions")
-		self.assertEqual(current_value, changed_value)
-
-		changed_value = not current_value
-		dontmanage.db.set_value("System Settings", None, "deny_multiple_sessions", changed_value)
+		dontmanage.db.set_single_value("System Settings", "deny_multiple_sessions", changed_value)
 		current_value = dontmanage.db.get_single_value("System Settings", "deny_multiple_sessions")
 		self.assertEqual(current_value, changed_value)
 
@@ -684,10 +700,26 @@ class TestDBSetValue(DontManageTestCase):
 		current_value = dontmanage.db.get_single_value("System Settings", "deny_multiple_sessions")
 		self.assertEqual(current_value, changed_value)
 
+		changed_value = not current_value
+		dontmanage.db.set_single_value("System Settings", "deny_multiple_sessions", changed_value)
+		current_value = dontmanage.db.get_single_value("System Settings", "deny_multiple_sessions")
+		self.assertEqual(current_value, changed_value)
+
+	def test_none_no_set_value(self):
+		dontmanage.db.set_value("User", None, "middle_name", "test")
+		with self.assertQueryCount(0):
+			dontmanage.db.set_value("User", None, "middle_name", "test")
+			dontmanage.db.set_value("User", "User", "middle_name", "test")
+
 	def test_update_single_row_single_column(self):
 		dontmanage.db.set_value("ToDo", self.todo1.name, "description", "test_set_value change 1")
 		updated_value = dontmanage.db.get_value("ToDo", self.todo1.name, "description")
 		self.assertEqual(updated_value, "test_set_value change 1")
+
+	@patch("dontmanage.db.set_single_value")
+	def test_set_single_value_with_set_value(self, single_set):
+		dontmanage.db.set_value("Contact Us Settings", None, "country", "India")
+		single_set.assert_called_once()
 
 	def test_update_single_row_multiple_columns(self):
 		description, status = "Upated by test_update_single_row_multiple_columns", "Closed"
@@ -710,9 +742,7 @@ class TestDBSetValue(DontManageTestCase):
 		self.assertEqual(status, updated_status)
 
 	def test_update_multiple_rows_single_column(self):
-		dontmanage.db.set_value(
-			"ToDo", {"description": ("like", "%test_set_value%")}, "description", "change 2"
-		)
+		dontmanage.db.set_value("ToDo", {"description": ("like", "%test_set_value%")}, "description", "change 2")
 
 		self.assertEqual(dontmanage.db.get_value("ToDo", self.todo1.name, "description"), "change 2")
 		self.assertEqual(dontmanage.db.get_value("ToDo", self.todo2.name, "description"), "change 2")
@@ -765,21 +795,20 @@ class TestDBSetValue(DontManageTestCase):
 	def test_set_value(self):
 		self.todo1.reload()
 
-		with patch.object(Database, "sql") as sql_called:
-			dontmanage.db.set_value(
-				self.todo1.doctype,
-				self.todo1.name,
-				"description",
-				f"{self.todo1.description}-edit by `test_for_update`",
-			)
-			first_query = sql_called.call_args_list[0].args[0]
+		dontmanage.db.set_value(
+			self.todo1.doctype,
+			self.todo1.name,
+			"description",
+			f"{self.todo1.description}-edit by `test_for_update`",
+		)
+		query = str(dontmanage.db.last_query)
 
-			if dontmanage.conf.db_type == "postgres":
-				from dontmanage.database.postgres.database import modify_query
+		if dontmanage.conf.db_type == "postgres":
+			from dontmanage.database.postgres.database import modify_query
 
-				self.assertTrue(modify_query("UPDATE `tabToDo` SET") in first_query)
-			if dontmanage.conf.db_type == "mariadb":
-				self.assertTrue("UPDATE `tabToDo` SET" in first_query)
+			self.assertTrue(modify_query("UPDATE `tabToDo` SET") in query)
+		if dontmanage.conf.db_type == "mariadb":
+			self.assertTrue("UPDATE `tabToDo` SET" in query)
 
 	def test_cleared_cache(self):
 		self.todo2.reload()
@@ -790,23 +819,6 @@ class TestDBSetValue(DontManageTestCase):
 		dontmanage.db.set_value(self.todo2.doctype, self.todo2.name, "description", description)
 		cached_doc = dontmanage.get_cached_doc(self.todo2.doctype, self.todo2.name)
 		self.assertEqual(cached_doc.description, description)
-
-	def test_update_alias(self):
-		args = (self.todo1.doctype, self.todo1.name, "description", "Updated by `test_update_alias`")
-		kwargs = {
-			"for_update": False,
-			"modified": None,
-			"modified_by": None,
-			"update_modified": True,
-			"debug": False,
-		}
-
-		self.assertTrue("return self.set_value(" in inspect.getsource(dontmanage.db.update))
-
-		with patch.object(Database, "set_value") as set_value:
-			dontmanage.db.update(*args, **kwargs)
-			set_value.assert_called_once()
-			set_value.assert_called_with(*args, **kwargs)
 
 	@classmethod
 	def tearDownClass(cls):
@@ -935,3 +947,67 @@ class TestTransactionManagement(DontManageTestCase):
 
 		dontmanage.db.commit()
 		self.assertEqual(_get_transaction_id(), _get_transaction_id())
+
+
+# Treat same DB as replica for tests, a separate connection will be opened
+class TestReplicaConnections(DontManageTestCase):
+	def test_switching_to_replica(self):
+		with patch.dict(dontmanage.local.conf, {"read_from_replica": 1, "replica_host": "127.0.0.1"}):
+
+			def db_id():
+				return id(dontmanage.local.db)
+
+			write_connection = db_id()
+			read_only_connection = None
+
+			@dontmanage.read_only()
+			def outer():
+				nonlocal read_only_connection
+				read_only_connection = db_id()
+
+				# A new connection should be opened
+				self.assertNotEqual(read_only_connection, write_connection)
+				inner()
+				# calling nested read only function shouldn't change connection
+				self.assertEqual(read_only_connection, db_id())
+
+			@dontmanage.read_only()
+			def inner():
+				# calling nested read only function shouldn't change connection
+				self.assertEqual(read_only_connection, db_id())
+
+			outer()
+			self.assertEqual(write_connection, db_id())
+
+
+class TestSqlIterator(DontManageTestCase):
+	def test_db_sql_iterator(self):
+		test_queries = [
+			"select * from `tabCountry` order by name",
+			"select code from `tabCountry` order by name",
+			"select code from `tabCountry` order by name limit 5",
+		]
+
+		for query in test_queries:
+			self.assertEqual(
+				dontmanage.db.sql(query, as_dict=True),
+				list(dontmanage.db.sql(query, as_dict=True, as_iterator=True)),
+				msg=f"{query=} results not same as iterator",
+			)
+
+			self.assertEqual(
+				dontmanage.db.sql(query, pluck=True),
+				list(dontmanage.db.sql(query, pluck=True, as_iterator=True)),
+				msg=f"{query=} results not same as iterator",
+			)
+
+			self.assertEqual(
+				dontmanage.db.sql(query, as_list=True),
+				list(dontmanage.db.sql(query, as_list=True, as_iterator=True)),
+				msg=f"{query=} results not same as iterator",
+			)
+
+	@run_only_if(db_type_is.MARIADB)
+	def test_unbuffered_cursor(self):
+		with dontmanage.db.unbuffered_cursor():
+			self.test_db_sql_iterator()

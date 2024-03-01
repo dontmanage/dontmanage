@@ -30,19 +30,55 @@ function get_version_timeline_content(version_doc, frm) {
 			if (p[0] === "docstatus") {
 				if (p[2] === 1) {
 					let message = updater_reference_link
-						? __("{0} submitted this document {1}", [
-								get_user_link(version_doc),
-								updater_reference_link,
-						  ])
-						: __("{0} submitted this document", [get_user_link(version_doc)]);
+						? get_user_message(
+								version_doc.owner,
+								__(
+									"You submitted this document {0}",
+									[updater_reference_link],
+									"Form timeline"
+								),
+								__(
+									"{0} submitted this document {1}",
+									[get_user_link(version_doc.owner), updater_reference_link],
+									"Form timeline"
+								)
+						  )
+						: get_user_message(
+								version_doc.owner,
+								__("You submitted this document", null, "Form timeline"),
+								__(
+									"{0} submitted this document",
+									[get_user_link(version_doc.owner)],
+									"Form timeline"
+								)
+						  );
+
 					out.push(get_version_comment(version_doc, message));
 				} else if (p[2] === 2) {
 					let message = updater_reference_link
-						? __("{0} cancelled this document {1}", [
-								get_user_link(version_doc),
-								updater_reference_link,
-						  ])
-						: __("{0} cancelled this document", [get_user_link(version_doc)]);
+						? get_user_message(
+								version_doc.owner,
+								__(
+									"You cancelled this document {1}",
+									[updater_reference_link],
+									"Form timeline"
+								),
+								__(
+									"{0} cancelled this document {1}",
+									[get_user_link(version_doc.owner), updater_reference_link],
+									"Form timeline"
+								)
+						  )
+						: get_user_message(
+								version_doc.owner,
+								__("You cancelled this document", null, "Form timeline"),
+								__(
+									"{0} cancelled this document",
+									[get_user_link(version_doc.owner)],
+									"Form timeline"
+								)
+						  );
+
 					out.push(get_version_comment(version_doc, message));
 				}
 			} else {
@@ -56,7 +92,7 @@ function get_version_timeline_content(version_doc, frm) {
 					if (field_display_status === "Read" || field_display_status === "Write") {
 						parts.push(
 							__("{0} from {1} to {2}", [
-								__(df.label),
+								__(df.label, null, df.parent),
 								format_content_for_timeline(p[1]),
 								format_content_for_timeline(p[2]),
 							])
@@ -67,19 +103,28 @@ function get_version_timeline_content(version_doc, frm) {
 			return parts.length < 3;
 		});
 		if (parts.length) {
-			let message;
-			if (updater_reference_link) {
-				message = __("{0} changed value of {1} {2}", [
-					get_user_link(version_doc),
-					parts.join(", "),
-					updater_reference_link,
-				]);
-			} else {
-				message = __("{0} changed value of {1}", [
-					get_user_link(version_doc),
-					parts.join(", "),
-				]);
-			}
+			let message = updater_reference_link
+				? get_user_message(
+						version_doc.owner,
+						__("You changed the value of {0} {1}", [
+							parts.join(", "),
+							updater_reference_link,
+						]),
+						__("{0} changed the value of {1} {2}", [
+							get_user_link(version_doc.owner),
+							parts.join(", "),
+							updater_reference_link,
+						])
+				  )
+				: get_user_message(
+						version_doc.owner,
+						__("You changed the value of {0}", [parts.join(", ")]),
+						__("{0} changed the value of {1}", [
+							get_user_link(version_doc.owner),
+							parts.join(", "),
+						])
+				  );
+
 			out.push(get_version_comment(version_doc, message));
 		}
 	}
@@ -120,19 +165,28 @@ function get_version_timeline_content(version_doc, frm) {
 			return parts.length < 3;
 		});
 		if (parts.length) {
-			let message;
-			if (updater_reference_link) {
-				message = __("{0} changed values for {1} {2}", [
-					get_user_link(version_doc),
-					parts.join(", "),
-					updater_reference_link,
-				]);
-			} else {
-				message = __("{0} changed values for {1}", [
-					get_user_link(version_doc),
-					parts.join(", "),
-				]);
-			}
+			let message = updater_reference_link
+				? get_user_message(
+						version_doc.owner,
+						__("You changed the values for {0} {1}", [
+							parts.join(", "),
+							updater_reference_link,
+						]),
+						__("{0} changed the values for {1} {2}", [
+							get_user_link(version_doc.owner),
+							parts.join(", "),
+							updater_reference_link,
+						])
+				  )
+				: get_user_message(
+						version_doc.owner,
+						__("You changed the values for {0}", [parts.join(", ")]),
+						__("{0} changed the values for {1}", [
+							get_user_link(version_doc.owner),
+							parts.join(", "),
+						])
+				  );
+
 			out.push(get_version_comment(version_doc, message));
 		}
 	}
@@ -168,12 +222,17 @@ function get_version_timeline_content(version_doc, frm) {
 				}
 
 				let version_comment = get_version_comment(version_doc, message);
-				let user_link = get_user_link(version_doc);
+				let user_link = get_user_link(version_doc.owner);
 				out.push(`${user_link} ${version_comment}`);
 			}
 		}
 	});
+	const impersonated_by = data.impersonated_by;
 
+	if (impersonated_by) {
+		const impersonated_msg = __("Impersonated by {0}", [get_user_link(impersonated_by)]);
+		out = out.map((message) => `${message} · ${impersonated_msg.bold()}`);
+	}
 	return out;
 }
 
@@ -229,10 +288,13 @@ function format_content_for_timeline(content) {
 	return content.bold();
 }
 
-function get_user_link(doc) {
-	const user = doc.owner;
-	const user_display_text = (dontmanage.user_info(user).fullname || "").bold();
+function get_user_link(user) {
+	const user_display_text = dontmanage.user_info(user).fullname || "";
 	return dontmanage.utils.get_form_link("User", user, true, user_display_text);
 }
 
-export { get_version_timeline_content };
+function get_user_message(user, message_self, message_other) {
+	return dontmanage.utils.is_current_user(user) ? message_self : message_other;
+}
+
+export { get_version_timeline_content, get_user_link, get_user_message };

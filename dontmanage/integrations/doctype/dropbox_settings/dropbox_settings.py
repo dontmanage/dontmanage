@@ -24,6 +24,27 @@ ignore_list = [".DS_Store"]
 
 
 class DropboxSettings(Document):
+	# begin: auto-generated types
+	# This code is auto-generated. Do not modify anything in this block.
+
+	from typing import TYPE_CHECKING
+
+	if TYPE_CHECKING:
+		from dontmanage.types import DF
+
+		app_access_key: DF.Data | None
+		app_secret_key: DF.Password | None
+		backup_frequency: DF.Literal["", "Daily", "Weekly"]
+		dropbox_access_token: DF.Password | None
+		dropbox_refresh_token: DF.Password | None
+		enabled: DF.Check
+		file_backup: DF.Check
+		limit_no_of_backups: DF.Check
+		no_of_backups: DF.Int
+		send_email_for_successful_backup: DF.Check
+		send_notifications_to: DF.Data
+
+	# end: auto-generated types
 	def onload(self):
 		if not self.app_access_key and dontmanage.conf.dropbox_access_key:
 			self.set_onload("dropbox_setup_via_site_config", 1)
@@ -85,7 +106,7 @@ def take_backup_to_dropbox(retry_count=0, upload_db_backup=True):
 		if isinstance(error_log, str):
 			error_message = error_log + "\n" + dontmanage.get_traceback()
 		else:
-			file_and_error = [" - ".join(f) for f in zip(did_not_upload, error_log)]
+			file_and_error = [" - ".join(f) for f in zip(did_not_upload, error_log, strict=False)]
 			error_message = "\n".join(file_and_error) + "\n" + dontmanage.get_traceback()
 
 		send_email(False, "Dropbox", "Dropbox Settings", "send_notifications_to", error_message)
@@ -124,9 +145,7 @@ def backup_to_dropbox(upload_db_backup=True):
 	return did_not_upload, list(set(error_log))
 
 
-def upload_from_folder(
-	path, is_private, dropbox_folder, dropbox_client, did_not_upload, error_log
-):
+def upload_from_folder(path, is_private, dropbox_folder, dropbox_client, did_not_upload, error_log):
 	if not os.path.exists(path):
 		return
 
@@ -290,10 +309,7 @@ def get_dropbox_settings(redirect_uri=False):
 
 def delete_older_backups(dropbox_client, folder_path, to_keep):
 	res = dropbox_client.files_list_folder(path=folder_path)
-	files = []
-	for f in res.entries:
-		if isinstance(f, dropbox.files.FileMetadata) and "sql" in f.name:
-			files.append(f)
+	files = [f for f in res.entries if isinstance(f, dropbox.files.FileMetadata) and "sql" in f.name]
 
 	if len(files) <= to_keep:
 		return

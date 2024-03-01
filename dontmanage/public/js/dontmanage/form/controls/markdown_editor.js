@@ -46,6 +46,7 @@ dontmanage.ui.form.ControlMarkdownEditor = class ControlMarkdownEditor extends (
 	}
 
 	update_preview() {
+		if (!this.markdown_preview) return;
 		const value = this.get_value() || "";
 		this.markdown_preview.html(dontmanage.markdown(value));
 	}

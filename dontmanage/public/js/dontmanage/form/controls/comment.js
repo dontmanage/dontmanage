@@ -9,15 +9,13 @@ dontmanage.ui.form.ControlComment = class ControlComment extends dontmanage.ui.f
 			? $(`
 			<div class="comment-input-wrapper">
 				<div class="comment-input-header">
-					<span>${__("Add a comment")}</span>
+				<span>${__("Comments")}</span>
 				</div>
 				<div class="comment-input-container">
-					<div class="dontmanage-control"></div>
-					<div class="text-muted small">
-						${__("Ctrl+Enter to add comment")}
-					</div>
+				${dontmanage.avatar(dontmanage.session.user, "avatar-medium")}
+					<div class="dontmanage-control col"></div>
 				</div>
-				<button class="btn btn-default btn-comment btn-xs">
+				<button class="btn hidden btn-comment btn-xs" style="margin-left:48px;">
 					${__("Comment")}
 				</button>
 			</div>
@@ -66,9 +64,9 @@ dontmanage.ui.form.ControlComment = class ControlComment extends dontmanage.ui.f
 	update_state() {
 		const value = this.get_value();
 		if (strip_html(value).trim() != "" || value.includes("img")) {
-			this.button.removeClass("btn-default").addClass("btn-primary");
+			this.button.removeClass("hidden").addClass("btn-primary");
 		} else {
-			this.button.addClass("btn-default").removeClass("btn-primary");
+			this.button.addClass("hidden").removeClass("btn-primary");
 		}
 	}
 
@@ -77,6 +75,7 @@ dontmanage.ui.form.ControlComment = class ControlComment extends dontmanage.ui.f
 		return Object.assign(options, {
 			theme: "bubble",
 			bounds: this.quill_container[0],
+			placeholder: __("Type a reply / comment"),
 		});
 	}
 

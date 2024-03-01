@@ -7,7 +7,7 @@ dontmanage.ui.form.ControlCurrency = class ControlCurrency extends dontmanage.ui
 	get_precision() {
 		// always round based on field precision or currency's precision
 		// this method is also called in this.parse()
-		if (!this.df.precision) {
+		if (typeof this.df.precision != "number" && !this.df.precision) {
 			if (dontmanage.boot.sysdefaults.currency_precision) {
 				this.df.precision = dontmanage.boot.sysdefaults.currency_precision;
 			} else {

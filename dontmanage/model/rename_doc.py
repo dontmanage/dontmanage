@@ -47,25 +47,26 @@ def update_document_title(
 
 	# TODO: omit this after runtime type checking (ref: https://github.com/dontmanage/dontmanage/pull/14927)
 	for obj in [docname, updated_title, updated_name]:
-		if not isinstance(obj, (str, NoneType)):
+		if not isinstance(obj, str | NoneType):
 			dontmanage.throw(f"{obj=} must be of type str or None")
 
 	# handle bad API usages
 	merge = sbool(merge)
 	enqueue = sbool(enqueue)
+	action_enqueued = enqueue and not is_scheduler_inactive()
 
 	doc = dontmanage.get_doc(doctype, docname)
 	doc.check_permission(permtype="write")
 
 	title_field = doc.meta.get_title_field()
 
-	title_updated = (
-		updated_title and (title_field != "name") and (updated_title != doc.get(title_field))
-	)
+	title_updated = updated_title and (title_field != "name") and (updated_title != doc.get(title_field))
 	name_updated = updated_name and (updated_name != doc.name)
 
+	queue = kwargs.get("queue") or "default"
+
 	if name_updated:
-		if enqueue and not is_scheduler_inactive():
+		if action_enqueued:
 			current_name = doc.name
 
 			# before_name hook may have DocType specific validations or transformations
@@ -85,23 +86,32 @@ def update_document_title(
 				save_point=True,
 			)
 
-			doc.queue_action("rename", name=transformed_name, merge=merge)
+			doc.queue_action("rename", name=transformed_name, merge=merge, queue=queue)
 		else:
 			doc.rename(updated_name, merge=merge)
 
 	if title_updated:
-		try:
-			setattr(doc, title_field, updated_title)
-			doc.save()
-			dontmanage.msgprint(_("Saved"), alert=True, indicator="green")
-		except Exception as e:
-			if dontmanage.db.is_duplicate_entry(e):
-				dontmanage.throw(
-					_("{0} {1} already exists").format(doctype, dontmanage.bold(docname)),
-					title=_("Duplicate Name"),
-					exc=dontmanage.DuplicateEntryError,
-				)
-			raise
+		if action_enqueued and name_updated:
+			dontmanage.enqueue(
+				"dontmanage.client.set_value",
+				doctype=doc.doctype,
+				name=updated_name,
+				fieldname=title_field,
+				value=updated_title,
+			)
+		else:
+			try:
+				setattr(doc, title_field, updated_title)
+				doc.save()
+				dontmanage.msgprint(_("Saved"), alert=True, indicator="green")
+			except Exception as e:
+				if dontmanage.db.is_duplicate_entry(e):
+					dontmanage.throw(
+						_("{0} {1} already exists").format(doctype, dontmanage.bold(docname)),
+						title=_("Duplicate Name"),
+						exc=dontmanage.DuplicateEntryError,
+					)
+				raise
 
 	return doc.name
 
@@ -109,7 +119,7 @@ def update_document_title(
 def rename_doc(
 	doctype: str | None = None,
 	old: str | None = None,
-	new: str = None,
+	new: str | None = None,
 	force: bool = False,
 	merge: bool = False,
 	ignore_permissions: bool = False,
@@ -189,8 +199,9 @@ def rename_doc(
 	# call after_rename
 	new_doc = dontmanage.get_doc(doctype, new)
 
-	# copy any flags if required
-	new_doc._local = getattr(old_doc, "_local", None)
+	if validate:
+		# copy any flags if required
+		new_doc._local = getattr(old_doc, "_local", None)
 
 	new_doc.run_method("after_rename", old, new, merge)
 
@@ -200,9 +211,7 @@ def rename_doc(
 	if merge:
 		new_doc.add_comment("Edit", _("merged {0} into {1}").format(dontmanage.bold(old), dontmanage.bold(new)))
 	else:
-		new_doc.add_comment(
-			"Edit", _("renamed from {0} to {1}").format(dontmanage.bold(old), dontmanage.bold(new))
-		)
+		new_doc.add_comment("Edit", _("renamed from {0} to {1}").format(dontmanage.bold(old), dontmanage.bold(new)))
 
 	if merge:
 		dontmanage.delete_doc(doctype, old)
@@ -345,9 +354,7 @@ def validate_rename(
 		_SAVE_POINT = f"validate_rename_{dontmanage.generate_hash(length=8)}"
 		dontmanage.db.savepoint(_SAVE_POINT)
 
-	exists = (
-		dontmanage.qb.from_(doctype).where(Field("name") == new).for_update().select("name").run(pluck=True)
-	)
+	exists = dontmanage.qb.from_(doctype).where(Field("name") == new).for_update().select("name").run(pluck=True)
 	exists = exists[0] if exists else None
 
 	if not dontmanage.db.exists(doctype, old):
@@ -356,19 +363,17 @@ def validate_rename(
 	if old == new:
 		dontmanage.throw(_("No changes made because old and new name are the same.").format(old, new))
 
-	if merge and not exists:
-		dontmanage.throw(_("{0} {1} does not exist, select a new target to merge").format(doctype, new))
-
 	if exists and exists != new:
 		# for fixing case, accents
 		exists = None
 
+	if merge and not exists:
+		dontmanage.throw(_("{0} {1} does not exist, select a new target to merge").format(doctype, new))
+
 	if not merge and exists and not ignore_if_exists:
 		dontmanage.throw(_("Another {0} with name {1} exists, select another name").format(doctype, new))
 
-	if not (
-		ignore_permissions or dontmanage.permissions.has_permission(doctype, "write", raise_exception=False)
-	):
+	if not (ignore_permissions or dontmanage.permissions.has_permission(doctype, "write", raise_exception=False)):
 		dontmanage.throw(_("You need write permission to rename"))
 
 	if not (force or ignore_permissions) and not meta.allow_rename:
@@ -385,7 +390,7 @@ def validate_rename(
 
 def rename_doctype(doctype: str, old: str, new: str) -> None:
 	# change options for fieldtype Table, Table MultiSelect and Link
-	fields_with_options = ("Link",) + dontmanage.model.table_fields
+	fields_with_options = ("Link", *dontmanage.model.table_fields)
 
 	for fieldtype in fields_with_options:
 		update_options_for_fieldtype(fieldtype, old, new)
@@ -451,11 +456,12 @@ def get_link_fields(doctype: str) -> list[dict]:
 		cf = dontmanage.qb.DocType("Custom Field")
 		ps = dontmanage.qb.DocType("Property Setter")
 
-		st_issingle = dontmanage.qb.from_(dt).select(dt.issingle).where(dt.name == df.parent).as_("issingle")
 		standard_fields = (
 			dontmanage.qb.from_(df)
-			.select(df.parent, df.fieldname, st_issingle)
-			.where((df.options == doctype) & (df.fieldtype == "Link"))
+			.inner_join(dt)
+			.on(df.parent == dt.name)
+			.select(df.parent, df.fieldname, dt.issingle.as_("issingle"))
+			.where((df.options == doctype) & (df.fieldtype == "Link") & (dt.is_virtual == 0))
 			.run(as_dict=True)
 		)
 
@@ -467,9 +473,7 @@ def get_link_fields(doctype: str) -> list[dict]:
 			.run(as_dict=True)
 		)
 
-		ps_issingle = (
-			dontmanage.qb.from_(dt).select(dt.issingle).where(dt.name == ps.doc_type).as_("issingle")
-		)
+		ps_issingle = dontmanage.qb.from_(dt).select(dt.issingle).where(dt.name == ps.doc_type).as_("issingle")
 		property_setter_fields = (
 			dontmanage.qb.from_(ps)
 			.select(ps.doc_type.as_("parent"), ps.field_name.as_("fieldname"), ps_issingle)
@@ -488,6 +492,9 @@ def update_options_for_fieldtype(fieldtype: str, old: str, new: str) -> None:
 
 	if dontmanage.conf.developer_mode:
 		for name in dontmanage.get_all("DocField", filters={"options": old}, pluck="parent"):
+			if name in (old, new):
+				continue
+
 			doctype = dontmanage.get_doc("DocType", name)
 			save = False
 			for f in doctype.fields:
@@ -496,11 +503,11 @@ def update_options_for_fieldtype(fieldtype: str, old: str, new: str) -> None:
 					save = True
 			if save:
 				doctype.save()
-	else:
-		DocField = dontmanage.qb.DocType("DocField")
-		dontmanage.qb.update(DocField).set(DocField.options, new).where(
-			(DocField.fieldtype == fieldtype) & (DocField.options == old)
-		).run()
+
+	DocField = dontmanage.qb.DocType("DocField")
+	dontmanage.qb.update(DocField).set(DocField.options, new).where(
+		(DocField.fieldtype == fieldtype) & (DocField.options == old)
+	).run()
 
 	dontmanage.qb.update(CustomField).set(CustomField.options, new).where(
 		(CustomField.fieldtype == fieldtype) & (CustomField.options == old)
@@ -545,9 +552,7 @@ def get_select_fields(old: str, new: str) -> list[dict]:
 	)
 
 	# remove fields whose options have been changed using property setter
-	ps_issingle = (
-		dontmanage.qb.from_(dt).select(dt.issingle).where(dt.name == ps.doc_type).as_("issingle")
-	)
+	ps_issingle = dontmanage.qb.from_(dt).select(dt.issingle).where(dt.name == ps.doc_type).as_("issingle")
 	property_setter_select_fields = (
 		dontmanage.qb.from_(ps)
 		.select(ps.doc_type.as_("parent"), ps.field_name.as_("fieldname"), ps_issingle)
@@ -576,17 +581,13 @@ def update_select_field_values(old: str, new: str):
 		& (DocField.options.like(f"%\n{old}%") | DocField.options.like(f"%{old}\n%"))
 	).run()
 
-	dontmanage.qb.update(CustomField).set(
-		CustomField.options, Replace(CustomField.options, old, new)
-	).where(
+	dontmanage.qb.update(CustomField).set(CustomField.options, Replace(CustomField.options, old, new)).where(
 		(CustomField.fieldtype == "Select")
 		& (CustomField.dt != new)
 		& (CustomField.options.like(f"%\n{old}%") | CustomField.options.like(f"%{old}\n%"))
 	).run()
 
-	dontmanage.qb.update(PropertySetter).set(
-		PropertySetter.value, Replace(PropertySetter.value, old, new)
-	).where(
+	dontmanage.qb.update(PropertySetter).set(PropertySetter.value, Replace(PropertySetter.value, old, new)).where(
 		(PropertySetter.property == "options")
 		& (PropertySetter.field_name.notnull())
 		& (PropertySetter.doc_type != new)
@@ -642,9 +643,7 @@ def rename_dynamic_links(doctype: str, old: str, new: str):
 			).run()
 
 
-def bulk_rename(
-	doctype: str, rows: list[list] | None = None, via_console: bool = False
-) -> list[str] | None:
+def bulk_rename(doctype: str, rows: list[list] | None = None, via_console: bool = False) -> list[str] | None:
 	"""Bulk rename documents
 
 	:param doctype: DocType to be renamed
@@ -682,39 +681,3 @@ def bulk_rename(
 
 	if not via_console:
 		return rename_log
-
-
-def update_linked_doctypes(
-	doctype: str, docname: str, linked_to: str, value: str, ignore_doctypes: list | None = None
-) -> None:
-	from dontmanage.model.utils.rename_doc import update_linked_doctypes
-
-	show_deprecation_warning("update_linked_doctypes")
-
-	return update_linked_doctypes(
-		doctype=doctype,
-		docname=docname,
-		linked_to=linked_to,
-		value=value,
-		ignore_doctypes=ignore_doctypes,
-	)
-
-
-def get_fetch_fields(
-	doctype: str, linked_to: str, ignore_doctypes: list | None = None
-) -> list[dict]:
-	from dontmanage.model.utils.rename_doc import get_fetch_fields
-
-	show_deprecation_warning("get_fetch_fields")
-
-	return get_fetch_fields(doctype=doctype, linked_to=linked_to, ignore_doctypes=ignore_doctypes)
-
-
-def show_deprecation_warning(funct: str) -> None:
-	from click import secho
-
-	message = (
-		f"Function dontmanage.model.rename_doc.{funct} has been deprecated and "
-		"moved to the dontmanage.model.utils.rename_doc"
-	)
-	secho(message, fg="yellow")

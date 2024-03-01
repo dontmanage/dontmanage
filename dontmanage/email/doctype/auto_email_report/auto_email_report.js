@@ -35,6 +35,15 @@ dontmanage.ui.form.on("Auto Email Report", {
 				frm.set_value("email_to", dontmanage.session.user);
 			}
 		}
+
+		frm.set_query("sender", function () {
+			return {
+				filters: {
+					enable_outgoing: 1,
+					awaiting_password: 0,
+				},
+			};
+		});
 	},
 	report: function (frm) {
 		frm.set_value("filters", "");
@@ -61,14 +70,18 @@ dontmanage.ui.form.on("Auto Email Report", {
 			frm.trigger("show_filters");
 		}
 	},
-	show_filters: function (frm) {
+	show_filters: async function (frm) {
 		var wrapper = $(frm.get_field("filters_display").wrapper);
 		wrapper.empty();
+		let reference_report = dontmanage.query_reports[frm.doc.report];
+		if (!reference_report || !reference_report.filters) {
+			reference_report = await dontmanage.model.with_doc("Report", frm.doc.report);
+		}
 		if (
 			frm.doc.report_type === "Custom Report" ||
 			(frm.doc.report_type !== "Report Builder" &&
-				dontmanage.query_reports[frm.doc.report] &&
-				dontmanage.query_reports[frm.doc.report].filters)
+				reference_report &&
+				reference_report.filters)
 		) {
 			// make a table to show filters
 			var table = $(
@@ -84,18 +97,29 @@ dontmanage.ui.form.on("Auto Email Report", {
 				wrapper
 			);
 
-			var filters = JSON.parse(frm.doc.filters || "{}");
+			var filters = {};
 
 			let report_filters;
 
 			if (
 				frm.doc.report_type === "Custom Report" &&
-				dontmanage.query_reports[frm.doc.reference_report] &&
-				dontmanage.query_reports[frm.doc.reference_report].filters
+				reference_report &&
+				reference_report.filters
 			) {
+				if (frm.doc.filters) {
+					filters = JSON.parse(frm.doc.filters);
+				} else {
+					dontmanage.db.get_value("Report", frm.doc.report, "json", (r) => {
+						if (r && r.json) {
+							filters = JSON.parse(r.json).filters || {};
+						}
+					});
+				}
+
 				report_filters = dontmanage.query_reports[frm.doc.reference_report].filters;
 			} else {
-				report_filters = dontmanage.query_reports[frm.doc.report].filters;
+				filters = JSON.parse(frm.doc.filters || "{}");
+				report_filters = reference_report.filters;
 			}
 
 			if (report_filters && report_filters.length > 0) {

@@ -5,15 +5,15 @@ import json
 
 import dontmanage
 from dontmanage.geo.country_info import get_country_info
+from dontmanage.permissions import AUTOMATIC_ROLES
 from dontmanage.translate import get_messages_for_boot, send_translations, set_default_language
-from dontmanage.utils import cint, strip
+from dontmanage.utils import cint, now, strip
 from dontmanage.utils.password import update_password
 
 from . import install_fixtures
 
 
-def get_setup_stages(args):
-
+def get_setup_stages(args):  # nosemgrep
 	# App setup stage functions should not include dontmanage.db.commit
 	# That is done by dontmanage after successful completion of all stages
 	stages = [
@@ -33,9 +33,7 @@ def get_setup_stages(args):
 			# post executing hooks
 			"status": "Wrapping up",
 			"fail_msg": "Failed to complete setup",
-			"tasks": [
-				{"fn": run_post_setup_complete, "args": args, "fail_msg": "Failed to complete setup"}
-			],
+			"tasks": [{"fn": run_post_setup_complete, "args": args, "fail_msg": "Failed to complete setup"}],
 		}
 	)
 
@@ -64,6 +62,9 @@ def setup_complete(args):
 
 @dontmanage.task()
 def process_setup_stages(stages, user_input, is_background_task=False):
+	from dontmanage.utils.telemetry import capture
+
+	capture("initated_server_side", "setup")
 	try:
 		dontmanage.flags.in_setup_wizard = True
 		current_task = None
@@ -79,15 +80,19 @@ def process_setup_stages(stages, user_input, is_background_task=False):
 				task.get("fn")(task.get("args"))
 	except Exception:
 		handle_setup_exception(user_input)
+		message = current_task.get("fail_msg") if current_task else "Failed to complete setup"
+		dontmanage.log_error(title=f"Setup failed: {message}")
 		if not is_background_task:
-			return {"status": "fail", "fail": current_task.get("fail_msg")}
+			dontmanage.response["setup_wizard_failure_message"] = message
+			raise
 		dontmanage.publish_realtime(
 			"setup_task",
-			{"status": "fail", "fail_msg": current_task.get("fail_msg")},
+			{"status": "fail", "fail_msg": message},
 			user=dontmanage.session.user,
 		)
 	else:
 		run_setup_success(user_input)
+		capture("completed_server_side", "setup")
 		if not is_background_task:
 			return {"status": "ok"}
 		dontmanage.publish_realtime("setup_task", {"status": "ok"}, user=dontmanage.session.user)
@@ -95,60 +100,66 @@ def process_setup_stages(stages, user_input, is_background_task=False):
 		dontmanage.flags.in_setup_wizard = False
 
 
-def update_global_settings(args):
+def update_global_settings(args):  # nosemgrep
 	if args.language and args.language != "English":
 		set_default_language(get_language_code(args.lang))
 		dontmanage.db.commit()
 	dontmanage.clear_cache()
 
 	update_system_settings(args)
-	update_user_name(args)
+	create_or_update_user(args)
+	set_timezone(args)
 
 
-def run_post_setup_complete(args):
+def run_post_setup_complete(args):  # nosemgrep
 	disable_future_access()
 	dontmanage.db.commit()
 	dontmanage.clear_cache()
+	# HACK: due to race condition sometimes old doc stays in cache.
+	# Remove this when we have reliable cache reset for docs
+	dontmanage.get_cached_doc("System Settings") and dontmanage.get_doc("System Settings")
 
 
-def run_setup_success(args):
+def run_setup_success(args):  # nosemgrep
 	for hook in dontmanage.get_hooks("setup_wizard_success"):
 		dontmanage.get_attr(hook)(args)
 	install_fixtures.install()
 
 
-def get_stages_hooks(args):
+def get_stages_hooks(args):  # nosemgrep
 	stages = []
 	for method in dontmanage.get_hooks("setup_wizard_stages"):
 		stages += dontmanage.get_attr(method)(args)
 	return stages
 
 
-def get_setup_complete_hooks(args):
-	stages = []
-	for method in dontmanage.get_hooks("setup_wizard_complete"):
-		stages.append(
-			{
-				"status": "Executing method",
-				"fail_msg": "Failed to execute method",
-				"tasks": [
-					{"fn": dontmanage.get_attr(method), "args": args, "fail_msg": "Failed to execute method"}
-				],
-			}
-		)
-	return stages
+def get_setup_complete_hooks(args):  # nosemgrep
+	return [
+		{
+			"status": "Executing method",
+			"fail_msg": "Failed to execute method",
+			"tasks": [
+				{
+					"fn": dontmanage.get_attr(method),
+					"args": args,
+					"fail_msg": "Failed to execute method",
+				}
+			],
+		}
+		for method in dontmanage.get_hooks("setup_wizard_complete")
+	]
 
 
-def handle_setup_exception(args):
+def handle_setup_exception(args):  # nosemgrep
 	dontmanage.db.rollback()
 	if args:
-		traceback = dontmanage.get_traceback()
+		traceback = dontmanage.get_traceback(with_context=True)
 		print(traceback)
 		for hook in dontmanage.get_hooks("setup_wizard_exception"):
 			dontmanage.get_attr(hook)(traceback, args)
 
 
-def update_system_settings(args):
+def update_system_settings(args):  # nosemgrep
 	number_format = get_country_info(args.get("country")).get("number_format", "#,###.##")
 
 	# replace these as float number formats, as they have 0 precision
@@ -165,74 +176,65 @@ def update_system_settings(args):
 			"language": get_language_code(args.get("language")) or "en",
 			"time_zone": args.get("timezone"),
 			"float_precision": 3,
+			"rounding_method": "Banker's Rounding",
 			"date_format": dontmanage.db.get_value("Country", args.get("country"), "date_format"),
 			"time_format": dontmanage.db.get_value("Country", args.get("country"), "time_format"),
 			"number_format": number_format,
 			"enable_scheduler": 1 if not dontmanage.flags.in_test else 0,
 			"backup_limit": 3,  # Default for downloadable backups
+			"enable_telemetry": cint(args.get("enable_telemetry")),
 		}
 	)
 	system_settings.save()
+	if args.get("allow_recording_first_session"):
+		dontmanage.db.set_default("session_recording_start", now())
 
 
-def update_user_name(args):
+def create_or_update_user(args):  # nosemgrep
+	email = args.get("email")
+	if not email:
+		return
+
 	first_name, last_name = args.get("full_name", ""), ""
 	if " " in first_name:
 		first_name, last_name = first_name.split(" ", 1)
 
-	if args.get("email"):
-		if dontmanage.db.exists("User", args.get("email")):
-			# running again
-			return
-
-		args["name"] = args.get("email")
-
+	if user := dontmanage.db.get_value("User", email, ["first_name", "last_name"], as_dict=True):
+		if user.first_name != first_name or user.last_name != last_name:
+			(
+				dontmanage.qb.update("User")
+				.set("first_name", first_name)
+				.set("last_name", last_name)
+				.set("full_name", args.get("full_name"))
+			).run()
+	else:
 		_mute_emails, dontmanage.flags.mute_emails = dontmanage.flags.mute_emails, True
-		doc = dontmanage.get_doc(
+
+		user = dontmanage.new_doc("User")
+		user.update(
 			{
-				"doctype": "User",
-				"email": args.get("email"),
+				"email": email,
 				"first_name": first_name,
 				"last_name": last_name,
 			}
 		)
-		doc.flags.no_welcome_mail = True
-		doc.insert()
+		user.append_roles(*_get_default_roles())
+		user.flags.no_welcome_mail = True
+		user.insert()
+
 		dontmanage.flags.mute_emails = _mute_emails
-		update_password(args.get("email"), args.get("password"))
 
-	elif first_name:
-		args.update({"name": dontmanage.session.user, "first_name": first_name, "last_name": last_name})
-
-		dontmanage.db.sql(
-			"""update `tabUser` SET first_name=%(first_name)s,
-			last_name=%(last_name)s WHERE name=%(name)s""",
-			args,
-		)
-
-	if args.get("attach_user"):
-		attach_user = args.get("attach_user").split(",")
-		if len(attach_user) == 3:
-			filename, filetype, content = attach_user
-			_file = dontmanage.get_doc(
-				{
-					"doctype": "File",
-					"file_name": filename,
-					"attached_to_doctype": "User",
-					"attached_to_name": args.get("name"),
-					"content": content,
-					"decode": True,
-				}
-			)
-			_file.save()
-			fileurl = _file.file_url
-			dontmanage.db.set_value("User", args.get("name"), "user_image", fileurl)
-
-	if args.get("name"):
-		add_all_roles_to(args.get("name"))
+	if args.get("password"):
+		update_password(email, args.get("password"))
 
 
-def parse_args(args):
+def set_timezone(args):  # nosemgrep
+	if args.get("timezone"):
+		for name in dontmanage.STANDARD_USERS:
+			dontmanage.db.set_value("User", name, "time_zone", args.get("timezone"))
+
+
+def parse_args(args):  # nosemgrep
 	if not args:
 		args = dontmanage.local.form_dict
 	if isinstance(args, str):
@@ -250,36 +252,27 @@ def parse_args(args):
 
 def add_all_roles_to(name):
 	user = dontmanage.get_doc("User", name)
-	for role in dontmanage.db.sql("""select name from tabRole"""):
-		if role[0] not in [
-			"Administrator",
-			"Guest",
-			"All",
-			"Customer",
-			"Supplier",
-			"Partner",
-			"Employee",
-		]:
-			d = user.append("roles")
-			d.role = role[0]
+	user.append_roles(*_get_default_roles())
 	user.save()
+
+
+def _get_default_roles() -> set[str]:
+	skip_roles = {
+		"Administrator",
+		"Customer",
+		"Supplier",
+		"Partner",
+		"Employee",
+	}.union(AUTOMATIC_ROLES)
+	return set(dontmanage.get_all("Role", pluck="name")) - skip_roles
 
 
 def disable_future_access():
 	dontmanage.db.set_default("desktop:home_page", "workspace")
-	dontmanage.db.set_single_value("System Settings", "setup_complete", 1)
-
 	# Enable onboarding after install
 	dontmanage.db.set_single_value("System Settings", "enable_onboarding", 1)
 
-	if not dontmanage.flags.in_test:
-		# remove all roles and add 'Administrator' to prevent future access
-		page = dontmanage.get_doc("Page", "setup-wizard")
-		page.roles = []
-		page.append("roles", {"role": "Administrator"})
-		page.flags.do_not_update_json = True
-		page.flags.ignore_permissions = True
-		page.save()
+	dontmanage.db.set_single_value("System Settings", "setup_complete", 1)
 
 
 @dontmanage.whitelist()
@@ -319,12 +312,12 @@ def load_country():
 @dontmanage.whitelist()
 def load_user_details():
 	return {
-		"full_name": dontmanage.cache().hget("full_name", "signup"),
-		"email": dontmanage.cache().hget("email", "signup"),
+		"full_name": dontmanage.cache.hget("full_name", "signup"),
+		"email": dontmanage.cache.hget("email", "signup"),
 	}
 
 
-def prettify_args(args):
+def prettify_args(args):  # nosemgrep
 	# remove attachments
 	for key, val in args.items():
 		if isinstance(val, str) and "data:image" in val:
@@ -333,12 +326,11 @@ def prettify_args(args):
 			args[key] = f"Image Attached: '{filename}' of size {size} MB"
 
 	pretty_args = []
-	for key in sorted(args):
-		pretty_args.append(f"{key} = {args[key]}")
+	pretty_args.extend(f"{key} = {args[key]}" for key in sorted(args))
 	return pretty_args
 
 
-def email_setup_wizard_exception(traceback, args):
+def email_setup_wizard_exception(traceback, args):  # nosemgrep
 	if not dontmanage.conf.setup_wizard_exception_email:
 		return
 
@@ -371,7 +363,7 @@ def email_setup_wizard_exception(traceback, args):
 		traceback=traceback,
 		args="\n".join(pretty_args),
 		user=dontmanage.session.user,
-		headers=dontmanage.request.headers,
+		headers=dontmanage.request.headers if dontmanage.request else "[no request]",
 	)
 
 	dontmanage.sendmail(
@@ -383,7 +375,7 @@ def email_setup_wizard_exception(traceback, args):
 	)
 
 
-def log_setup_wizard_exception(traceback, args):
+def log_setup_wizard_exception(traceback, args):  # nosemgrep
 	with open("../logs/setup-wizard.log", "w+") as setup_log:
 		setup_log.write(traceback)
 		setup_log.write(json.dumps(args))

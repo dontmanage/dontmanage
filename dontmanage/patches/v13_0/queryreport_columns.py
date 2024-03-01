@@ -15,4 +15,4 @@ def execute():
 		if isinstance(data, list):
 			# double escape braces
 			jstr = f'{{"columns":{jstr}}}'
-			dontmanage.db.update("Report", record["name"], "json", jstr)
+			dontmanage.db.set_value("Report", record["name"], "json", jstr)

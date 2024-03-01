@@ -13,6 +13,24 @@ from dontmanage.model.document import Document
 
 
 class GoogleContacts(Document):
+	# begin: auto-generated types
+	# This code is auto-generated. Do not modify anything in this block.
+
+	from typing import TYPE_CHECKING
+
+	if TYPE_CHECKING:
+		from dontmanage.types import DF
+
+		authorization_code: DF.Password | None
+		email_id: DF.Data
+		enable: DF.Check
+		last_sync_on: DF.Datetime | None
+		next_sync_token: DF.Password | None
+		pull_from_google_contacts: DF.Check
+		push_to_google_contacts: DF.Check
+		refresh_token: DF.Password | None
+
+	# end: auto-generated types
 	def validate(self):
 		if not dontmanage.db.get_single_value("Google Settings", "enable"):
 			dontmanage.throw(_("Enable Google API in Google Settings."))
@@ -36,10 +54,10 @@ def authorize_access(g_contact, reauthorize=False, code=None):
 	If no Authorization code get it from Google and then request for Refresh Token.
 	Google Contact Name is set to flags to set_value after Authorization Code is obtained.
 	"""
+	contact = dontmanage.get_doc("Google Contacts", g_contact)
+	contact.check_permission("write")
 
-	oauth_code = (
-		dontmanage.db.get_value("Google Contacts", g_contact, "authorization_code") if not code else code
-	)
+	oauth_code = code or contact.get_password("authorization_code")
 	oauth_obj = GoogleOAuth("contacts")
 
 	if not oauth_code or reauthorize:
@@ -51,11 +69,9 @@ def authorize_access(g_contact, reauthorize=False, code=None):
 		)
 
 	r = oauth_obj.authorize(oauth_code)
-	dontmanage.db.set_value(
-		"Google Contacts",
-		g_contact,
-		{"authorization_code": oauth_code, "refresh_token": r.get("refresh_token")},
-	)
+	contact.authorization_code = oauth_code
+	contact.refresh_token = r.get("refresh_token")
+	contact.save()
 
 
 def get_google_contacts_object(g_contact):
@@ -125,9 +141,7 @@ def sync_contacts_from_google_contacts(g_contact):
 				).format(account.name, err.resp.status)
 			)
 
-		for contact in contacts.get("connections", []):
-			results.append(contact)
-
+		results.extend(contact for contact in contacts.get("connections", []))
 		if not contacts.get("nextPageToken"):
 			if contacts.get("nextSyncToken"):
 				dontmanage.db.set_value(
@@ -142,6 +156,10 @@ def sync_contacts_from_google_contacts(g_contact):
 		dontmanage.publish_realtime(
 			"import_google_contacts", dict(progress=idx + 1, total=len(results)), user=dontmanage.session.user
 		)
+		# Work-around to fix
+		# https://github.com/dontmanage/dontmanage/issues/22648
+		if not connection.get("names"):
+			continue
 
 		for name in connection.get("names"):
 			if name.get("metadata").get("primary"):
@@ -161,12 +179,14 @@ def sync_contacts_from_google_contacts(g_contact):
 
 				for email in connection.get("emailAddresses", []):
 					contact.add_email(
-						email_id=email.get("value"), is_primary=1 if email.get("metadata").get("primary") else 0
+						email_id=email.get("value"),
+						is_primary=1 if email.get("metadata").get("primary") else 0,
 					)
 
 				for phone in connection.get("phoneNumbers", []):
 					contact.add_phone(
-						phone=phone.get("value"), is_primary_phone=1 if phone.get("metadata").get("primary") else 0
+						phone=phone.get("value"),
+						is_primary_phone=1 if phone.get("metadata").get("primary") else 0,
 					)
 
 				contact.insert(ignore_permissions=True)

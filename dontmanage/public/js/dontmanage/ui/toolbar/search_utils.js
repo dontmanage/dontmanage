@@ -59,32 +59,47 @@ dontmanage.search.utils = {
 		});
 
 		find(values, keywords, function (match) {
-			var out = {
-				route: match[1],
-			};
-			if (match[1][0] === "Form") {
-				if (match[1].length > 2 && match[1][1] !== match[1][2]) {
-					out.label = __(match[1][1]) + " " + match[1][2].bold();
-					out.value = __(match[1][1]) + " " + match[1][2];
+			const route = match[1];
+			const out = { route: route };
+
+			if (route[0] === "Form") {
+				const doctype = route[1];
+				if (route.length > 2 && doctype !== route[2]) {
+					const docname = route[2];
+					out.label = __(doctype) + " " + docname.bold();
+					out.value = __(doctype) + " " + docname;
 				} else {
-					out.label = __(match[1][1]).bold();
-					out.value = __(match[1][1]);
+					out.label = __(doctype).bold();
+					out.value = __(doctype);
 				}
 			} else if (
-				["List", "Tree", "Workspaces", "query-report"].includes(match[1][0]) &&
-				match[1].length > 1
+				["List", "Tree", "Workspaces", "query-report"].includes(route[0]) &&
+				route.length > 1
 			) {
-				var type = match[1][0],
-					label = type;
-				if (type === "Workspaces") label = "Workspace";
-				else if (type === "query-report" || match[1][2] === "Report") label = "Report";
-				out.label = __(`{0} ${label}`, [__(match[1][1]).bold()]);
-				out.value = __(`{0} ${label}`, [__(match[1][1])]);
+				const view_type = route[0];
+				const view_name = route[1];
+				switch (view_type) {
+					case "List":
+						out.label = __("{0} List", [__(view_name).bold()]);
+						out.value = __("{0} List", [__(view_name)]);
+						break;
+					case "Tree":
+						out.label = __("{0} Tree", [__(view_name).bold()]);
+						out.value = __("{0} Tree", [__(view_name)]);
+						break;
+					case "Workspaces":
+						out.label = __("{0} Workspace", [__(view_name).bold()]);
+						out.value = __("{0} Workspace", [__(view_name)]);
+						break;
+					case "query-report":
+						out.label = __("{0} Report", [__(view_name).bold()]);
+						out.value = __("{0} Report", [__(view_name)]);
+						break;
+				}
 			} else if (match[0]) {
 				out.label = match[0].bold();
 				out.value = match[0];
 			} else {
-				// eslint-disable-next-line
 				console.log("Illegal match", match);
 			}
 			out.index = 80;
@@ -114,21 +129,21 @@ dontmanage.search.utils = {
 	get_search_in_list: function (keywords) {
 		var me = this;
 		var out = [];
-		if (in_list(keywords.split(" "), "in") && keywords.slice(-2) !== "in") {
+		if (keywords.split(" ").includes("in") && keywords.slice(-2) !== "in") {
 			var parts = keywords.split(" in ");
 			dontmanage.boot.user.can_read.forEach(function (item) {
 				if (dontmanage.boot.user.can_search.includes(item)) {
-					var level = me.fuzzy_search(parts[1], item);
-					if (level) {
+					const search_result = me.fuzzy_search(parts[1], item, true);
+					if (search_result.score) {
 						out.push({
 							type: "In List",
 							label: __("Find {0} in {1}", [
 								__(parts[0]),
-								me.bolden_match_part(__(item), parts[1]),
+								search_result.marked_string,
 							]),
 							value: __("Find {0} in {1}", [__(parts[0]), __(item)]),
 							route_options: { name: ["like", "%" + parts[0] + "%"] },
-							index: 1 + level,
+							index: 1 + search_result.score,
 							route: ["List", item],
 						});
 					}
@@ -144,11 +159,12 @@ dontmanage.search.utils = {
 		var firstKeyword = keywords.split(" ")[0];
 		if (firstKeyword.toLowerCase() === __("new")) {
 			dontmanage.boot.user.can_create.forEach(function (item) {
-				var level = me.fuzzy_search(keywords.substr(4), item);
+				const search_result = me.fuzzy_search(keywords.substr(4), item, true);
+				var level = search_result.score;
 				if (level) {
 					out.push({
 						type: "New",
-						label: __("New {0}", [me.bolden_match_part(__(item), keywords.substr(4))]),
+						label: __("New {0}", [search_result.marked_string || __(item)]),
 						value: __("New {0}", [__(item)]),
 						index: 1 + level,
 						match: item,
@@ -166,42 +182,41 @@ dontmanage.search.utils = {
 		var me = this;
 		var out = [];
 
-		var level, target;
+		var score, marked_string, target;
 		var option = function (type, route, order) {
 			// check to skip extra list in the text
 			// eg. Price List List should be only Price List
 			let skip_list = type === "List" && target.endsWith("List");
-			let label_without_type = me.bolden_match_part(__(target), keywords);
 			if (skip_list) {
-				var label = label_without_type;
+				var label = marked_string || __(target);
 			} else {
-				label = __(`{0} ${skip_list ? "" : type}`, [label_without_type]);
+				label = __(`{0} ${skip_list ? "" : type}`, [marked_string || __(target)]);
 			}
-
 			return {
 				type: type,
 				label: label,
 				value: __(`{0} ${type}`, [target]),
-				index: level + order,
+				index: score + order,
 				match: target,
 				route: route,
 			};
 		};
 		dontmanage.boot.user.can_read.forEach(function (item) {
-			level = me.fuzzy_search(keywords, item);
-			if (level) {
+			const search_result = me.fuzzy_search(keywords, item, true);
+			({ score, marked_string } = search_result);
+			if (score) {
 				target = item;
-				if (in_list(dontmanage.boot.single_types, item)) {
+				if (dontmanage.boot.single_types.includes(item)) {
 					out.push(option("", ["Form", item, item], 0.05));
 				} else if (dontmanage.boot.user.can_search.includes(item)) {
 					// include 'making new' option
-					if (in_list(dontmanage.boot.user.can_create, item)) {
+					if (dontmanage.boot.user.can_create.includes(item)) {
 						var match = item;
 						out.push({
 							type: "New",
-							label: __("New {0}", [me.bolden_match_part(__(item), keywords)]),
+							label: __("New {0}", [search_result.marked_string || __(item)]),
 							value: __("New {0}", [__(item)]),
-							index: level + 0.015,
+							index: score + 0.015,
 							match: item,
 							onclick: function () {
 								dontmanage.new_doc(match, true);
@@ -224,7 +239,8 @@ dontmanage.search.utils = {
 		var out = [];
 		var route;
 		Object.keys(dontmanage.boot.user.all_reports).forEach(function (item) {
-			var level = me.fuzzy_search(keywords, item);
+			const search_result = me.fuzzy_search(keywords, item, true);
+			var level = search_result.score;
 			if (level > 0) {
 				var report = dontmanage.boot.user.all_reports[item];
 				if (report.report_type == "Report Builder")
@@ -232,7 +248,7 @@ dontmanage.search.utils = {
 				else route = ["query-report", item];
 				out.push({
 					type: "Report",
-					label: __("Report {0}", [me.bolden_match_part(__(item), keywords)]),
+					label: __("Report {0}", [search_result.marked_string || __(item)]),
 					value: __("Report {0}", [__(item)]),
 					index: level,
 					route: route,
@@ -252,12 +268,13 @@ dontmanage.search.utils = {
 		});
 		Object.keys(this.pages).forEach(function (item) {
 			if (item == "Hub" || item == "hub") return;
-			var level = me.fuzzy_search(keywords, item);
+			const search_result = me.fuzzy_search(keywords, item, true);
+			var level = search_result.score;
 			if (level) {
 				var page = me.pages[item];
 				out.push({
 					type: "Page",
-					label: __("Open {0}", [me.bolden_match_part(__(item), keywords)]),
+					label: __("Open {0}", [search_result.marked_string || __(item)]),
 					value: __("Open {0}", [__(item)]),
 					match: item,
 					index: level,
@@ -301,11 +318,12 @@ dontmanage.search.utils = {
 		var me = this;
 		var out = [];
 		dontmanage.boot.allowed_workspaces.forEach(function (item) {
-			var level = me.fuzzy_search(keywords, item.name);
+			const search_result = me.fuzzy_search(keywords, item.name, true);
+			var level = search_result.score;
 			if (level > 0) {
 				var ret = {
 					type: "Workspace",
-					label: __("Open {0}", [me.bolden_match_part(__(item.name), keywords)]),
+					label: __("Open {0}", [search_result.marked_string || __(item.name)]),
 					value: __("Open {0}", [__(item.name)]),
 					index: level,
 					route: [dontmanage.router.slug(item.name)],
@@ -321,11 +339,12 @@ dontmanage.search.utils = {
 		var me = this;
 		var out = [];
 		dontmanage.boot.dashboards.forEach(function (item) {
-			var level = me.fuzzy_search(keywords, item.name);
+			const search_result = me.fuzzy_search(keywords, item.name, true);
+			var level = search_result.score;
 			if (level > 0) {
 				var ret = {
 					type: "Dashboard",
-					label: __("{0} Dashboard", [me.bolden_match_part(__(item.name), keywords)]),
+					label: __("{0} Dashboard", [search_result.marked_string || __(item.name)]),
 					value: __("{0} Dashboard", [__(item.name)]),
 					index: level,
 					route: ["dashboard-view", item.name],
@@ -360,12 +379,13 @@ dontmanage.search.utils = {
 					var part = parts[i];
 					if (part.toLowerCase().indexOf(keywords) !== -1) {
 						// If the field contains the keyword
+						let colon_index, field_value;
 						if (part.indexOf(" &&& ") !== -1) {
-							var colon_index = part.indexOf(" &&& ");
-							var field_value = part.slice(colon_index + 5);
+							colon_index = part.indexOf(" &&& ");
+							field_value = part.slice(colon_index + 5);
 						} else {
-							var colon_index = part.indexOf(" : ");
-							var field_value = part.slice(colon_index + 3);
+							colon_index = part.indexOf(" : ");
+							field_value = part.slice(colon_index + 3);
 						}
 						if (field_value.length > field_length) {
 							// If field value exceeds field_length, find the keyword in it
@@ -387,13 +407,15 @@ dontmanage.search.utils = {
 						// Find remaining result_length and add field length to result_current_length
 						var remaining_length = result_max_length - result_current_length;
 						result_current_length += field_name.length + field_value.length + 2;
+						const search_result_name = me.fuzzy_search(keywords, field_name, true);
+						const search_result_value = me.fuzzy_search(keywords, field_value, true);
 						if (result_current_length < result_max_length) {
 							// We have room, push the entire field
 							field_text =
 								'<span class="field-name text-muted">' +
-								me.bolden_match_part(field_name, keywords) +
+								search_result_name.marked_string +
 								": </span> " +
-								me.bolden_match_part(field_value, keywords);
+								search_result_value.marked_string;
 							if (fields.indexOf(field_text) === -1 && doc_name !== field_value) {
 								fields.push(field_text);
 							}
@@ -404,12 +426,12 @@ dontmanage.search.utils = {
 								remaining_length -= field_name.length;
 								field_text =
 									'<span class="field-name text-muted">' +
-									me.bolden_match_part(field_name, keywords) +
+									search_result_name.marked_string +
 									": </span> ";
 								field_value = field_value.slice(0, remaining_length);
 								field_value =
 									field_value.slice(0, field_value.lastIndexOf(" ")) + " ...";
-								field_text += me.bolden_match_part(field_value, keywords);
+								field_text += search_result_value.marked_string;
 								fields.push(field_text);
 							} else {
 								// No room for even the field name, skip
@@ -554,11 +576,44 @@ dontmanage.search.utils = {
 		];
 	},
 
-	fuzzy_search: function (keywords, _item) {
-		keywords = keywords || "";
-		var item = __(_item || "");
-		var match = fuzzy_match(keywords, item);
-		return match[1];
+	fuzzy_search: function (keywords = "", _item = "", return_marked_string = false) {
+		const item = __(_item);
+
+		const [, score, matches] = fuzzy_match(keywords, item, return_marked_string);
+
+		if (!return_marked_string) {
+			return score;
+		}
+		if (score == 0) {
+			return { score, item };
+		}
+
+		// Create Boolean mask to mark matching indices in the item string
+		const matchArray = Array(item.length).fill(0);
+		matches.forEach((index) => (matchArray[index] = 1));
+
+		let marked_string = "";
+		let buffer = "";
+
+		// Clear the buffer and return marked matches.
+		const flushBuffer = () => {
+			if (!buffer) return "";
+			const temp = `<mark>${buffer}</mark>`;
+			buffer = "";
+			return temp;
+		};
+
+		matchArray.forEach((isMatch, index) => {
+			if (isMatch) {
+				buffer += item[index];
+			} else {
+				marked_string += flushBuffer();
+				marked_string += item[index];
+			}
+		});
+		marked_string += flushBuffer();
+
+		return { score, marked_string };
 	},
 
 	bolden_match_part: function (str, subseq) {
@@ -603,10 +658,11 @@ dontmanage.search.utils = {
 			const target = item.label.toLowerCase();
 			const txt = keywords.toLowerCase();
 			if (txt === target || target.indexOf(txt) === 0) {
+				const search_result = this.fuzzy_search(txt, item.label, true);
 				results.push({
 					type: "Executable",
-					value: this.bolden_match_part(__(item.label), txt),
-					index: this.fuzzy_search(txt, target),
+					value: search_result.marked_string,
+					index: search_result.score,
 					match: item.label,
 					onclick: () => item.action.apply(this, item.args),
 				});
@@ -624,6 +680,27 @@ dontmanage.search.utils = {
 			action: _function,
 			args: args,
 		});
+	},
+	get_marketplace_apps: function (keywords) {
+		var me = this;
+		var out = [];
+		dontmanage.boot.marketplace_apps.forEach(function (item) {
+			const search_result = me.fuzzy_search(keywords, item.title, true);
+			if (search_result.score > 0) {
+				var ret = {
+					label: __("Install {0} from Marketplace", [search_result.marked_string]),
+					value: __("Install {0} from Marketplace", [__(item.title)]),
+					index: search_result.score * 0.8,
+					route: [
+						`https://dontmanagecloud.com/${item.route}?utm_source=awesomebar`,
+						item.name,
+					],
+				};
+
+				out.push(ret);
+			}
+		});
+		return out;
 	},
 	searchable_functions: [],
 };

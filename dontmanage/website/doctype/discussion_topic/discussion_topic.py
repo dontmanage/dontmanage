@@ -6,12 +6,23 @@ from dontmanage.model.document import Document
 
 
 class DiscussionTopic(Document):
+	# begin: auto-generated types
+	# This code is auto-generated. Do not modify anything in this block.
+
+	from typing import TYPE_CHECKING
+
+	if TYPE_CHECKING:
+		from dontmanage.types import DF
+
+		reference_docname: DF.DynamicLink | None
+		reference_doctype: DF.Link | None
+		title: DF.Data | None
+	# end: auto-generated types
 	pass
 
 
 @dontmanage.whitelist()
 def submit_discussion(doctype, docname, reply, title, topic_name=None, reply_name=None):
-
 	if reply_name:
 		doc = dontmanage.get_doc("Discussion Reply", reply_name)
 		doc.reply = reply
@@ -39,10 +50,3 @@ def save_message(reply, topic):
 	dontmanage.get_doc({"doctype": "Discussion Reply", "reply": reply, "topic": topic}).save(
 		ignore_permissions=True
 	)
-
-
-@dontmanage.whitelist(allow_guest=True)
-def get_docname(route):
-	if not route:
-		route = dontmanage.db.get_single_value("Website Settings", "home_page")
-	return dontmanage.db.get_value("Web Page", {"route": route}, ["name"])

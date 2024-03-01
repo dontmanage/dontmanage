@@ -3,9 +3,10 @@
 """build query for doclistview and return results"""
 
 import copy
+import datetime
 import json
 import re
-from datetime import datetime
+from collections import Counter
 
 import dontmanage
 import dontmanage.defaults
@@ -20,7 +21,6 @@ from dontmanage.model.utils import is_virtual_doctype
 from dontmanage.model.utils.user_settings import get_user_settings, update_user_settings
 from dontmanage.query_builder.utils import Column
 from dontmanage.utils import (
-	add_to_date,
 	cint,
 	cstr,
 	flt,
@@ -29,24 +29,16 @@ from dontmanage.utils import (
 	get_timespan_date_range,
 	make_filter_tuple,
 )
-from dontmanage.utils.data import sbool
+from dontmanage.utils.data import DateTimeLikeObject, get_datetime, getdate, sbool
 
 LOCATE_PATTERN = re.compile(r"locate\([^,]+,\s*[`\"]?name[`\"]?\s*\)", flags=re.IGNORECASE)
-LOCATE_CAST_PATTERN = re.compile(
-	r"locate\(([^,]+),\s*([`\"]?name[`\"]?)\s*\)", flags=re.IGNORECASE
-)
-FUNC_IFNULL_PATTERN = re.compile(
-	r"(strpos|ifnull|coalesce)\(\s*[`\"]?name[`\"]?\s*,", flags=re.IGNORECASE
-)
-CAST_VARCHAR_PATTERN = re.compile(
-	r"([`\"]?tab[\w`\" -]+\.[`\"]?name[`\"]?)(?!\w)", flags=re.IGNORECASE
-)
+LOCATE_CAST_PATTERN = re.compile(r"locate\(([^,]+),\s*([`\"]?name[`\"]?)\s*\)", flags=re.IGNORECASE)
+FUNC_IFNULL_PATTERN = re.compile(r"(strpos|ifnull|coalesce)\(\s*[`\"]?name[`\"]?\s*,", flags=re.IGNORECASE)
+CAST_VARCHAR_PATTERN = re.compile(r"([`\"]?tab[\w`\" -]+\.[`\"]?name[`\"]?)(?!\w)", flags=re.IGNORECASE)
 ORDER_BY_PATTERN = re.compile(r"\ order\ by\ |\ asc|\ ASC|\ desc|\ DESC", flags=re.IGNORECASE)
 SUB_QUERY_PATTERN = re.compile("^.*[,();@].*")
 IS_QUERY_PATTERN = re.compile(r"^(select|delete|update|drop|create)\s")
-IS_QUERY_PREDICATE_PATTERN = re.compile(
-	r"\s*[0-9a-zA-z]*\s*( from | group by | order by | where | join )"
-)
+IS_QUERY_PREDICATE_PATTERN = re.compile(r"\s*[0-9a-zA-z]*\s*( from | group by | order by | where | join )")
 FIELD_QUOTE_PATTERN = re.compile(r"[0-9a-zA-Z]+\s*'")
 FIELD_COMMA_PATTERN = re.compile(r"[0-9a-zA-Z]+\s*,")
 STRICT_FIELD_PATTERN = re.compile(r".*/\*.*")
@@ -61,6 +53,8 @@ class DatabaseQuery:
 		self.doctype = doctype
 		self.tables = []
 		self.link_tables = []
+		self.linked_table_aliases = {}
+		self.linked_table_counter = Counter()
 		self.conditions = []
 		self.or_conditions = []
 		self.fields = None
@@ -68,6 +62,9 @@ class DatabaseQuery:
 		self.ignore_ifnull = False
 		self.flags = dontmanage._dict()
 		self.reference_doctype = None
+		self.permission_map = {}
+		self.shared = []
+		self._fetch_shared_documents = False
 
 	@property
 	def doctype_meta(self):
@@ -77,7 +74,7 @@ class DatabaseQuery:
 
 	@property
 	def query_tables(self):
-		return self.tables + [d.table_name for d in self.link_tables]
+		return self.tables + [d.table_alias for d in self.link_tables]
 
 	def execute(
 		self,
@@ -114,22 +111,12 @@ class DatabaseQuery:
 		*,
 		parent_doctype=None,
 	) -> list:
-
-		if (
-			not ignore_permissions
-			and not dontmanage.has_permission(self.doctype, "select", user=user, parent_doctype=parent_doctype)
-			and not dontmanage.has_permission(self.doctype, "read", user=user, parent_doctype=parent_doctype)
-		):
-			dontmanage.flags.error_message = _("Insufficient Permission for {0}").format(
-				dontmanage.bold(self.doctype)
-			)
-			raise dontmanage.PermissionError(self.doctype)
+		if not ignore_permissions:
+			self.check_read_permission(self.doctype, parent_doctype=parent_doctype)
 
 		# filters and fields swappable
 		# its hard to remember what comes first
-		if isinstance(fields, dict) or (
-			fields and isinstance(fields, list) and isinstance(fields[0], list)
-		):
+		if isinstance(fields, dict) or (fields and isinstance(fields, list) and isinstance(fields[0], list)):
 			# if fields is given as dict/list of list, its probably filters
 			filters, fields = fields, filters
 
@@ -182,6 +169,9 @@ class DatabaseQuery:
 			from dontmanage.model.base_document import get_controller
 
 			controller = get_controller(self.doctype)
+			if not hasattr(controller, "get_list"):
+				return []
+
 			self.parse_args()
 			kwargs = {
 				"as_list": as_list,
@@ -217,6 +207,10 @@ class DatabaseQuery:
 		args = self.prepare_args()
 		args.limit = self.add_limit()
 
+		if not args.fields:
+			# apply_fieldlevel_read_permissions has likely removed ALL the fields that user asked for
+			return []
+
 		if args.conditions:
 			args.conditions = "where " + args.conditions
 
@@ -229,15 +223,12 @@ class DatabaseQuery:
 		if dontmanage.db.db_type == "postgres" and args.order_by and args.group_by:
 			args = self.prepare_select_args(args)
 
-		query = (
-			"""select %(fields)s
-			from %(tables)s
-			%(conditions)s
-			%(group_by)s
-			%(order_by)s
-			%(limit)s"""
-			% args
-		)
+		query = """select {fields}
+			from {tables}
+			{conditions}
+			{group_by}
+			{order_by}
+			{limit}""".format(**args)
 
 		return dontmanage.db.sql(
 			query,
@@ -273,7 +264,7 @@ class DatabaseQuery:
 
 		# left join link tables
 		for link in self.link_tables:
-			args.tables += f" {self.join} `tab{link.doctype}` on (`tab{link.doctype}`.`name` = {self.tables[0]}.`{link.fieldname}`)"
+			args.tables += f" {self.join} {link.table_name} {link.table_alias} on ({link.table_alias}.`name` = {self.tables[0]}.`{link.fieldname}`)"
 
 		if self.grouped_or_conditions:
 			self.conditions.append(f"({' or '.join(self.grouped_or_conditions)})")
@@ -356,14 +347,16 @@ class DatabaseQuery:
 				if " as " in field:
 					field, alias = field.split(" as ", 1)
 				linked_fieldname, fieldname = field.split(".", 1)
-				linked_field = self.doctype_meta.get_field(linked_fieldname)
+				linked_field = dontmanage.get_meta(self.doctype).get_field(linked_fieldname)
 				# this is not a link field
 				if not linked_field:
 					continue
 				linked_doctype = linked_field.options
 				if linked_field.fieldtype == "Link":
-					self.append_link_table(linked_doctype, linked_fieldname)
-				field = f"`tab{linked_doctype}`.`{fieldname}`"
+					linked_table = self.append_link_table(linked_doctype, linked_fieldname)
+					field = f"{linked_table.table_alias}.`{fieldname}`"
+				else:
+					field = f"`tab{linked_doctype}`.`{fieldname}`"
 				if alias:
 					field = f"{field} as {alias}"
 				self.fields[self.fields.index(original_field)] = field
@@ -375,9 +368,7 @@ class DatabaseQuery:
 
 			if isinstance(filters, dict):
 				fdict = filters
-				filters = []
-				for key, value in fdict.items():
-					filters.append(make_filter_tuple(self.doctype, key, value))
+				filters = [make_filter_tuple(self.doctype, key, value) for key, value in fdict.items()]
 			setattr(self, filter_name, filters)
 
 	def sanitize_fields(self):
@@ -473,11 +464,20 @@ class DatabaseQuery:
 
 				table_name = field.split(".", 1)[0]
 
+				# Check if table_name is a linked_table alias
+				for linked_table in self.link_tables:
+					if linked_table.table_alias == table_name:
+						table_name = linked_table.table_name
+						break
+
 				if table_name.lower().startswith("group_concat("):
 					table_name = table_name[13:]
 				if not table_name[0] == "`":
 					table_name = f"`{table_name}`"
-				if table_name not in self.query_tables:
+				if (
+					table_name not in self.query_tables
+					and table_name not in self.linked_table_aliases.values()
+				):
 					self.append_table(table_name)
 
 	def append_table(self, table_name):
@@ -486,23 +486,41 @@ class DatabaseQuery:
 		self.check_read_permission(doctype)
 
 	def append_link_table(self, doctype, fieldname):
-		for d in self.link_tables:
-			if d.doctype == doctype and d.fieldname == fieldname:
-				return
+		for linked_table in self.link_tables:
+			if linked_table.doctype == doctype and linked_table.fieldname == fieldname:
+				return linked_table
 
 		self.check_read_permission(doctype)
-		self.link_tables.append(
-			dontmanage._dict(doctype=doctype, fieldname=fieldname, table_name=f"`tab{doctype}`")
+		self.linked_table_counter.update((doctype,))
+		linked_table = dontmanage._dict(
+			doctype=doctype,
+			fieldname=fieldname,
+			table_name=f"`tab{doctype}`",
+			table_alias=f"`tab{doctype}_{self.linked_table_counter[doctype]}`",
 		)
+		self.linked_table_aliases[linked_table.table_alias.replace("`", "")] = linked_table.table_name
+		self.link_tables.append(linked_table)
+		return linked_table
 
-	def check_read_permission(self, doctype):
-		if not self.flags.ignore_permissions and not dontmanage.has_permission(
+	def check_read_permission(self, doctype: str, parent_doctype: str | None = None):
+		if self.flags.ignore_permissions:
+			return
+
+		if doctype not in self.permission_map:
+			self._set_permission_map(doctype, parent_doctype)
+
+		return self.permission_map[doctype]
+
+	def _set_permission_map(self, doctype: str, parent_doctype: str | None = None):
+		ptype = "select" if dontmanage.only_has_select_perm(doctype) else "read"
+		dontmanage.has_permission(
 			doctype,
-			ptype="select" if dontmanage.only_has_select_perm(doctype) else "read",
-			parent_doctype=self.doctype,
-		):
-			dontmanage.flags.error_message = _("Insufficient Permission for {0}").format(dontmanage.bold(doctype))
-			raise dontmanage.PermissionError(doctype)
+			ptype=ptype,
+			parent_doctype=parent_doctype or self.doctype,
+			throw=True,
+			user=self.user,
+		)
+		self.permission_map[doctype] = ptype
 
 	def set_field_tables(self):
 		"""If there are more than one table, the fieldname must not be ambiguous.
@@ -536,10 +554,7 @@ class DatabaseQuery:
 		# remove from fields
 		to_remove = []
 		for fld in self.fields:
-			for f in optional_fields:
-				if f in fld and not f in self.columns:
-					to_remove.append(fld)
-
+			to_remove.extend(fld for f in optional_fields if f in fld and f not in self.columns)
 		for fld in to_remove:
 			del self.fields[self.fields.index(fld)]
 
@@ -549,10 +564,9 @@ class DatabaseQuery:
 			if isinstance(each, str):
 				each = [each]
 
-			for element in each:
-				if element in optional_fields and element not in self.columns:
-					to_remove.append(each)
-
+			to_remove.extend(
+				each for element in each if element in optional_fields and element not in self.columns
+			)
 		for each in to_remove:
 			if isinstance(self.filters, dict):
 				del self.filters[each]
@@ -604,13 +618,16 @@ class DatabaseQuery:
 		        - Query: fields=["*"]
 		        - Result: fields=["title", ...] // will also include DontManage's meta field like `name`, `owner`, etc.
 		"""
-		if self.flags.ignore_permissions or not dontmanage.get_system_settings(
-			"apply_perm_level_on_api_calls"
-		):
+		if self.flags.ignore_permissions:
 			return
 
 		asterisk_fields = []
-		permitted_fields = get_permitted_fields(doctype=self.doctype, parenttype=self.parent_doctype)
+		permitted_fields = get_permitted_fields(
+			doctype=self.doctype,
+			parenttype=self.parent_doctype,
+			permission_type=self.permission_map.get(self.doctype),
+			ignore_virtual=True,
+		)
 
 		for i, field in enumerate(self.fields):
 			if "distinct" in field.lower():
@@ -643,7 +660,12 @@ class DatabaseQuery:
 			# handle child / joined table fields
 			elif "." in field:
 				table, column = column.split(".", 1)
-				ch_doctype = table.replace("`", "").replace("tab", "", 1)
+				ch_doctype = table
+
+				if ch_doctype in self.linked_table_aliases:
+					ch_doctype = self.linked_table_aliases[ch_doctype]
+
+				ch_doctype = ch_doctype.replace("`", "").replace("tab", "", 1)
 
 				if wrap_grave_quotes(table) in self.query_tables:
 					permitted_child_table_fields = get_permitted_fields(
@@ -667,7 +689,11 @@ class DatabaseQuery:
 					params = (x.strip() for x in _params[0].split(","))
 					for param in params:
 						if not (
-							not param or param in permitted_fields or param.isnumeric() or "'" in param or '"' in param
+							not param
+							or param in permitted_fields
+							or param.isnumeric()
+							or "'" in param
+							or '"' in param
 						):
 							self.remove_field(i)
 							break
@@ -706,7 +732,9 @@ class DatabaseQuery:
 			f.update(get_additional_filter_field(additional_filters_config, f, f.value))
 
 		meta = dontmanage.get_meta(f.doctype)
-		can_be_null = True
+
+		# primary key is never nullable, modified is usually indexed by default and always present
+		can_be_null = f.fieldname not in ("name", "modified")
 
 		# prepare in condition
 		if f.operator.lower() in NestedSetHierarchy:
@@ -719,21 +747,33 @@ class DatabaseQuery:
 			ref_doctype = field.options if field else f.doctype
 			lft, rgt = "", ""
 			if f.value:
-				lft, rgt = dontmanage.db.get_value(ref_doctype, f.value, ["lft", "rgt"])
+				lft, rgt = dontmanage.db.get_value(ref_doctype, f.value, ["lft", "rgt"]) or (0, 0)
 
 			# Get descendants elements of a DocType with a tree structure
-			if f.operator.lower() in ("descendants of", "not descendants of"):
-				result = dontmanage.get_all(
-					ref_doctype, filters={"lft": [">", lft], "rgt": ["<", rgt]}, order_by="`lft` ASC"
+			if f.operator.lower() in (
+				"descendants of",
+				"not descendants of",
+				"descendants of (inclusive)",
+			):
+				nodes = dontmanage.get_all(
+					ref_doctype,
+					filters={"lft": [">", lft], "rgt": ["<", rgt]},
+					order_by="`lft` ASC",
+					pluck="name",
 				)
+				if f.operator.lower() == "descendants of (inclusive)":
+					nodes += [f.value]
 			else:
 				# Get ancestor elements of a DocType with a tree structure
-				result = dontmanage.get_all(
-					ref_doctype, filters={"lft": ["<", lft], "rgt": [">", rgt]}, order_by="`lft` DESC"
+				nodes = dontmanage.get_all(
+					ref_doctype,
+					filters={"lft": ["<", lft], "rgt": [">", rgt]},
+					order_by="`lft` DESC",
+					pluck="name",
 				)
 
 			fallback = "''"
-			value = [dontmanage.db.escape((cstr(v.name) or "").strip(), percent=False) for v in result]
+			value = [dontmanage.db.escape((cstr(v)).strip(), percent=False) for v in nodes]
 			if len(value):
 				value = f"({', '.join(value)})"
 			else:
@@ -750,7 +790,7 @@ class DatabaseQuery:
 			# for `in` query this is only required if values contain '' or values are empty.
 			# for `not in` queries we can't be sure as column values might contain null.
 			if f.operator.lower() == "in":
-				can_be_null = not f.value or any(v is None or v == "" for v in f.value)
+				can_be_null &= not f.value or any(v is None or v == "" for v in f.value)
 
 			values = f.value or ""
 			if isinstance(values, str):
@@ -785,7 +825,6 @@ class DatabaseQuery:
 				f.fieldname in ("creation", "modified")
 				or (df and (df.fieldtype == "Date" or df.fieldtype == "Datetime"))
 			):
-
 				escape = False
 				value = get_between_date_filter(f.value, df)
 				fallback = f"'{FallBackDateTimeStr}'"
@@ -793,21 +832,26 @@ class DatabaseQuery:
 			elif f.operator.lower() == "is":
 				if f.value == "set":
 					f.operator = "!="
+					# Value can technically be null, but comparing with null will always be falsy
+					# Not using coalesce here is faster because indexes can be used.
+					# null != '' -> null ~ falsy
+					# '' != '' -> false
+					can_be_null = False
 				elif f.value == "not set":
 					f.operator = "="
+					fallback = "''"
+					can_be_null = True
 
 				value = ""
-				fallback = "''"
-				can_be_null = True
 
-				if "ifnull" not in column_name.lower():
+				if can_be_null and "ifnull" not in column_name.lower():
 					column_name = f"ifnull({column_name}, {fallback})"
 
 			elif df and df.fieldtype == "Date":
 				value = dontmanage.db.format_date(f.value)
 				fallback = "'0001-01-01'"
 
-			elif (df and df.fieldtype == "Datetime") or isinstance(f.value, datetime):
+			elif (df and df.fieldtype == "Datetime") or isinstance(f.value, datetime.datetime):
 				value = dontmanage.db.format_datetime(f.value)
 				fallback = f"'{FallBackDateTimeStr}'"
 
@@ -826,9 +870,7 @@ class DatabaseQuery:
 					# because "like" uses backslash (\) for escaping
 					value = value.replace("\\", "\\\\").replace("%", "%%")
 
-			elif (
-				f.operator == "=" and df and df.fieldtype in ["Link", "Data"]
-			):  # TODO: Refactor if possible
+			elif f.operator == "=" and df and df.fieldtype in ["Link", "Data"]:  # TODO: Refactor if possible
 				value = f.value or "''"
 				fallback = "''"
 
@@ -875,8 +917,6 @@ class DatabaseQuery:
 			self.extract_tables()
 
 		role_permissions = dontmanage.permissions.get_role_permissions(self.doctype_meta, user=self.user)
-		self.shared = dontmanage.share.get_shared(self.doctype, self.user)
-
 		if (
 			not self.doctype_meta.istable
 			and not (role_permissions.get("select") or role_permissions.get("read"))
@@ -884,6 +924,7 @@ class DatabaseQuery:
 			and not has_any_user_permission_for_doctype(self.doctype, self.user, self.reference_doctype)
 		):
 			only_if_shared = True
+			self.shared = dontmanage.share.get_shared(self.doctype, self.user)
 			if not self.shared:
 				dontmanage.throw(_("No permission to read {0}").format(_(self.doctype)), dontmanage.PermissionError)
 			else:
@@ -892,6 +933,7 @@ class DatabaseQuery:
 		else:
 			# skip user perm check if owner constraint is required
 			if requires_owner_constraint(role_permissions):
+				self._fetch_shared_documents = True
 				self.match_conditions.append(
 					f"`tab{self.doctype}`.`owner` = {dontmanage.db.escape(self.user, percent=False)}"
 				)
@@ -901,6 +943,14 @@ class DatabaseQuery:
 				# get user permissions
 				user_permissions = dontmanage.permissions.get_user_permissions(self.user)
 				self.add_user_permissions(user_permissions)
+
+			# Only when full read access is not present fetch shared docuemnts.
+			# This is done to avoid extra query.
+			# Only following cases can require explicit addition of shared documents.
+			#    1. DocType has if_owner constraint and hence can't see shared documents
+			#    2. DocType has user permissions and hence can't see shared documents
+			if self._fetch_shared_documents:
+				self.shared = dontmanage.share.get_shared(self.doctype, self.user)
 
 		if as_condition:
 			conditions = ""
@@ -980,9 +1030,11 @@ class DatabaseQuery:
 					match_filters[df.get("options")] = docs
 
 		if match_conditions:
+			self._fetch_shared_documents = True
 			self.match_conditions.append(" and ".join(match_conditions))
 
 		if match_filters:
+			self._fetch_shared_documents = True
 			self.match_filters.append(match_filters)
 
 	def get_permission_query_conditions(self):
@@ -1004,7 +1056,7 @@ class DatabaseQuery:
 		return " and ".join(conditions) if conditions else ""
 
 	def set_order_by(self, args):
-		if self.order_by and self.order_by != DefaultOrderBy:
+		if self.order_by and self.order_by != "KEEP_DEFAULT_ORDERING":
 			args.order_by = self.order_by
 		else:
 			args.order_by = ""
@@ -1016,6 +1068,8 @@ class DatabaseQuery:
 					self.fields[0].lower().startswith("count(")
 					or self.fields[0].lower().startswith("min(")
 					or self.fields[0].lower().startswith("max(")
+					or self.fields[0].lower().startswith("sum(")
+					or self.fields[0].lower().startswith("avg(")
 				)
 				and not self.group_by
 			)
@@ -1037,7 +1091,9 @@ class DatabaseQuery:
 					sort_field = self.doctype_meta.sort_field or "modified"
 					sort_order = (self.doctype_meta.sort_field and self.doctype_meta.sort_order) or "desc"
 					if self.order_by:
-						args.order_by = f"`tab{self.doctype}`.`{sort_field or 'modified'}` {sort_order or 'desc'}"
+						args.order_by = (
+							f"`tab{self.doctype}`.`{sort_field or 'modified'}` {sort_order or 'desc'}"
+						)
 
 				# draft docs always on top
 				if hasattr(self.doctype_meta, "is_submittable") and self.doctype_meta.is_submittable:
@@ -1179,20 +1235,6 @@ def get_order_by(doctype, meta):
 	return order_by
 
 
-def is_parent_only_filter(doctype, filters):
-	# check if filters contains only parent doctype
-	only_parent_doctype = True
-
-	if isinstance(filters, list):
-		for filter in filters:
-			if doctype not in filter:
-				only_parent_doctype = False
-			if "Between" in filter:
-				filter[3] = get_between_date_filter(flt[3])
-
-	return only_parent_doctype
-
-
 def has_any_user_permission_for_doctype(doctype, user, applicable_for):
 	user_permissions = dontmanage.permissions.get_user_permissions(user=user)
 	doctype_user_permissions = user_permissions.get(doctype, [])
@@ -1205,31 +1247,56 @@ def has_any_user_permission_for_doctype(doctype, user, applicable_for):
 
 
 def get_between_date_filter(value, df=None):
+	"""Handle datetime filter bounds for between filter values.
+
+	If date is passed but fieldtype is datetime then
+	        from part is converted to start of day and to part is converted to end of day.
+	If any of filter part (to or from) are missing then:
+	        start or end of current day is assumed as fallback.
+	If fieldtypes match with filter values then:
+	        no change is applied.
 	"""
-	return the formattted date as per the given example
-	[u'2017-11-01', u'2017-11-03'] => '2017-11-01 00:00:00.000000' AND '2017-11-04 00:00:00.000000'
-	"""
+
+	fieldtype = df and df.fieldtype or "Datetime"
+
 	from_date = dontmanage.utils.nowdate()
 	to_date = dontmanage.utils.nowdate()
 
-	if value and isinstance(value, (list, tuple)):
+	if value and isinstance(value, list | tuple):
 		if len(value) >= 1:
 			from_date = value[0]
 		if len(value) >= 2:
 			to_date = value[1]
 
-	if not df or (df and df.fieldtype == "Datetime"):
-		to_date = add_to_date(to_date, days=1)
+	# if filter value is date but fieldtype is datetime:
+	if fieldtype == "Datetime":
+		from_date = _convert_type_for_between_filters(from_date, set_time=datetime.time())
+		to_date = _convert_type_for_between_filters(to_date, set_time=datetime.time(23, 59, 59, 999999))
 
-	if df and df.fieldtype == "Datetime":
-		data = "'{}' AND '{}'".format(
-			dontmanage.db.format_datetime(from_date),
-			dontmanage.db.format_datetime(to_date),
-		)
+	# If filter value is already datetime, do nothing.
+	if fieldtype == "Datetime":
+		cond = f"'{dontmanage.db.format_datetime(from_date)}' AND '{dontmanage.db.format_datetime(to_date)}'"
 	else:
-		data = f"'{dontmanage.db.format_date(from_date)}' AND '{dontmanage.db.format_date(to_date)}'"
+		cond = f"'{dontmanage.db.format_date(from_date)}' AND '{dontmanage.db.format_date(to_date)}'"
 
-	return data
+	return cond
+
+
+def _convert_type_for_between_filters(
+	value: DateTimeLikeObject, set_time: datetime.time
+) -> datetime.datetime:
+	if isinstance(value, str):
+		if " " in value.strip():
+			value = get_datetime(value)
+		else:
+			value = getdate(value)
+
+	if isinstance(value, datetime.datetime):
+		return value
+	elif isinstance(value, datetime.date):
+		return datetime.datetime.combine(value, set_time)
+
+	return value
 
 
 def get_additional_filter_field(additional_filters_config, f, value):

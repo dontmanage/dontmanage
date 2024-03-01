@@ -4,15 +4,11 @@ import os
 import re
 import shutil
 import subprocess
-from distutils.spawn import find_executable
 from subprocess import getoutput
-from tempfile import mkdtemp, mktemp
+from tempfile import mkdtemp
 from urllib.parse import urlparse
 
 import click
-import psutil
-from requests import head
-from requests.exceptions import HTTPError
 from semantic_version import Version
 
 import dontmanage
@@ -28,7 +24,7 @@ class AssetsNotDownloadedError(Exception):
 	pass
 
 
-class AssetsDontExistError(HTTPError):
+class AssetsDontExistError(Exception):
 	pass
 
 
@@ -79,6 +75,8 @@ def build_missing_files():
 
 
 def get_assets_link(dontmanage_head) -> str:
+	import requests
+
 	tag = getoutput(
 		r"cd ../apps/dontmanage && git show-ref --tags -d | grep %s | sed -e 's,.*"
 		r" refs/tags/,,' -e 's/\^{}//'" % dontmanage_head
@@ -88,9 +86,9 @@ def get_assets_link(dontmanage_head) -> str:
 		# if tag exists, download assets from github release
 		url = f"https://github.com/dontmanage/dontmanage/releases/download/{tag}/assets.tar.gz"
 	else:
-		url = f"http://assets.frappeframework.com/{dontmanage_head}.tar.gz"
+		url = f"http://assets.dontmanageframework.com/{dontmanage_head}.tar.gz"
 
-	if not head(url):
+	if not requests.head(url):
 		reference = f"Release {tag}" if tag else f"Commit {dontmanage_head}"
 		raise AssetsDontExistError(f"Assets for {reference} don't exist")
 
@@ -180,12 +178,9 @@ def symlink(target, link_name, overwrite=False):
 	if not overwrite:
 		return os.symlink(target, link_name)
 
-	# os.replace() may fail if files are on different filesystems
-	link_dir = os.path.dirname(link_name)
-
 	# Create link to target with temporary filename
 	while True:
-		temp_link_name = mktemp(dir=link_dir)
+		temp_link_name = f"tmp{dontmanage.generate_hash()}"
 
 		# os.* functions mimic as closely as possible system functions
 		# The POSIX symlink() returns EEXIST if link_name already exists
@@ -228,11 +223,10 @@ def bundle(
 	mode,
 	apps=None,
 	hard_link=False,
-	make_copy=False,
-	restore=False,
 	verbose=False,
 	skip_dontmanage=False,
 	files=None,
+	save_metafiles=False,
 ):
 	"""concat / minify js files"""
 	setup()
@@ -252,8 +246,11 @@ def bundle(
 
 	command += " --run-build-command"
 
+	if save_metafiles:
+		command += " --save-metafiles"
+
 	check_node_executable()
-	dontmanage_app_path = dontmanage.get_app_path("dontmanage", "..")
+	dontmanage_app_path = dontmanage.get_app_source_path("dontmanage")
 	dontmanage.commands.popen(command, cwd=dontmanage_app_path, env=get_node_env(), raise_err=True)
 
 
@@ -271,26 +268,27 @@ def watch(apps=None):
 		command += " --live-reload"
 
 	check_node_executable()
-	dontmanage_app_path = dontmanage.get_app_path("dontmanage", "..")
+	dontmanage_app_path = dontmanage.get_app_source_path("dontmanage")
 	dontmanage.commands.popen(command, cwd=dontmanage_app_path, env=get_node_env())
 
 
 def check_node_executable():
 	node_version = Version(subprocess.getoutput("node -v")[1:])
 	warn = "⚠️ "
-	if node_version.major < 14:
-		click.echo(f"{warn} Please update your node version to 14")
-	if not find_executable("yarn"):
+	if node_version.major < 18:
+		click.echo(f"{warn} Please update your node version to 18")
+	if not shutil.which("yarn"):
 		click.echo(f"{warn} Please install yarn using below command and try again.\nnpm install -g yarn")
 	click.echo()
 
 
 def get_node_env():
-	node_env = {"NODE_OPTIONS": f"--max_old_space_size={get_safe_max_old_space_size()}"}
-	return node_env
+	return {"NODE_OPTIONS": f"--max_old_space_size={get_safe_max_old_space_size()}"}
 
 
 def get_safe_max_old_space_size():
+	import psutil
+
 	safe_max_old_space_size = 0
 	try:
 		total_memory = psutil.virtual_memory().total / (1024 * 1024)
@@ -374,9 +372,7 @@ def make_asset_dirs(hard_link=False):
 	symlinks = generate_assets_map()
 
 	for source, target in symlinks.items():
-		start_message = unstrip(
-			f"{'Copying assets from' if hard_link else 'Linking'} {source} to {target}"
-		)
+		start_message = unstrip(f"{'Copying assets from' if hard_link else 'Linking'} {source} to {target}")
 		fail_message = unstrip(f"Cannot {'copy' if hard_link else 'link'} {source} to {target}")
 
 		# Used '\r' instead of '\x1b[1K\r' to print entire lines in smaller terminal sizes

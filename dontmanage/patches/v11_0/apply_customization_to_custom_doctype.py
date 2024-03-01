@@ -44,7 +44,7 @@ def execute():
 			if field:
 				field.update(cf)
 			else:
-				df = dontmanage.new_doc("DocField", meta, "fields")
+				df = dontmanage.new_doc("DocField", parent_doc=meta, parentfield="fields")
 				df.update(cf)
 				meta.fields.append(df)
 			dontmanage.db.delete("Custom Field", {"name": cf.name})

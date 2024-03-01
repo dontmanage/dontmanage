@@ -23,7 +23,7 @@ EVENT_MAP = {
 
 def run_server_script_for_doc_event(doc, event):
 	# run document event method
-	if not event in EVENT_MAP:
+	if event not in EVENT_MAP:
 		return
 
 	if dontmanage.flags.in_install:
@@ -55,7 +55,7 @@ def get_server_script_map():
 	if dontmanage.flags.in_patch and not dontmanage.db.table_exists("Server Script"):
 		return {}
 
-	script_map = dontmanage.cache().get_value("server_script_map")
+	script_map = dontmanage.cache.get_value("server_script_map")
 	if script_map is None:
 		script_map = {"permission_query": {}}
 		enabled_server_scripts = dontmanage.get_all(
@@ -73,6 +73,6 @@ def get_server_script_map():
 			else:
 				script_map.setdefault("_api", {})[script.api_method] = script.name
 
-		dontmanage.cache().set_value("server_script_map", script_map)
+		dontmanage.cache.set_value("server_script_map", script_map)
 
 	return script_map

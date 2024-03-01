@@ -35,6 +35,7 @@ dontmanage.form.formatters = {
 	},
 	Data: function (value, df) {
 		if (df && df.options == "URL") {
+			if (!value) return;
 			return `<a href="${value}" title="Open Link" target="_blank">${value}</a>`;
 		}
 		value = value == null ? "" : value;
@@ -72,6 +73,9 @@ dontmanage.form.formatters = {
 		}
 	},
 	Int: function (value, docfield, options) {
+		if (cstr(docfield.options).trim() === "File Size") {
+			return dontmanage.form.formatters.FileSize(value);
+		}
 		return dontmanage.form.formatters._right(value == null ? "" : cint(value), options);
 	},
 	Percent: function (value, docfield, options) {
@@ -102,8 +106,15 @@ dontmanage.form.formatters = {
 	},
 	Currency: function (value, docfield, options, doc) {
 		var currency = dontmanage.meta.get_field_currency(docfield, doc);
-		var precision =
-			docfield.precision || cint(dontmanage.boot.sysdefaults.currency_precision) || 2;
+
+		let precision;
+		if (typeof docfield.precision == "number") {
+			precision = docfield.precision;
+		} else {
+			precision = cint(
+				docfield.precision || dontmanage.boot.sysdefaults.currency_precision || 2
+			);
+		}
 
 		// If you change anything below, it's going to hurt a company in UAE, a bit.
 		if (precision > 2) {
@@ -138,6 +149,10 @@ dontmanage.form.formatters = {
 		var original_value = value;
 		let link_title = dontmanage.utils.get_link_title(doctype, value);
 
+		if (link_title === value) {
+			link_title = null;
+		}
+
 		if (value && value.match && value.match(/^['"].*['"]$/)) {
 			value.replace(/^.(.*).$/, "$1");
 		}
@@ -160,20 +175,21 @@ dontmanage.form.formatters = {
 			return value.substring(1, value.length - 1);
 		}
 		if (docfield && docfield.link_onclick) {
-			return repl('<a onclick="%(onclick)s">%(value)s</a>', {
-				onclick: docfield.link_onclick.replace(/"/g, "&quot;"),
+			return repl('<a onclick="%(onclick)s" href="#">%(value)s</a>', {
+				onclick: docfield.link_onclick.replace(/"/g, "&quot;") + "; return false;",
 				value: value,
 			});
 		} else if (docfield && doctype) {
 			if (dontmanage.model.can_read(doctype)) {
-				return `<a
-					href="/app/${encodeURIComponent(dontmanage.router.slug(doctype))}/${encodeURIComponent(
-					original_value
-				)}"
-					data-doctype="${doctype}"
-					data-name="${original_value}"
-					data-value="${original_value}">
-					${__((options && options.label) || link_title || value)}</a>`;
+				const a = document.createElement("a");
+				a.href = `/app/${encodeURIComponent(
+					dontmanage.router.slug(doctype)
+				)}/${encodeURIComponent(original_value)}`;
+				a.dataset.doctype = doctype;
+				a.dataset.name = original_value;
+				a.dataset.value = original_value;
+				a.innerText = __((options && options.label) || link_title || value);
+				return a.outerHTML;
 			} else {
 				return link_title || value;
 			}
@@ -186,7 +202,7 @@ dontmanage.form.formatters = {
 			return value;
 		}
 		if (value) {
-			value = dontmanage.datetime.str_to_user(value);
+			value = dontmanage.datetime.str_to_user(value, false, true);
 			// handle invalid date
 			if (value === "Invalid date") {
 				value = null;
@@ -331,10 +347,11 @@ dontmanage.form.formatters = {
 		return $("<div></div>").text(value).html();
 	},
 	FileSize: function (value) {
+		value = cint(value);
 		if (value > 1048576) {
-			value = flt(flt(value) / 1048576, 1) + "M";
+			return (value / 1048576).toFixed(2) + "M";
 		} else if (value > 1024) {
-			value = flt(flt(value) / 1024, 1) + "K";
+			return (value / 1024).toFixed(2) + "K";
 		}
 		return value;
 	},
@@ -344,7 +361,9 @@ dontmanage.form.formatters = {
 		const link_field = meta.fields.find((df) => df.fieldtype === "Link");
 		const formatted_values = rows.map((row) => {
 			const value = row[link_field.fieldname];
-			return dontmanage.format(value, link_field, options, row);
+			return `<span class="text-nowrap">
+				${dontmanage.format(value, link_field, options, row)}
+			</span>`;
 		});
 		return formatted_values.join(", ");
 	},
@@ -364,7 +383,13 @@ dontmanage.form.formatters = {
 		</div>`
 			: "";
 	},
+	Attach: format_attachment_url,
+	AttachImage: format_attachment_url,
 };
+
+function format_attachment_url(url) {
+	return url ? `<a href="${url}" target="_blank">${url}</a>` : "";
+}
 
 dontmanage.form.get_formatter = function (fieldtype) {
 	if (!fieldtype) fieldtype = "Data";
@@ -373,7 +398,7 @@ dontmanage.form.get_formatter = function (fieldtype) {
 
 dontmanage.format = function (value, df, options, doc) {
 	if (!df) df = { fieldtype: "Data" };
-	if (df.fieldname == "_user_tags") df.fieldtype = "Tag";
+	if (df.fieldname == "_user_tags") df = { ...df, fieldtype: "Tag" };
 	var fieldtype = df.fieldtype || "Data";
 
 	// format Dynamic Link as a Link

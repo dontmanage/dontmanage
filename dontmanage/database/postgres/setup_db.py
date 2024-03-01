@@ -11,7 +11,7 @@ def setup_database(force, source_sql=None, verbose=False):
 	root_conn.sql(f"DROP USER IF EXISTS {dontmanage.conf.db_name}")
 	root_conn.sql(f"CREATE DATABASE `{dontmanage.conf.db_name}`")
 	root_conn.sql(f"CREATE user {dontmanage.conf.db_name} password '{dontmanage.conf.db_password}'")
-	root_conn.sql("GRANT ALL PRIVILEGES ON DATABASE `{0}` TO {0}".format(dontmanage.conf.db_name))
+	root_conn.sql(f"GRANT ALL PRIVILEGES ON DATABASE `{dontmanage.conf.db_name}` TO {dontmanage.conf.db_name}")
 	root_conn.close()
 
 	bootstrap_database(dontmanage.conf.db_name, verbose, source_sql=source_sql)
@@ -54,7 +54,7 @@ def import_db_from_sql(source_sql=None, verbose=False):
 
 	_command = (
 		f"psql {dontmanage.conf.db_name} "
-		f"-h {dontmanage.conf.db_host or 'localhost'} -p {str(dontmanage.conf.db_port or '5432')} "
+		f"-h {dontmanage.conf.db_host} -p {dontmanage.conf.db_port!s} "
 		f"-U {dontmanage.conf.db_name}"
 	)
 
@@ -70,18 +70,7 @@ def import_db_from_sql(source_sql=None, verbose=False):
 	restore_proc = run(command, env=subprocess_env, shell=True, stdout=PIPE)
 
 	if verbose:
-		print(
-			f"\nSTDOUT by psql:\n{restore_proc.stdout.decode()}\nImported from Database File: {source_sql}"
-		)
-
-
-def setup_help_database(help_db_name):
-	root_conn = get_root_connection(dontmanage.flags.root_login, dontmanage.flags.root_password)
-	root_conn.sql(f"DROP DATABASE IF EXISTS `{help_db_name}`")
-	root_conn.sql(f"DROP USER IF EXISTS {help_db_name}")
-	root_conn.sql(f"CREATE DATABASE `{help_db_name}`")
-	root_conn.sql(f"CREATE user {help_db_name} password '{help_db_name}'")
-	root_conn.sql("GRANT ALL PRIVILEGES ON DATABASE `{0}` TO {0}".format(help_db_name))
+		print(f"\nSTDOUT by psql:\n{restore_proc.stdout.decode()}\nImported from Database File: {source_sql}")
 
 
 def get_root_connection(root_login=None, root_password=None):
@@ -101,7 +90,10 @@ def get_root_connection(root_login=None, root_password=None):
 			root_password = getpass("Postgres super user password: ")
 
 		dontmanage.local.flags.root_connection = dontmanage.database.get_db(
-			user=root_login, password=root_password
+			host=dontmanage.conf.db_host,
+			port=dontmanage.conf.db_port,
+			user=root_login,
+			password=root_password,
 		)
 
 	return dontmanage.local.flags.root_connection

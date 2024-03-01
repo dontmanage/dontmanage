@@ -182,7 +182,7 @@ class QuickListDialog extends WidgetDialog {
 	process_data(data) {
 		if (this.filter_group) {
 			let filters = this.filter_group.get_filters();
-			data.quick_list_filter = dontmanage.utils.get_filter_as_json(filters);
+			data.quick_list_filter = JSON.stringify(filters);
 		}
 
 		data.label = data.label ? data.label : data.document_type;
@@ -219,7 +219,13 @@ class CardDialog extends WidgetDialog {
 			{
 				fieldtype: "Data",
 				fieldname: "label",
-				label: "Label",
+				label: __("Label"),
+			},
+			{
+				fieldtype: "HTML Editor",
+				fieldname: "description",
+				label: __("Description"),
+				max_height: "7rem",
 			},
 			{
 				fieldname: "links",
@@ -231,17 +237,6 @@ class CardDialog extends WidgetDialog {
 					return me.values ? JSON.parse(me.values.links) : [];
 				},
 				fields: [
-					{
-						fieldname: "label",
-						fieldtype: "Data",
-						in_list_view: 1,
-						label: "Label",
-					},
-					{
-						fieldname: "icon",
-						fieldtype: "Icon",
-						label: "Icon",
-					},
 					{
 						fieldname: "link_type",
 						fieldtype: "Select",
@@ -259,6 +254,26 @@ class CardDialog extends WidgetDialog {
 						get_options: (df) => {
 							return df.doc.link_type;
 						},
+						get_query: function (df) {
+							if (df.link_type == "DocType") {
+								return {
+									filters: {
+										istable: 0,
+									},
+								};
+							}
+						},
+					},
+					{
+						fieldname: "label",
+						fieldtype: "Data",
+						in_list_view: 1,
+						label: "Label",
+					},
+					{
+						fieldname: "icon",
+						fieldtype: "Icon",
+						label: "Icon",
 					},
 					{
 						fieldname: "column_break_7",
@@ -350,7 +365,7 @@ class ShortcutDialog extends WidgetDialog {
 				fieldname: "type",
 				label: "Type",
 				reqd: 1,
-				options: "DocType\nReport\nPage\nDashboard",
+				options: "DocType\nReport\nPage\nDashboard\nURL",
 				onchange: () => {
 					if (this.dialog.get_value("type") == "DocType") {
 						this.dialog.fields_dict.link_to.get_query = () => {
@@ -358,6 +373,7 @@ class ShortcutDialog extends WidgetDialog {
 								query: "dontmanage.core.report.permitted_documents_for_user.permitted_documents_for_user.query_doctypes",
 								filters: {
 									user: dontmanage.session.user,
+									include_single_doctypes: true,
 								},
 							};
 						};
@@ -379,12 +395,11 @@ class ShortcutDialog extends WidgetDialog {
 				fieldtype: "Dynamic Link",
 				fieldname: "link_to",
 				label: "Link To",
-				reqd: 1,
 				options: "type",
 				onchange: () => {
 					const doctype = this.dialog.get_value("link_to");
 					if (doctype && this.dialog.get_value("type") == "DocType") {
-						dontmanage.model.with_doctype(doctype, () => {
+						dontmanage.model.with_doctype(doctype, async () => {
 							let meta = dontmanage.get_meta(doctype);
 
 							if (doctype && dontmanage.boot.single_types.includes(doctype)) {
@@ -395,8 +410,15 @@ class ShortcutDialog extends WidgetDialog {
 							}
 
 							const views = ["List", "Report Builder", "Dashboard", "New"];
-							if (meta.is_tree === "Tree") views.push("Tree");
+							if (meta.is_tree === 1) views.push("Tree");
 							if (dontmanage.boot.calendars.includes(doctype)) views.push("Calendar");
+
+							const response = await dontmanage.db.get_value(
+								"Kanban Board",
+								{ reference_doctype: doctype },
+								"name"
+							);
+							if (response?.message?.name) views.push("Kanban");
 
 							this.dialog.set_df_property("doc_view", "options", views.join("\n"));
 						});
@@ -404,6 +426,16 @@ class ShortcutDialog extends WidgetDialog {
 						this.hide_filters();
 					}
 				},
+				depends_on: (s) => s.type != "URL",
+				mandatory_depends_on: (s) => s.type != "URL",
+			},
+			{
+				fieldtype: "Data",
+				fieldname: "url",
+				label: "URL",
+				default: "",
+				depends_on: (s) => s.type == "URL",
+				mandatory_depends_on: (s) => s.type == "URL",
 			},
 			{
 				fieldtype: "Select",
@@ -418,10 +450,37 @@ class ShortcutDialog extends WidgetDialog {
 					if (this.dialog) {
 						let doctype = this.dialog.get_value("link_to");
 						let is_single = dontmanage.boot.single_types.includes(doctype);
-						return state.type == "DocType" && !is_single;
+						return doctype && state.type == "DocType" && !is_single;
 					}
 
 					return false;
+				},
+				onchange: () => {
+					if (this.dialog.get_value("doc_view") == "Kanban") {
+						this.dialog.fields_dict.kanban_board.get_query = () => {
+							return {
+								filters: {
+									reference_doctype: this.dialog.get_value("link_to"),
+								},
+							};
+						};
+					} else {
+						this.dialog.fields_dict.link_to.get_query = null;
+					}
+				},
+			},
+			{
+				fieldtype: "Link",
+				fieldname: "kanban_board",
+				label: "Kanban Board",
+				options: "Kanban Board",
+				depends_on: () => {
+					let doc_view = this.dialog?.get_value("doc_view");
+					return doc_view == "Kanban";
+				},
+				mandatory_depends_on: () => {
+					let doc_view = this.dialog?.get_value("doc_view");
+					return doc_view == "Kanban";
 				},
 			},
 			{
@@ -495,10 +554,27 @@ class ShortcutDialog extends WidgetDialog {
 	process_data(data) {
 		if (this.dialog.get_value("type") == "DocType" && this.filter_group) {
 			let filters = this.filter_group.get_filters();
-			data.stats_filter = dontmanage.utils.get_filter_as_json(filters);
+			data.stats_filter = JSON.stringify(filters);
 		}
 
 		data.label = data.label ? data.label : dontmanage.model.unscrub(data.link_to);
+
+		if (data.url) {
+			let _url = data.url;
+			if (data.url.startsWith("/")) {
+				_url = dontmanage.urllib.get_base_url() + data.url;
+			}
+			!validate_url(_url) &&
+				dontmanage.throw({
+					message: __("<b>{0}</b> is not a valid URL", [data.url]),
+					title: __("Invalid URL"),
+					indicator: "red",
+				});
+
+			if (!data.label) {
+				data.label = "No Label (URL)";
+			}
+		}
 
 		return data;
 	}
@@ -517,7 +593,7 @@ class NumberCardDialog extends WidgetDialog {
 				{
 					fieldtype: "Link",
 					fieldname: "number_card_name",
-					label: __("Number Cards"),
+					label: __("Number Card"),
 					options: "Number Card",
 					reqd: 1,
 					get_query: () => {
@@ -678,6 +754,29 @@ class NumberCardDialog extends WidgetDialog {
 	}
 }
 
+class CustomBlockDialog extends WidgetDialog {
+	constructor(opts) {
+		super(opts);
+	}
+
+	get_fields() {
+		return [
+			{
+				fieldtype: "Link",
+				fieldname: "custom_block_name",
+				label: "Custom Block Name",
+				options: "Custom HTML Block",
+				reqd: 1,
+				get_query: () => {
+					return {
+						query: "dontmanage.desk.doctype.custom_html_block.custom_html_block.get_custom_blocks_for_user",
+					};
+				},
+			},
+		];
+	}
+}
+
 export default function get_dialog_constructor(type) {
 	const widget_map = {
 		chart: ChartDialog,
@@ -686,6 +785,7 @@ export default function get_dialog_constructor(type) {
 		onboarding: OnboardingDialog,
 		quick_list: QuickListDialog,
 		number_card: NumberCardDialog,
+		custom_block: CustomBlockDialog,
 	};
 
 	return widget_map[type] || WidgetDialog;

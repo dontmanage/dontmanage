@@ -1,6 +1,10 @@
 import random
+from typing import TYPE_CHECKING
 
 import dontmanage
+
+if TYPE_CHECKING:
+	from dontmanage.model.document import Document
 
 settings = dontmanage._dict(
 	prob={
@@ -9,12 +13,12 @@ settings = dontmanage._dict(
 )
 
 
-def add_random_children(doc, fieldname, rows, randomize, unique=None):
+def add_random_children(doc: "Document", fieldname: str, rows, randomize: dict, unique=None):
 	nrows = rows
 	if rows > 1:
 		nrows = random.randrange(1, rows)
 
-	for i in range(nrows):
+	for _ in range(nrows):
 		d = {}
 		for key, val in randomize.items():
 			if isinstance(val[0], str):
@@ -29,24 +33,18 @@ def add_random_children(doc, fieldname, rows, randomize, unique=None):
 			doc.append(fieldname, d)
 
 
-def get_random(doctype, filters=None, doc=False):
+def get_random(doctype: str, filters: dict | None = None, doc: bool = False):
 	condition = []
 	if filters:
-		for key, val in filters.items():
-			condition.append("{}='{}'".format(key, str(val).replace("'", "'")))
-	if condition:
-		condition = " where " + " and ".join(condition)
-	else:
-		condition = ""
+		condition.extend("{}='{}'".format(key, str(val).replace("'", "'")) for key, val in filters.items())
+	condition = " where " + " and ".join(condition) if condition else ""
 
 	out = dontmanage.db.multisql(
 		{
-			"mariadb": """select name from `tab%s` %s
-		order by RAND() limit 1 offset 0"""
-			% (doctype, condition),
-			"postgres": """select name from `tab%s` %s
-		order by RANDOM() limit 1 offset 0"""
-			% (doctype, condition),
+			"mariadb": f"""select name from `tab{doctype}` {condition}
+		order by RAND() limit 1 offset 0""",
+			"postgres": f"""select name from `tab{doctype}` {condition}
+		order by RANDOM() limit 1 offset 0""",
 		}
 	)
 
@@ -54,13 +52,12 @@ def get_random(doctype, filters=None, doc=False):
 
 	if doc and out:
 		return dontmanage.get_doc(doctype, out)
-	else:
-		return out
+	return out
 
 
-def can_make(doctype):
+def can_make(doctype: str) -> bool:
 	return random.random() < settings.prob.get(doctype, settings.prob["default"])["make"]
 
 
-def how_many(doctype):
+def how_many(doctype: str) -> int:
 	return random.randrange(*settings.prob.get(doctype, settings.prob["default"])["qty"])

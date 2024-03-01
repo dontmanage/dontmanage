@@ -9,7 +9,7 @@ import dontmanage.share
 from dontmanage import _dict
 from dontmanage.boot import get_allowed_reports
 from dontmanage.core.doctype.domain_settings.domain_settings import get_active_modules
-from dontmanage.permissions import get_roles, get_valid_perms
+from dontmanage.permissions import AUTOMATIC_ROLES, get_roles, get_valid_perms
 from dontmanage.query_builder import DocType, Order
 from dontmanage.query_builder.functions import Concat_ws
 
@@ -32,6 +32,7 @@ class UserPermissions:
 		self.can_select = []
 		self.can_read = []
 		self.can_write = []
+		self.can_submit = []
 		self.can_cancel = []
 		self.can_delete = []
 		self.can_search = []
@@ -40,7 +41,6 @@ class UserPermissions:
 		self.can_export = []
 		self.can_print = []
 		self.can_email = []
-		self.can_set_user_permissions = []
 		self.allow_modules = []
 		self.in_create = []
 		self.setup_user()
@@ -60,7 +60,7 @@ class UserPermissions:
 			return user
 
 		if not dontmanage.flags.in_install_db and not dontmanage.flags.in_test:
-			user_doc = dontmanage.cache().hget("user_doc", self.name, get_user_doc)
+			user_doc = dontmanage.cache.hget("user_doc", self.name, get_user_doc)
 			if user_doc:
 				self.doc = dontmanage.get_doc(user_doc)
 
@@ -143,6 +143,9 @@ class UserPermissions:
 					else:
 						self.can_read.append(dt)
 
+			if p.get("submit"):
+				self.can_submit.append(dt)
+
 			if p.get("cancel"):
 				self.can_cancel.append(dt)
 
@@ -152,7 +155,7 @@ class UserPermissions:
 			if p.get("read") or p.get("write") or p.get("create"):
 				if p.get("report"):
 					self.can_get_report.append(dt)
-				for key in ("import", "export", "print", "email", "set_user_permissions"):
+				for key in ("import", "export", "print", "email"):
 					if p.get(key):
 						getattr(self, "can_" + key).append(dt)
 
@@ -187,7 +190,7 @@ class UserPermissions:
 				filters={"property": "allow_import", "value": "1"},
 			)
 
-		dontmanage.cache().hset("can_import", dontmanage.session.user, self.can_import)
+		dontmanage.cache.hset("can_import", dontmanage.session.user, self.can_import)
 
 	def get_defaults(self):
 		import dontmanage.defaults
@@ -222,6 +225,7 @@ class UserPermissions:
 				"mute_sounds",
 				"send_me_a_copy",
 				"user_type",
+				"onboarding_status",
 			],
 			as_dict=True,
 		)
@@ -230,6 +234,7 @@ class UserPermissions:
 			self.build_permissions()
 
 		d.name = self.name
+		d.onboarding_status = dontmanage.parse_json(d.onboarding_status)
 		d.roles = self.get_roles()
 		d.defaults = self.get_defaults()
 		for key in (
@@ -237,6 +242,7 @@ class UserPermissions:
 			"can_create",
 			"can_write",
 			"can_read",
+			"can_submit",
 			"can_cancel",
 			"can_delete",
 			"can_get_report",
@@ -248,7 +254,6 @@ class UserPermissions:
 			"can_import",
 			"can_print",
 			"can_email",
-			"can_set_user_permissions",
 		):
 			d[key] = list(set(getattr(self, key)))
 
@@ -325,7 +330,7 @@ def add_system_manager(
 	first_name: str | None = None,
 	last_name: str | None = None,
 	send_welcome_email: bool = False,
-	password: str = None,
+	password: str | None = None,
 ) -> "User":
 	# add user
 	user = dontmanage.new_doc("User")
@@ -347,7 +352,7 @@ def add_system_manager(
 	roles = dontmanage.get_all(
 		"Role",
 		fields=["name"],
-		filters={"name": ["not in", ("Administrator", "Guest", "All")]},
+		filters={"name": ["not in", AUTOMATIC_ROLES]},
 	)
 	roles = [role.name for role in roles]
 	user.add_roles(*roles)
@@ -376,6 +381,8 @@ def is_website_user(username: str | None = None) -> str | None:
 
 
 def is_system_user(username: str | None = None) -> str | None:
+	# TODO: Depracate this. Inefficient, incorrect. This function is meant to be used in emails only.
+	# Problem: Filters on email instead of PK, implicitly filters out disabled users.
 	return dontmanage.db.get_value(
 		"User",
 		{
@@ -383,25 +390,23 @@ def is_system_user(username: str | None = None) -> str | None:
 			"enabled": 1,
 			"user_type": "System User",
 		},
+		cache=True,
 	)
 
 
 def get_users() -> list[dict]:
 	from dontmanage.core.doctype.user.user import get_system_users
 
-	users = []
 	system_managers = get_system_managers(only_name=True)
 
-	for user in get_system_users():
-		users.append(
-			{
-				"full_name": get_user_fullname(user),
-				"email": user,
-				"is_system_manager": user in system_managers,
-			}
-		)
-
-	return users
+	return [
+		{
+			"full_name": get_user_fullname(user),
+			"email": user,
+			"is_system_manager": user in system_managers,
+		}
+		for user in get_system_users()
+	]
 
 
 def get_users_with_role(role: str) -> list[str]:

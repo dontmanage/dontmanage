@@ -31,7 +31,7 @@ dontmanage.ui.TagEditor = class TagEditor {
 
 		this.tags = new dontmanage.ui.Tags({
 			parent: this.wrapper,
-			placeholder: __("Add a tag ..."),
+			placeholder: '<svg class="es-icon icon-sm"><use href="#es-line-add"></use></svg>',
 			onTagAdd: (tag) => {
 				if (me.initialized && !me.refreshing) {
 					return dontmanage.call({

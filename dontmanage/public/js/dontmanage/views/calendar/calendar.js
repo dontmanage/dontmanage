@@ -11,6 +11,7 @@ dontmanage.views.CalendarView = class CalendarView extends dontmanage.views.List
 			const doctype = route[1];
 			const user_settings = dontmanage.get_user_settings(doctype)["Calendar"] || {};
 			route.push(user_settings.last_calendar || "default");
+			dontmanage.route_flags.replace_route = true;
 			dontmanage.set_route(route);
 			return true;
 		} else {
@@ -104,7 +105,7 @@ dontmanage.views.CalendarView = class CalendarView extends dontmanage.views.List
 			"assets/dontmanage/js/lib/fullcalendar/fullcalendar.min.css",
 			"assets/dontmanage/js/lib/fullcalendar/fullcalendar.min.js",
 		];
-		let user_language = dontmanage.boot.user.language;
+		let user_language = dontmanage.boot.lang;
 		if (user_language && user_language !== "en") {
 			assets.push("assets/dontmanage/js/lib/fullcalendar/locale-all.js");
 		}
@@ -250,7 +251,7 @@ dontmanage.views.Calendar = class Calendar {
 		var me = this;
 		defaults.meridiem = "false";
 		this.cal_options = {
-			locale: dontmanage.boot.user.language || "en",
+			locale: dontmanage.boot.lang,
 			header: {
 				left: "prev, title, next",
 				right: "today, month, agendaWeek, agendaDay",
@@ -263,6 +264,12 @@ dontmanage.views.Calendar = class Calendar {
 			defaultView: defaults.defaultView,
 			weekends: defaults.weekends,
 			nowIndicator: true,
+			buttonText: {
+				today: __("Today"),
+				month: __("Month"),
+				week: __("Week"),
+				day: __("Day"),
+			},
 			events: function (start, end, timezone, callback) {
 				return dontmanage.call({
 					method: me.get_events_method || "dontmanage.desk.calendar.get_events",
@@ -372,7 +379,10 @@ dontmanage.views.Calendar = class Calendar {
 				d[target] = d[source];
 			});
 
-			if (!me.field_map.allDay) d.allDay = 1;
+			if (typeof d.allDay === "undefined") {
+				d.allDay = me.field_map.allDay;
+			}
+
 			if (!me.field_map.convertToUserTz) d.convertToUserTz = 1;
 
 			// convert to user tz

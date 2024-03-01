@@ -2,27 +2,43 @@
 # License: MIT. See LICENSE
 import dontmanage
 import dontmanage.desk.form.assign_to
-from dontmanage.automation.doctype.assignment_rule.test_assignment_rule import make_note
+from dontmanage.automation.doctype.assignment_rule.test_assignment_rule import (
+	TEST_DOCTYPE,
+	_make_test_record,
+	create_test_doctype,
+)
 from dontmanage.desk.form.load import get_assignments
 from dontmanage.desk.listview import get_group_by_count
 from dontmanage.tests.utils import DontManageTestCase
 
 
 class TestAssign(DontManageTestCase):
+	@classmethod
+	def setUpClass(cls):
+		super().setUpClass()
+		create_test_doctype(TEST_DOCTYPE)
+
 	def test_assign(self):
 		todo = dontmanage.get_doc({"doctype": "ToDo", "description": "test"}).insert()
 		if not dontmanage.db.exists("User", "test@example.com"):
 			dontmanage.get_doc({"doctype": "User", "email": "test@example.com", "first_name": "Test"}).insert()
 
-		added = assign(todo, "test@example.com")
+		self._test_basic_assign_on_document(todo)
+
+	def _test_basic_assign_on_document(self, doc):
+		added = assign(doc, "test@example.com")
 
 		self.assertTrue("test@example.com" in [d.owner for d in added])
 
-		removed = dontmanage.desk.form.assign_to.remove(todo.doctype, todo.name, "test@example.com")
+		dontmanage.desk.form.assign_to.remove(doc.doctype, doc.name, "test@example.com")
 
 		# assignment is cleared
-		assignments = dontmanage.desk.form.assign_to.get(dict(doctype=todo.doctype, name=todo.name))
+		assignments = dontmanage.desk.form.assign_to.get(dict(doctype=doc.doctype, name=doc.name))
 		self.assertEqual(len(assignments), 0)
+
+	def test_assign_single(self):
+		c = dontmanage.get_doc("Contact Us Settings")
+		self._test_basic_assign_on_document(c)
 
 	def test_assignment_count(self):
 		dontmanage.db.delete("ToDo")
@@ -47,25 +63,25 @@ class TestAssign(DontManageTestCase):
 				}
 			).insert()
 
-		note = make_note()
+		note = _make_test_record()
 		assign(note, "test_assign1@example.com")
 
-		note = make_note(dict(public=1))
+		note = _make_test_record(public=1)
 		assign(note, "test_assign2@example.com")
 
-		note = make_note(dict(public=1))
+		note = _make_test_record(public=1)
 		assign(note, "test_assign2@example.com")
 
-		note = make_note()
+		note = _make_test_record()
 		assign(note, "test_assign2@example.com")
 
-		data = {d.name: d.count for d in get_group_by_count("Note", "[]", "assigned_to")}
+		data = {d.name: d.count for d in get_group_by_count(TEST_DOCTYPE, "[]", "assigned_to")}
 
 		self.assertTrue("test_assign1@example.com" in data)
 		self.assertEqual(data["test_assign1@example.com"], 1)
 		self.assertEqual(data["test_assign2@example.com"], 3)
 
-		data = {d.name: d.count for d in get_group_by_count("Note", '[{"public": 1}]', "assigned_to")}
+		data = {d.name: d.count for d in get_group_by_count(TEST_DOCTYPE, '[{"public": 1}]', "assigned_to")}
 
 		self.assertFalse("test_assign1@example.com" in data)
 		self.assertEqual(data["test_assign2@example.com"], 2)

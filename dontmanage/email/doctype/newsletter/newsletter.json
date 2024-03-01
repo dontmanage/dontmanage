@@ -2,7 +2,7 @@
  "actions": [],
  "allow_rename": 1,
  "creation": "2013-01-10 16:34:31",
- "description": "Create and Send Newsletters",
+ "description": "Create and send emails to a specific group of subscribers periodically.",
  "doctype": "DocType",
  "document_type": "Other",
  "engine": "InnoDB",
@@ -12,6 +12,7 @@
   "column_break_3",
   "total_recipients",
   "column_break_12",
+  "total_views",
   "email_sent",
   "from_section",
   "sender_name",
@@ -28,6 +29,7 @@
   "message",
   "message_md",
   "message_html",
+  "campaign",
   "attachments",
   "send_unsubscribe_link",
   "send_webview_link",
@@ -228,6 +230,20 @@
   {
    "fieldname": "column_break_3",
    "fieldtype": "Column Break"
+  },
+  {
+   "default": "0",
+   "fieldname": "total_views",
+   "fieldtype": "Int",
+   "label": "Total Views",
+   "no_copy": 1,
+   "read_only": 1
+  },
+  {
+   "fieldname": "campaign",
+   "fieldtype": "Link",
+   "label": "Campaign",
+   "options": "Marketing Campaign"
   }
  ],
  "has_web_view": 1,
@@ -236,7 +252,7 @@
  "index_web_pages_for_search": 1,
  "is_published_field": "published",
  "links": [],
- "modified": "2022-03-09 01:48:16.741603",
+ "modified": "2024-01-30 14:05:50.645802",
  "modified_by": "Administrator",
  "module": "Email",
  "name": "Newsletter",
@@ -251,7 +267,6 @@
    "read": 1,
    "report": 1,
    "role": "Newsletter Manager",
-   "set_user_permissions": 1,
    "share": 1,
    "write": 1
   }
@@ -259,6 +274,7 @@
  "route": "newsletters",
  "sort_field": "modified",
  "sort_order": "ASC",
+ "states": [],
  "title_field": "subject",
  "track_changes": 1
 }

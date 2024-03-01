@@ -3,12 +3,14 @@ import logging
 import os
 from copy import deepcopy
 from logging.handlers import RotatingFileHandler
+from typing import Literal
 
 # imports - module imports
 import dontmanage
 from dontmanage.utils import get_sites
 
 default_log_level = logging.WARNING if dontmanage._dev_server else logging.ERROR
+stream_logging = os.environ.get("DONTMANAGE_STREAM_LOGGING")
 
 
 def get_logger(
@@ -18,7 +20,7 @@ def get_logger(
 	filter=None,
 	max_size=100_000,
 	file_count=20,
-	stream_only=False,
+	stream_only=stream_logging,
 ) -> "logging.Logger":
 	"""Application Logger for your given module
 
@@ -96,7 +98,7 @@ class SiteContextFilter(logging.Filter):
 			return True
 
 
-def set_log_level(level: int) -> None:
+def set_log_level(level: Literal["ERROR", "WARNING", "WARN", "INFO", "DEBUG"]) -> None:
 	"""Use this method to set log level to something other than the default DEBUG"""
 	dontmanage.log_level = getattr(logging, (level or "").upper(), None) or default_log_level
 	dontmanage.loggers = {}

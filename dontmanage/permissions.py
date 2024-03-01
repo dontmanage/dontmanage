@@ -1,6 +1,7 @@
 # Copyright (c) 2015, DontManage and Contributors
 # License: MIT. See LICENSE
 import copy
+import functools
 
 import dontmanage
 import dontmanage.share
@@ -22,42 +23,54 @@ rights = (
 	"report",
 	"import",
 	"export",
-	"set_user_permissions",
 	"share",
 )
 
 
-def check_admin_or_system_manager(user=None):
-	from dontmanage.utils.commands import warn
+GUEST_ROLE = "Guest"
+ALL_USER_ROLE = "All"  # This includes website users too.
+SYSTEM_USER_ROLE = "Desk User"
+ADMIN_ROLE = "Administrator"
 
-	warn(
-		"The function check_admin_or_system_manager will be deprecated in version 15."
-		'Please use dontmanage.only_for("System Manager") instead.',
-		category=PendingDeprecationWarning,
-	)
 
-	if not user:
-		user = dontmanage.session.user
-
-	if ("System Manager" not in dontmanage.get_roles(user)) and (user != "Administrator"):
-		dontmanage.throw(_("Not permitted"), dontmanage.PermissionError)
+# These roles are automatically assigned based on user type
+AUTOMATIC_ROLES = (GUEST_ROLE, ALL_USER_ROLE, SYSTEM_USER_ROLE, ADMIN_ROLE)
 
 
 def print_has_permission_check_logs(func):
+	@functools.wraps(func)
 	def inner(*args, **kwargs):
-		dontmanage.flags["has_permission_check_logs"] = []
-		result = func(*args, **kwargs)
+		raise_exception = kwargs.get("raise_exception", True)
 		self_perm_check = True if not kwargs.get("user") else kwargs.get("user") == dontmanage.session.user
-		raise_exception = False if kwargs.get("raise_exception") is False else True
+
+		if raise_exception:
+			dontmanage.flags["has_permission_check_logs"] = []
+
+		result = func(*args, **kwargs)
 
 		# print only if access denied
 		# and if user is checking his own permission
 		if not result and self_perm_check and raise_exception:
 			msgprint(("<br>").join(dontmanage.flags.get("has_permission_check_logs", [])))
-		dontmanage.flags.pop("has_permission_check_logs", None)
+
+		if raise_exception:
+			dontmanage.flags.pop("has_permission_check_logs", None)
 		return result
 
 	return inner
+
+
+def _debug_log(log: str):
+	if not hasattr(dontmanage.local, "permission_debug_log"):
+		dontmanage.local.permission_debug_log = []
+	dontmanage.local.permission_debug_log.append(log)
+
+
+def _pop_debug_log() -> list[str]:
+	if log := getattr(dontmanage.local, "permission_debug_log", None):
+		del dontmanage.local.permission_debug_log
+		return log
+	return []
 
 
 @print_has_permission_check_logs
@@ -65,19 +78,18 @@ def has_permission(
 	doctype,
 	ptype="read",
 	doc=None,
-	verbose=False,
 	user=None,
 	raise_exception=True,
 	*,
 	parent_doctype=None,
-):
-	"""Returns True if user has permission `ptype` for given `doctype`.
-	If `doc` is passed, it also checks user, share and owner permissions.
+	debug=False,
+) -> bool:
+	"""Return True if user has permission `ptype` for given `doctype`.
+	If `doc` is passed, also check user, share and owner permissions.
 
 	:param doctype: DocType to check permission for
 	:param ptype: Permission Type to check
 	:param doc: Check User Permissions for specified document.
-	:param verbose: DEPRECATED, will be removed in a future release.
 	:param user: User to check permission for. Defaults to current user.
 	:param raise_exception:
 	        DOES NOT raise an exception.
@@ -92,7 +104,12 @@ def has_permission(
 		user = dontmanage.session.user
 
 	if user == "Administrator":
+		debug and _debug_log("Allowed everything because user is Administrator")
 		return True
+
+	if ptype == "share" and dontmanage.get_system_settings("disable_document_sharing"):
+		debug and _debug_log("User can't share because sharing is disabled globally from system settings")
+		return False
 
 	if not doc and hasattr(doctype, "doctype"):
 		# first argument can be doc or doctype
@@ -100,80 +117,101 @@ def has_permission(
 		doctype = doc.doctype
 
 	if dontmanage.is_table(doctype):
-		return has_child_permission(doctype, ptype, doc, user, raise_exception, parent_doctype)
+		return has_child_permission(doctype, ptype, doc, user, raise_exception, parent_doctype, debug=debug)
 
 	meta = dontmanage.get_meta(doctype)
 
 	if doc:
-		if isinstance(doc, str):
+		if isinstance(doc, str | int):
 			doc = dontmanage.get_doc(meta.name, doc)
-		perm = get_doc_permissions(doc, user=user, ptype=ptype).get(ptype)
+		perm = get_doc_permissions(doc, user=user, ptype=ptype, debug=debug).get(ptype)
 		if not perm:
-			push_perm_check_log(
-				_("User {0} does not have access to this document").format(dontmanage.bold(user))
+			debug and _debug_log(
+				"Permission check failed from role permission system. Check if user's role grant them permission to the document."
 			)
+			msg = _("User {0} does not have access to this document").format(dontmanage.bold(user))
+			if dontmanage.has_permission(doc.doctype):
+				msg += f": {_(doc.doctype)} - {doc.name}"
+			push_perm_check_log(msg, debug=debug)
 	else:
 		if ptype == "submit" and not cint(meta.is_submittable):
-			push_perm_check_log(_("Document Type is not submittable"))
+			push_perm_check_log(_("Document Type is not submittable"), debug=debug)
 			return False
 
 		if ptype == "import" and not cint(meta.allow_import):
-			push_perm_check_log(_("Document Type is not importable"))
+			push_perm_check_log(_("Document Type is not importable"), debug=debug)
 			return False
 
-		role_permissions = get_role_permissions(meta, user=user)
+		role_permissions = get_role_permissions(meta, user=user, debug=debug)
+		debug and _debug_log(
+			"User has following permissions using role permission system: "
+			+ dontmanage.as_json(role_permissions, indent=8)
+		)
+
 		perm = role_permissions.get(ptype)
 
 		if not perm:
 			push_perm_check_log(
 				_("User {0} does not have doctype access via role permission for document {1}").format(
-					dontmanage.bold(user), dontmanage.bold(doctype)
-				)
+					dontmanage.bold(user), dontmanage.bold(_(doctype))
+				),
+				debug=debug,
 			)
 
 	def false_if_not_shared():
-		if ptype in ("read", "write", "share", "submit", "email", "print"):
+		if ptype not in ("read", "write", "share", "submit", "email", "print"):
+			debug and _debug_log(f"Permission type {ptype} can not be shared")
+			return False
+
+		rights = ["read" if ptype in ("email", "print") else ptype]
+
+		if doc:
+			doc_name = get_doc_name(doc)
 			shared = dontmanage.share.get_shared(
-				doctype, user, ["read" if ptype in ("email", "print") else ptype]
+				doctype,
+				user,
+				rights=rights,
+				filters=[["share_name", "=", doc_name]],
+				limit=1,
 			)
+			debug and _debug_log(f"Document is shared with user for {ptype}? {bool(shared)}")
+			return bool(shared)
 
-			if doc:
-				doc_name = get_doc_name(doc)
-				if doc_name in shared:
-					if ptype in ("read", "write", "share", "submit") or meta.permissions[0].get(ptype):
-						return True
-
-			elif shared:
-				# if atleast one shared doc of that type, then return True
-				# this is used in db_query to check if permission on DocType
-				return True
+		elif dontmanage.share.get_shared(doctype, user, rights=rights, limit=1):
+			# if atleast one shared doc of that type, then return True
+			# this is used in db_query to check if permission on DocType
+			debug and _debug_log(f"At least one document is shared with user with perm: {rights}")
+			return True
 
 		return False
 
 	if not perm:
+		debug and _debug_log("Checking if document/doctype is explicitly shared with user")
 		perm = false_if_not_shared()
 
 	return bool(perm)
 
 
-def get_doc_permissions(doc, user=None, ptype=None):
-	"""Returns a dict of evaluated permissions for given `doc` like `{"read":1, "write":1}`"""
+def get_doc_permissions(doc, user=None, ptype=None, debug=False):
+	"""Return a dict of evaluated permissions for given `doc` like `{"read":1, "write":1}`"""
 	if not user:
 		user = dontmanage.session.user
-
-	if dontmanage.is_table(doc.doctype):
-		return {"read": 1, "write": 1}
 
 	meta = dontmanage.get_meta(doc.doctype)
 
 	def is_user_owner():
 		return (doc.get("owner") or "").lower() == user.lower()
 
-	if has_controller_permissions(doc, ptype, user=user) is False:
-		push_perm_check_log("Not allowed via controller permission check")
+	if not has_controller_permissions(doc, ptype, user=user, debug=debug):
+		push_perm_check_log(_("Not allowed via controller permission check"), debug=debug)
 		return {ptype: 0}
 
-	permissions = copy.deepcopy(get_role_permissions(meta, user=user, is_owner=is_user_owner()))
+	permissions = copy.deepcopy(get_role_permissions(meta, user=user, is_owner=is_user_owner(), debug=debug))
+
+	debug and _debug_log(
+		"User has following permissions using role permission system: "
+		+ dontmanage.as_json(permissions, indent=8)
+	)
 
 	if not cint(meta.is_submittable):
 		permissions["submit"] = 0
@@ -187,20 +225,29 @@ def get_doc_permissions(doc, user=None, ptype=None):
 		# some access might be only for the owner
 		# eg. everyone might have read access but only owner can delete
 		permissions.update(permissions.get("if_owner", {}))
+		debug and _debug_log(
+			"User is owner of document, so permissions are updated to: " + dontmanage.as_json(permissions)
+		)
 
-	if not has_user_permission(doc, user):
+	if not has_user_permission(doc, user, debug=debug):
 		if is_user_owner():
 			# replace with owner permissions
 			permissions = permissions.get("if_owner", {})
 			# if_owner does not come with create rights...
 			permissions["create"] = 0
+			debug and _debug_log("User has only 'If owner' permissions because of User Permissions")
 		else:
+			debug and _debug_log("User has no permissions because of User Permissions")
 			permissions = {}
 
+	debug and _debug_log(
+		"Final applicable permissions after evaluating user permissions: "
+		+ dontmanage.as_json(permissions, indent=8)
+	)
 	return permissions
 
 
-def get_role_permissions(doctype_meta, user=None, is_owner=None):
+def get_role_permissions(doctype_meta, user=None, is_owner=None, debug=False):
 	"""
 	Returns dict of evaluated role permissions like
 	        {
@@ -220,15 +267,17 @@ def get_role_permissions(doctype_meta, user=None, is_owner=None):
 	if not user:
 		user = dontmanage.session.user
 
-	cache_key = (doctype_meta.name, user)
+	cache_key = (doctype_meta.name, user, bool(is_owner))
 
 	if user == "Administrator":
+		debug and _debug_log("all permissions granted because user is Administrator")
 		return allow_everything()
 
-	if not dontmanage.local.role_permissions.get(cache_key):
+	if not dontmanage.local.role_permissions.get(cache_key) or debug:
 		perms = dontmanage._dict(if_owner={})
 
 		roles = dontmanage.get_roles(user)
+		debug and _debug_log("User has following roles: " + str(roles))
 
 		def is_perm_applicable(perm):
 			return perm.role in roles and cint(perm.permlevel) == 0
@@ -236,9 +285,7 @@ def get_role_permissions(doctype_meta, user=None, is_owner=None):
 		def has_permission_without_if_owner_enabled(ptype):
 			return any(p.get(ptype, 0) and not p.get("if_owner", 0) for p in applicable_permissions)
 
-		applicable_permissions = list(
-			filter(is_perm_applicable, getattr(doctype_meta, "permissions", []))
-		)
+		applicable_permissions = list(filter(is_perm_applicable, getattr(doctype_meta, "permissions", [])))
 		has_if_owner_enabled = any(p.get("if_owner", 0) for p in applicable_permissions)
 		perms["has_if_owner_enabled"] = has_if_owner_enabled
 
@@ -269,21 +316,28 @@ def get_user_permissions(user):
 	return get_user_permissions(user)
 
 
-def has_user_permission(doc, user=None):
-	"""Returns True if User is allowed to view considering User Permissions"""
+def has_user_permission(doc, user=None, debug=False):
+	"""Return True if User is allowed to view considering User Permissions."""
 	from dontmanage.core.doctype.user_permission.user_permission import get_user_permissions
 
 	user_permissions = get_user_permissions(user)
 
 	if not user_permissions:
 		# no user permission rules specified for this doctype
+		debug and _debug_log("User is not affected by any user permissions")
 		return True
 
 	# user can create own role permissions, so nothing applies
 	if get_role_permissions("User Permission", user=user).get("write"):
+		debug and _debug_log("User permission bypassed because user can modify user permissions.")
 		return True
 
-	apply_strict_user_permissions = dontmanage.get_system_settings("apply_strict_user_permissions")
+	# don't apply strict user permissions for single doctypes since they contain empty link fields
+	apply_strict_user_permissions = (
+		False if doc.meta.issingle else dontmanage.get_system_settings("apply_strict_user_permissions")
+	)
+	if apply_strict_user_permissions:
+		debug and _debug_log("Strict user permissions will be applied")
 
 	doctype = doc.get("doctype")
 	docname = doc.get("name")
@@ -296,10 +350,16 @@ def has_user_permission(doc, user=None):
 		# if allowed_docs is empty it states that there is no applicable permission under the current doctype
 
 		# only check if allowed_docs is not empty
-		if allowed_docs and docname not in allowed_docs:
+		if allowed_docs and str(docname) not in allowed_docs:
 			# no user permissions for this doc specified
-			push_perm_check_log(_("Not allowed for {0}: {1}").format(_(doctype), docname))
+			debug and _debug_log(
+				"User doesn't have access to this document because of User Permissions, allowed documents: "
+				+ str(allowed_docs)
+			)
+			push_perm_check_log(_("Not allowed for {0}: {1}").format(_(doctype), docname), debug=debug)
 			return False
+		else:
+			debug and _debug_log(f"User Has access to {docname} via User Permissions.")
 
 	# STEP 2: ---------------------------------
 	# check user permissions in all link fields
@@ -314,7 +374,6 @@ def has_user_permission(doc, user=None):
 
 		# check all link fields for user permissions
 		for field in meta.get_link_fields():
-
 			if field.ignore_user_permissions:
 				continue
 
@@ -333,17 +392,29 @@ def has_user_permission(doc, user=None):
 				# restricted for this link field, and no matching values found
 				# make the right message and exit
 				if d.get("parentfield"):
-					# "Not allowed for Company = Restricted Company in Row 3. Restricted field: reference_type"
-					msg = _("Not allowed for {0}: {1} in Row {2}. Restricted field: {3}").format(
-						_(field.options), d.get(field.fieldname), d.idx, field.fieldname
+					# "You are not allowed to access this Employee record because it is linked
+					# to Company 'Restricted Company' in row 3, field Reference Type"
+					msg = _(
+						"You are not allowed to access this {0} record because it is linked to {1} '{2}' in row {3}, field {4}"
+					).format(
+						_(meta.doctype),
+						_(field.options),
+						d.get(field.fieldname) or _("empty"),
+						d.idx,
+						_(field.label, context=field.parent) if field.label else field.fieldname,
 					)
 				else:
-					# "Not allowed for Company = Restricted Company. Restricted field: reference_type"
-					msg = _("Not allowed for {0}: {1}. Restricted field: {2}").format(
-						_(field.options), d.get(field.fieldname), field.fieldname
+					# "You are not allowed to access Company 'Restricted Company' in field Reference Type"
+					msg = _(
+						"You are not allowed to access this {0} record because it is linked to {1} '{2}' in field {3}"
+					).format(
+						_(meta.doctype),
+						_(field.options),
+						d.get(field.fieldname) or _("empty"),
+						_(field.label, context=field.parent) if field.label else field.fieldname,
 					)
 
-				push_perm_check_log(msg)
+				push_perm_check_log(msg, debug=debug)
 
 				return False
 
@@ -359,23 +430,27 @@ def has_user_permission(doc, user=None):
 	return True
 
 
-def has_controller_permissions(doc, ptype, user=None):
-	"""Returns controller permissions if defined. None if not defined"""
+def has_controller_permissions(doc, ptype, user=None, debug=False) -> bool:
+	"""Return controller permissions if denied, True if not defined.
+
+	Controllers can only deny permission, they can not explicitly grant any permission that wasn't
+	already present."""
 	if not user:
 		user = dontmanage.session.user
 
 	methods = dontmanage.get_hooks("has_permission").get(doc.doctype, [])
 
 	if not methods:
-		return None
+		return True
 
 	for method in reversed(methods):
-		controller_permission = dontmanage.call(dontmanage.get_attr(method), doc=doc, ptype=ptype, user=user)
+		controller_permission = dontmanage.call(method, doc=doc, ptype=ptype, user=user, debug=debug)
+		debug and _debug_log(f"Controller permission check from {method}: {controller_permission}")
 		if controller_permission is not None:
-			return controller_permission
+			return bool(controller_permission)
 
-	# controller permissions could not decide on True or False
-	return None
+	# None of the controller hooks returned anything conclusive
+	return True
 
 
 def get_doctypes_with_read():
@@ -391,7 +466,7 @@ def get_valid_perms(doctype=None, user=None):
 
 	doctypes_with_custom_perms = get_doctypes_with_custom_docperms()
 	for p in perms:
-		if not p.parent in doctypes_with_custom_perms:
+		if p.parent not in doctypes_with_custom_perms:
 			custom_perms.append(p)
 
 	if doctype:
@@ -418,7 +493,7 @@ def get_roles(user=None, with_standard=True):
 		user = dontmanage.session.user
 
 	if user == "Guest" or not user:
-		return ["Guest"]
+		return [GUEST_ROLE]
 
 	def get():
 		if user == "Administrator":
@@ -428,18 +503,23 @@ def get_roles(user=None, with_standard=True):
 			roles = (
 				dontmanage.qb.from_(table)
 				.where(
-					(table.parenttype == "User") & (table.parent == user) & (table.role.notin(["All", "Guest"]))
+					(table.parenttype == "User")
+					& (table.parent == user)
+					& (table.role.notin(AUTOMATIC_ROLES))
 				)
 				.select(table.role)
 				.run(pluck=True)
 			)
-			return roles + ["All", "Guest"]
+			roles += [ALL_USER_ROLE, GUEST_ROLE]
+			if is_system_user(user):
+				roles.append(SYSTEM_USER_ROLE)
+			return roles
 
-	roles = dontmanage.cache().hget("roles", user, get)
+	roles = dontmanage.cache.hget("roles", user, get)
 
 	# filter standard if required
 	if not with_standard:
-		roles = [r for r in roles if r not in ["All", "Guest", "Administrator"]]
+		roles = [r for r in roles if r not in AUTOMATIC_ROLES]
 
 	return roles
 
@@ -461,29 +541,6 @@ def get_doctypes_with_custom_docperms():
 
 	doctypes = dontmanage.get_all("Custom DocPerm", fields=["parent"], distinct=1)
 	return [d.parent for d in doctypes]
-
-
-def can_set_user_permissions(doctype, docname=None):
-	# System Manager can always set user permissions
-	if dontmanage.session.user == "Administrator" or "System Manager" in dontmanage.get_roles():
-		return True
-
-	meta = dontmanage.get_meta(doctype)
-
-	# check if current user has read permission for docname
-	if docname and not has_permission(doctype, "read", docname):
-		return False
-
-	# check if current user has a role that can set permission
-	if get_role_permissions(meta).set_user_permissions != 1:
-		return False
-
-	return True
-
-
-def set_user_permission_if_allowed(doctype, name, user, with_message=False):
-	if get_role_permissions(dontmanage.get_meta(doctype), user).set_user_permissions != 1:
-		add_user_permission(doctype, name, user)
 
 
 def add_user_permission(
@@ -552,13 +609,23 @@ def can_export(doctype, raise_exception=False):
 		return has_access
 
 
-def update_permission_property(doctype, role, permlevel, ptype, value=None, validate=True):
+def update_permission_property(
+	doctype,
+	role,
+	permlevel,
+	ptype,
+	value=None,
+	validate=True,
+	if_owner=0,
+):
 	"""Update a property in Custom Perm"""
 	from dontmanage.core.doctype.doctype.doctype import validate_permissions_for_doctype
 
 	out = setup_custom_perms(doctype)
 
-	name = dontmanage.get_value("Custom DocPerm", dict(parent=doctype, role=role, permlevel=permlevel))
+	name = dontmanage.db.get_value(
+		"Custom DocPerm", dict(parent=doctype, role=role, permlevel=permlevel, if_owner=if_owner)
+	)
 	table = DocType("Custom DocPerm")
 	dontmanage.qb.update(table).set(ptype, value).where(table.name == name).run()
 
@@ -585,6 +652,12 @@ def add_permission(doctype, role, permlevel=0, ptype=None):
 	if dontmanage.db.get_value(
 		"Custom DocPerm", dict(parent=doctype, role=role, permlevel=permlevel, if_owner=0)
 	):
+		dontmanage.msgprint(
+			_("Rule for this doctype, role, permlevel and if-owner combination already exists.").format(
+				doctype,
+			),
+			alert=True,
+		)
 		return
 
 	if not ptype:
@@ -649,8 +722,7 @@ def allow_everything():
 	returns a dict with access to everything
 	eg. {"read": 1, "write": 1, ...}
 	"""
-	perm = {ptype: 1 for ptype in rights}
-	return perm
+	return {ptype: 1 for ptype in rights}
 
 
 def get_allowed_docs_for_doctype(user_permissions, doctype):
@@ -673,11 +745,12 @@ def filter_allowed_docs_for_doctype(user_permissions, doctype, with_default_doc=
 	return (allowed_doc, default_doc) if with_default_doc else allowed_doc
 
 
-def push_perm_check_log(log):
+def push_perm_check_log(log, debug=False):
+	debug and _debug_log(log)
 	if dontmanage.flags.get("has_permission_check_logs") is None:
 		return
 
-	dontmanage.flags.get("has_permission_check_logs").append(_(log))
+	dontmanage.flags.get("has_permission_check_logs").append(log)
 
 
 def has_child_permission(
@@ -687,7 +760,10 @@ def has_child_permission(
 	user=None,
 	raise_exception=True,
 	parent_doctype=None,
-):
+	*,
+	debug=False,
+) -> bool:
+	debug and _debug_log("This doctype is a child table, permissions will be checked on parent.")
 	if isinstance(child_doc, str):
 		child_doc = dontmanage.db.get_value(
 			child_doctype,
@@ -701,7 +777,8 @@ def has_child_permission(
 
 	if not parent_doctype:
 		push_perm_check_log(
-			_("Please specify a valid parent DocType for {0}").format(dontmanage.bold(child_doctype))
+			_("Please specify a valid parent DocType for {0}").format(dontmanage.bold(child_doctype)),
+			debug=debug,
 		)
 		return False
 
@@ -715,7 +792,8 @@ def has_child_permission(
 		push_perm_check_log(
 			_("{0} is not a valid parent DocType for {1}").format(
 				dontmanage.bold(parent_doctype), dontmanage.bold(child_doctype)
-			)
+			),
+			debug=debug,
 		)
 		return False
 
@@ -725,7 +803,8 @@ def has_child_permission(
 			push_perm_check_log(
 				_("Parentfield not specified in {0}: {1}").format(
 					dontmanage.bold(child_doctype), dontmanage.bold(child_doc.name)
-				)
+				),
+				debug=debug,
 			)
 			return False
 
@@ -733,14 +812,19 @@ def has_child_permission(
 			push_perm_check_log(
 				_("{0} is not a valid parentfield for {1}").format(
 					dontmanage.bold(parentfield), dontmanage.bold(child_doctype)
-				)
+				),
+				debug=debug,
 			)
 			return False
 
 		permlevel = parent_meta.get_field(parentfield).permlevel
-		if permlevel > 0 and permlevel not in parent_meta.get_permlevel_access(ptype, user=user):
+		accessible_permlevels = parent_meta.get_permlevel_access(ptype, user=user)
+		if permlevel > 0 and permlevel not in accessible_permlevels:
 			push_perm_check_log(
-				_("Insufficient Permission Level for {0}").format(dontmanage.bold(parent_doctype))
+				_("Insufficient Permission Level for {0}").format(dontmanage.bold(parent_doctype)), debug=debug
+			)
+			debug and _debug_log(
+				f"This table is perm level {permlevel} but user only has access to {accessible_permlevels}"
 			)
 			return False
 
@@ -750,4 +834,9 @@ def has_child_permission(
 		doc=child_doc and getattr(child_doc, "parent_doc", child_doc.parent),
 		user=user,
 		raise_exception=raise_exception,
+		debug=debug,
 	)
+
+
+def is_system_user(user: str | None = None) -> bool:
+	return dontmanage.get_cached_value("User", user or dontmanage.session.user, "user_type") == "System User"

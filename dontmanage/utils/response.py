@@ -6,6 +6,7 @@ import decimal
 import json
 import mimetypes
 import os
+import sys
 from typing import TYPE_CHECKING
 from urllib.parse import quote
 
@@ -21,7 +22,7 @@ import dontmanage.sessions
 import dontmanage.utils
 from dontmanage import _
 from dontmanage.core.doctype.access_log.access_log import make_access_log
-from dontmanage.utils import cint, format_timedelta
+from dontmanage.utils import format_timedelta
 
 if TYPE_CHECKING:
 	from dontmanage.core.doctype.file.file import File
@@ -29,22 +30,44 @@ if TYPE_CHECKING:
 
 def report_error(status_code):
 	"""Build error. Show traceback in developer mode"""
+	from dontmanage.api import ApiVersion, get_api_version
+
 	allow_traceback = (
-		cint(dontmanage.db.get_system_setting("allow_error_traceback")) if dontmanage.db else True
-	)
-	if (
-		allow_traceback
-		and (status_code != 404 or dontmanage.conf.logging)
+		(dontmanage.get_system_settings("allow_error_traceback") if dontmanage.db else False)
 		and not dontmanage.local.flags.disable_traceback
-	):
-		traceback = dontmanage.utils.get_traceback()
-		if traceback:
-			dontmanage.errprint(traceback)
-			dontmanage.local.response.exception = traceback.splitlines()[-1]
+		and (status_code != 404 or dontmanage.conf.logging)
+	)
+
+	traceback = dontmanage.utils.get_traceback()
+	exc_type, exc_value, _ = sys.exc_info()
+
+	match get_api_version():
+		case ApiVersion.V1:
+			if allow_traceback:
+				dontmanage.errprint(traceback)
+				dontmanage.response.exception = traceback.splitlines()[-1]
+			dontmanage.response["exc_type"] = exc_type.__name__
+		case ApiVersion.V2:
+			error_log = {"type": exc_type.__name__}
+			if allow_traceback:
+				error_log["exception"] = traceback
+			_link_error_with_message_log(error_log, exc_value, dontmanage.message_log)
+			dontmanage.local.response.errors = [error_log]
 
 	response = build_response("json")
 	response.status_code = status_code
+
 	return response
+
+
+def _link_error_with_message_log(error_log, exception, message_logs):
+	for message in list(message_logs):
+		if message.get("__dontmanage_exc_id") == getattr(exception, "__dontmanage_exc_id", None):
+			error_log.update(message)
+			message_logs.remove(message)
+			error_log.pop("raise_exception", None)
+			error_log.pop("__dontmanage_exc_id", None)
+			return
 
 
 def build_response(response_type=None):
@@ -68,10 +91,9 @@ def build_response(response_type=None):
 def as_csv():
 	response = Response()
 	response.mimetype = "text/csv"
-	response.charset = "utf-8"
-	response.headers["Content-Disposition"] = (
-		'attachment; filename="%s.csv"' % dontmanage.response["doctype"].replace(" ", "_")
-	).encode("utf-8")
+	filename = f"{dontmanage.response['doctype']}.csv"
+	filename = filename.encode("utf-8").decode("unicode-escape", "ignore")
+	response.headers.add("Content-Disposition", "attachment", filename=filename)
 	response.data = dontmanage.response["result"]
 	return response
 
@@ -79,10 +101,9 @@ def as_csv():
 def as_txt():
 	response = Response()
 	response.mimetype = "text"
-	response.charset = "utf-8"
-	response.headers["Content-Disposition"] = (
-		'attachment; filename="%s.txt"' % dontmanage.response["doctype"].replace(" ", "_")
-	).encode("utf-8")
+	filename = f"{dontmanage.response['doctype']}.txt"
+	filename = filename.encode("utf-8").decode("unicode-escape", "ignore")
+	response.headers.add("Content-Disposition", "attachment", filename=filename)
 	response.data = dontmanage.response["result"]
 	return response
 
@@ -94,22 +115,25 @@ def as_raw():
 		or mimetypes.guess_type(dontmanage.response["filename"])[0]
 		or "application/unknown"
 	)
-	response.headers["Content-Disposition"] = (
-		f'{dontmanage.response.get("display_content_as","attachment")}; filename="{dontmanage.response["filename"].replace(" ", "_")}"'
-	).encode()
+	filename = dontmanage.response["filename"].encode("utf-8").decode("unicode-escape", "ignore")
+	response.headers.add(
+		"Content-Disposition",
+		dontmanage.response.get("display_content_as", "attachment"),
+		filename=filename,
+	)
 	response.data = dontmanage.response["filecontent"]
 	return response
 
 
 def as_json():
 	make_logs()
+
 	response = Response()
 	if dontmanage.local.response.http_status_code:
 		response.status_code = dontmanage.local.response["http_status_code"]
 		del dontmanage.local.response["http_status_code"]
 
 	response.mimetype = "application/json"
-	response.charset = "utf-8"
 	response.data = json.dumps(dontmanage.local.response, default=json_handler, separators=(",", ":"))
 	return response
 
@@ -117,11 +141,8 @@ def as_json():
 def as_pdf():
 	response = Response()
 	response.mimetype = "application/pdf"
-	encoded_filename = quote(dontmanage.response["filename"].replace(" ", "_"))
-	response.headers["Content-Disposition"] = (
-		'filename="%s"' % dontmanage.response["filename"].replace(" ", "_")
-		+ ";filename*=utf-8''%s" % encoded_filename
-	).encode("utf-8")
+	filename = dontmanage.response["filename"].encode("utf-8").decode("unicode-escape", "ignore")
+	response.headers.add("Content-Disposition", None, filename=filename)
 	response.data = dontmanage.response["filecontent"]
 	return response
 
@@ -129,31 +150,54 @@ def as_pdf():
 def as_binary():
 	response = Response()
 	response.mimetype = "application/octet-stream"
-	response.headers["Content-Disposition"] = (
-		'filename="%s"' % dontmanage.response["filename"].replace(" ", "_")
-	).encode("utf-8")
+	filename = dontmanage.response["filename"]
+	filename = filename.encode("utf-8").decode("unicode-escape", "ignore")
+	response.headers.add("Content-Disposition", None, filename=filename)
 	response.data = dontmanage.response["filecontent"]
 	return response
 
 
-def make_logs(response=None):
+def make_logs():
 	"""make strings for msgprint and errprint"""
-	if not response:
-		response = dontmanage.local.response
 
-	if dontmanage.error_log:
+	from dontmanage.api import ApiVersion, get_api_version
+
+	match get_api_version():
+		case ApiVersion.V1:
+			_make_logs_v1()
+		case ApiVersion.V2:
+			_make_logs_v2()
+
+
+def _make_logs_v1():
+	from dontmanage.utils.error import guess_exception_source
+
+	response = dontmanage.local.response
+	allow_traceback = dontmanage.get_system_settings("allow_error_traceback") if dontmanage.db else False
+
+	if dontmanage.error_log and allow_traceback:
+		if source := guess_exception_source(dontmanage.local.error_log and dontmanage.local.error_log[0]["exc"]):
+			response["_exc_source"] = source
 		response["exc"] = json.dumps([dontmanage.utils.cstr(d["exc"]) for d in dontmanage.local.error_log])
 
 	if dontmanage.local.message_log:
-		response["_server_messages"] = json.dumps(
-			[dontmanage.utils.cstr(d) for d in dontmanage.local.message_log]
-		)
+		response["_server_messages"] = json.dumps([json.dumps(d) for d in dontmanage.local.message_log])
 
-	if dontmanage.debug_log and dontmanage.conf.get("logging") or False:
+	if dontmanage.debug_log and dontmanage.conf.get("logging"):
 		response["_debug_messages"] = json.dumps(dontmanage.local.debug_log)
 
 	if dontmanage.flags.error_message:
 		response["_error_message"] = dontmanage.flags.error_message
+
+
+def _make_logs_v2():
+	response = dontmanage.local.response
+
+	if dontmanage.local.message_log:
+		response["messages"] = dontmanage.local.message_log
+
+	if dontmanage.debug_log and dontmanage.conf.get("logging"):
+		response["debug"] = [{"message": m} for m in dontmanage.local.debug_log]
 
 
 def json_handler(obj):
@@ -161,7 +205,7 @@ def json_handler(obj):
 	from collections.abc import Iterable
 	from re import Match
 
-	if isinstance(obj, (datetime.date, datetime.datetime, datetime.time)):
+	if isinstance(obj, datetime.date | datetime.datetime | datetime.time):
 		return str(obj)
 
 	elif isinstance(obj, datetime.timedelta):
@@ -174,9 +218,7 @@ def json_handler(obj):
 		return str(obj)
 
 	elif isinstance(obj, dontmanage.model.document.BaseDocument):
-		doc = obj.as_dict(no_nulls=True)
-		return doc
-
+		return obj.as_dict(no_nulls=True)
 	elif isinstance(obj, Iterable):
 		return list(obj)
 
@@ -190,18 +232,14 @@ def json_handler(obj):
 		return repr(obj)
 
 	else:
-		raise TypeError(
-			f"""Object of type {type(obj)} with value of {repr(obj)} is not JSON serializable"""
-		)
+		raise TypeError(f"""Object of type {type(obj)} with value of {obj!r} is not JSON serializable""")
 
 
 def as_page():
 	"""print web page"""
 	from dontmanage.website.serve import get_response
 
-	return get_response(
-		dontmanage.response["route"], http_status_code=dontmanage.response.get("http_status_code")
-	)
+	return get_response(dontmanage.response["route"], http_status_code=dontmanage.response.get("http_status_code"))
 
 
 def redirect():
@@ -222,18 +260,13 @@ def download_backup(path):
 
 def download_private_file(path: str) -> Response:
 	"""Checks permissions and sends back private file"""
+	from dontmanage.core.doctype.file.utils import find_file_by_url
 
-	can_access = False
-	files = dontmanage.get_all("File", filters={"file_url": path}, pluck="name")
-	# this file might be attached to multiple documents
-	# if the file is accessible from any one of those documents
-	# then it should be downloadable
-	for fname in files:
-		file: "File" = dontmanage.get_doc("File", fname)
-		if can_access := file.is_downloadable():
-			break
+	if dontmanage.session.user == "Guest":
+		raise Forbidden(_("You don't have permission to access this file"))
 
-	if not can_access:
+	file = find_file_by_url(path, name=dontmanage.form_dict.fid)
+	if not file:
 		raise Forbidden(_("You don't have permission to access this file"))
 
 	make_access_log(doctype="File", document=file.name, file_type=os.path.splitext(path)[-1][1:])
@@ -265,7 +298,7 @@ def send_private_file(path: str) -> Response:
 	blacklist = [".svg", ".html", ".htm", ".xml"]
 
 	if extension.lower() in blacklist:
-		response.headers.add("Content-Disposition", "attachment", filename=filename.encode("utf-8"))
+		response.headers.add("Content-Disposition", "attachment", filename=filename)
 
 	response.mimetype = mimetypes.guess_type(filename)[0] or "application/octet-stream"
 

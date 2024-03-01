@@ -44,6 +44,9 @@ dontmanage.ui.form.ControlTime = class ControlTime extends dontmanage.ui.form.Co
 	}
 	set_input(value) {
 		super.set_input(value);
+		if (!this.datepicker) {
+			return;
+		}
 		if (
 			value &&
 			((this.last_value && this.last_value !== this.value) ||

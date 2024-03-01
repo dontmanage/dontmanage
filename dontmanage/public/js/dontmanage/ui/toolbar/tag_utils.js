@@ -8,6 +8,11 @@ dontmanage.tags.utils = {
 		txt = txt.slice(1);
 		let out = [];
 
+		if (!dontmanage.tags.tags) {
+			dontmanage.tags.utils.fetch_tags();
+			return [];
+		}
+
 		for (let i in dontmanage.tags.tags) {
 			let tag = dontmanage.tags.tags[i];
 			let level = dontmanage.search.utils.fuzzy_search(txt, tag);

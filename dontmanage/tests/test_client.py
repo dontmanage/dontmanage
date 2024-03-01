@@ -4,6 +4,7 @@ from unittest.mock import patch
 
 import dontmanage
 from dontmanage.tests.utils import DontManageTestCase
+from dontmanage.utils import get_site_url
 
 
 class TestClient(DontManageTestCase):
@@ -134,9 +135,9 @@ class TestClient(DontManageTestCase):
 			"accept": "application/json",
 			"content-type": "application/json",
 		}
-		url = (
-			f"http://{dontmanage.local.site}:{dontmanage.conf.webserver_port}/api/method/dontmanage.client.get_list"
-		)
+		url = get_site_url(dontmanage.local.site)
+		url += "/api/method/dontmanage.client.get_list"
+
 		res = requests.post(url, json=params, headers=headers)
 		self.assertEqual(res.status_code, 200)
 		data = res.json()
@@ -237,8 +238,8 @@ class TestClient(DontManageTestCase):
 		docs = insert_many(doc_list)
 
 		self.assertEqual(len(docs), 7)
-		self.assertEqual(docs[3], "not-a-random-title")
-		self.assertEqual(docs[6], "another-note-title")
+		self.assertEqual(dontmanage.db.get_value("Note", docs[3], "title"), "not-a-random-title")
+		self.assertEqual(dontmanage.db.get_value("Note", docs[6], "title"), "another-note-title")
 		self.assertIn(note1.name, docs)
 
 		# cleanup

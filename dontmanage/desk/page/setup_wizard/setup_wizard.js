@@ -31,6 +31,9 @@ dontmanage.setup = {
 };
 
 dontmanage.pages["setup-wizard"].on_page_load = function (wrapper) {
+	if (dontmanage.boot.setup_complete) {
+		window.location.href = "/app";
+	}
 	let requires = dontmanage.boot.setup_wizard_requires || [];
 	dontmanage.require(requires, function () {
 		dontmanage.call({
@@ -49,19 +52,14 @@ dontmanage.pages["setup-wizard"].on_page_load = function (wrapper) {
 				};
 				dontmanage.wizard = new dontmanage.setup.SetupWizard(wizard_settings);
 				dontmanage.setup.run_event("after_load");
-				let route = dontmanage.get_route();
-				if (route) {
-					dontmanage.wizard.show_slide(route[1]);
-				}
+				dontmanage.wizard.show_slide(cint(dontmanage.get_route()[1]));
 			},
 		});
 	});
 };
 
 dontmanage.pages["setup-wizard"].on_page_show = function () {
-	if (dontmanage.get_route()[1]) {
-		dontmanage.wizard && dontmanage.wizard.show_slide(dontmanage.get_route()[1]);
-	}
+	dontmanage.wizard && dontmanage.wizard.show_slide(cint(dontmanage.get_route()[1]));
 };
 
 dontmanage.setup.on("before_load", function () {
@@ -102,10 +100,13 @@ dontmanage.setup.SetupWizard = class SetupWizard extends dontmanage.ui.Slides {
 
 	handle_enter_press(e) {
 		if (e.which === dontmanage.ui.keyCode.ENTER) {
-			var $target = $(e.target);
-			if ($target.hasClass("prev-btn")) {
+			let $target = $(e.target);
+			if ($target.hasClass("prev-btn") || $target.hasClass("next-btn")) {
 				$target.trigger("click");
 			} else {
+				// hitting enter on autocomplete field shouldn't trigger next slide.
+				if ($target.data().fieldtype == "Autocomplete") return;
+
 				this.container.find(".next-btn").trigger("click");
 				e.preventDefault();
 			}
@@ -122,12 +123,10 @@ dontmanage.setup.SetupWizard = class SetupWizard extends dontmanage.ui.Slides {
 
 	show_slide(id) {
 		if (id === this.slides.length) {
-			// show_slide called on last slide
-			this.action_on_complete();
 			return;
 		}
 		super.show_slide(id);
-		dontmanage.set_route(this.page_name, id + "");
+		dontmanage.set_route(this.page_name, cstr(id));
 	}
 
 	show_hide_prev_next(id) {
@@ -178,6 +177,7 @@ dontmanage.setup.SetupWizard = class SetupWizard extends dontmanage.ui.Slides {
 	}
 
 	action_on_complete() {
+		dontmanage.telemetry.capture("initated_client_side", "setup");
 		if (!this.current_slide.set_values()) return;
 		this.update_values();
 		this.show_working_state();
@@ -196,7 +196,7 @@ dontmanage.setup.SetupWizard = class SetupWizard extends dontmanage.ui.Slides {
 					this.abort_setup(r.message.fail);
 				}
 			},
-			error: () => this.abort_setup("Error in setup"),
+			error: () => this.abort_setup(),
 		});
 	}
 
@@ -213,7 +213,11 @@ dontmanage.setup.SetupWizard = class SetupWizard extends dontmanage.ui.Slides {
 
 	abort_setup(fail_msg) {
 		this.$working_state.find(".state-icon-container").html("");
-		fail_msg = fail_msg ? fail_msg : __("Failed to complete setup");
+		fail_msg = fail_msg
+			? fail_msg
+			: dontmanage.last_response.setup_wizard_failure_message
+			? dontmanage.last_response.setup_wizard_failure_message
+			: __("Failed to complete setup");
 
 		this.update_setup_message("Could not start up: " + fail_msg);
 
@@ -244,7 +248,7 @@ dontmanage.setup.SetupWizard = class SetupWizard extends dontmanage.ui.Slides {
 	}
 
 	get_setup_slides_filtered_by_domain() {
-		var filtered_slides = [];
+		let filtered_slides = [];
 		dontmanage.setup.slides.forEach(function (slide) {
 			if (dontmanage.setup.domains) {
 				let active_domains = dontmanage.setup.domains;
@@ -325,11 +329,12 @@ dontmanage.setup.SetupWizardSlide = class SetupWizardSlide extends dontmanage.ui
 	make() {
 		super.make();
 		this.set_init_values();
+		this.setup_telemetry_events();
 		this.reset_action_button_state();
 	}
 
 	set_init_values() {
-		var me = this;
+		let me = this;
 		// set values from dontmanage.setup.values
 		if (dontmanage.wizard.values && this.fields) {
 			this.fields.forEach(function (f) {
@@ -340,6 +345,22 @@ dontmanage.setup.SetupWizardSlide = class SetupWizardSlide extends dontmanage.ui
 			});
 		}
 	}
+
+	setup_telemetry_events() {
+		let me = this;
+		this.fields.filter(dontmanage.model.is_value_type).forEach((field) => {
+			field.fieldname &&
+				me.get_input(field.fieldname)?.on?.("change", function () {
+					dontmanage.telemetry.capture(`${field.fieldname}_set`, "setup");
+					if (
+						field.fieldname == "enable_telemetry" &&
+						!me.get_value("enable_telemetry")
+					) {
+						dontmanage.telemetry.disable();
+					}
+				});
+		});
+	}
 };
 
 // DontManage slides settings
@@ -348,7 +369,7 @@ dontmanage.setup.slides_settings = [
 	{
 		// Welcome (language) slide
 		name: "welcome",
-		title: __("Hello!"),
+		title: __("Welcome"),
 
 		fields: [
 			{
@@ -384,6 +405,23 @@ dontmanage.setup.slides_settings = [
 				fieldtype: "Select",
 				reqd: 1,
 			},
+			{
+				fieldtype: "Section Break",
+			},
+			{
+				fieldname: "enable_telemetry",
+				label: __("Allow sending usage data for improving applications"),
+				fieldtype: "Check",
+				default: cint(dontmanage.telemetry.can_enable()),
+				depends_on: "eval:dontmanage.telemetry.can_enable()",
+			},
+			{
+				fieldname: "allow_recording_first_session",
+				label: __("Allow recording my first session to improve user experience"),
+				fieldtype: "Check",
+				default: 0,
+				depends_on: "eval:dontmanage.telemetry.can_enable()",
+			},
 		],
 
 		onload: function (slide) {
@@ -418,16 +456,9 @@ dontmanage.setup.slides_settings = [
 	{
 		// Profile slide
 		name: "user",
-		title: __("The First User: You"),
+		title: __("Let's set up your account"),
 		icon: "fa fa-user",
 		fields: [
-			{
-				fieldtype: "Attach Image",
-				fieldname: "attach_user_image",
-				label: __("Attach Your Picture"),
-				is_private: 0,
-				align: "center",
-			},
 			{
 				fieldname: "full_name",
 				label: __("Full Name"),
@@ -440,32 +471,20 @@ dontmanage.setup.slides_settings = [
 				fieldtype: "Data",
 				options: "Email",
 			},
-			{ fieldname: "password", label: __("Password"), fieldtype: "Password" },
+			{ fieldname: "password", label: __("Password"), fieldtype: "Password", length: 512 },
 		],
 
 		onload: function (slide) {
 			if (dontmanage.session.user !== "Administrator") {
-				slide.form.fields_dict.email.$wrapper.toggle(false);
-				slide.form.fields_dict.password.$wrapper.toggle(false);
-
-				// remove password field
-				delete slide.form.fields_dict.password;
-
-				if (dontmanage.boot.user.first_name || dontmanage.boot.user.last_name) {
+				const { first_name, last_name, email } = dontmanage.boot.user;
+				if (first_name || last_name) {
 					slide.form.fields_dict.full_name.set_input(
-						[dontmanage.boot.user.first_name, dontmanage.boot.user.last_name].join(" ").trim()
+						[first_name, last_name].join(" ").trim()
 					);
 				}
-
-				var user_image = dontmanage.get_cookie("user_image");
-				var $attach_user_image = slide.form.fields_dict.attach_user_image.$wrapper;
-
-				if (user_image) {
-					$attach_user_image.find(".missing-image").toggle(false);
-					$attach_user_image.find("img").attr("src", decodeURIComponent(user_image));
-					$attach_user_image.find(".img-container").toggle(true);
-				}
-				delete slide.form.fields_dict.email;
+				slide.form.fields_dict.email.set_input(email);
+				slide.form.fields_dict.email.df.read_only = 1;
+				slide.form.fields_dict.email.refresh();
 			} else {
 				slide.form.fields_dict.email.df.reqd = 1;
 				slide.form.fields_dict.email.refresh();
@@ -483,12 +502,6 @@ dontmanage.setup.slides_settings = [
 			if (dontmanage.setup.data.email) {
 				let email = dontmanage.setup.data.email;
 				slide.form.fields_dict.email.set_input(email);
-				if (dontmanage.get_gravatar(email, 200)) {
-					var $attach_user_image = slide.form.fields_dict.attach_user_image.$wrapper;
-					$attach_user_image.find(".missing-image").toggle(false);
-					$attach_user_image.find("img").attr("src", dontmanage.get_gravatar(email, 200));
-					$attach_user_image.find(".img-container").toggle(true);
-				}
 			}
 		},
 	},
@@ -551,15 +564,19 @@ dontmanage.setup.utils = {
 
 		slide.get_input("timezone").empty().add_options(data.all_timezones);
 
-		// set values if present
-		if (dontmanage.wizard.values.country) {
-			country_field.set_input(dontmanage.wizard.values.country);
-		} else if (data.default_country) {
-			country_field.set_input(data.default_country);
-		}
-
 		slide.get_field("currency").set_input(dontmanage.wizard.values.currency);
 		slide.get_field("timezone").set_input(dontmanage.wizard.values.timezone);
+
+		// set values if present
+		let country =
+			dontmanage.wizard.values.country ||
+			data.default_country ||
+			guess_country(dontmanage.setup.data.regional_data.country_info);
+
+		if (country) {
+			country_field.set_input(country);
+			$(country_field.input).change();
+		}
 	},
 
 	bind_language_events: function (slide) {
@@ -569,7 +586,7 @@ dontmanage.setup.utils = {
 			.on("change", function () {
 				clearTimeout(slide.language_call_timeout);
 				slide.language_call_timeout = setTimeout(() => {
-					var lang = $(this).val() || "English";
+					let lang = $(this).val() || "English";
 					dontmanage._messages = {};
 					dontmanage.call({
 						method: "dontmanage.desk.page.setup_wizard.setup_wizard.load_messages",
@@ -595,9 +612,9 @@ dontmanage.setup.utils = {
 			Bind a slide's country, timezone and currency fields
 		*/
 		slide.get_input("country").on("change", function () {
-			var country = slide.get_input("country").val();
-			var $timezone = slide.get_input("timezone");
-			var data = dontmanage.setup.data.regional_data;
+			let country = slide.get_input("country").val();
+			let $timezone = slide.get_input("timezone");
+			let data = dontmanage.setup.data.regional_data;
 
 			$timezone.empty();
 
@@ -618,12 +635,12 @@ dontmanage.setup.utils = {
 		});
 
 		slide.get_input("currency").on("change", function () {
-			var currency = slide.get_input("currency").val();
+			let currency = slide.get_input("currency").val();
 			if (!currency) return;
 			dontmanage.model.with_doc("Currency", currency, function () {
 				dontmanage.provide("locals.:Currency." + currency);
-				var currency_doc = dontmanage.model.get_doc("Currency", currency);
-				var number_format = currency_doc.number_format;
+				let currency_doc = dontmanage.model.get_doc("Currency", currency);
+				let number_format = currency_doc.number_format;
 				if (number_format === "#.###") {
 					number_format = "#.###,##";
 				} else if (number_format === "#,###") {
@@ -636,3 +653,22 @@ dontmanage.setup.utils = {
 		});
 	},
 };
+
+// https://github.com/eggert/tz/blob/main/backward add more if required.
+const TZ_BACKWARD_COMPATBILITY_MAP = {
+	"Asia/Calcutta": "Asia/Kolkata",
+};
+
+function guess_country(country_info) {
+	try {
+		let system_timezone = Intl.DateTimeFormat().resolvedOptions().timeZone;
+		system_timezone = TZ_BACKWARD_COMPATBILITY_MAP[system_timezone] || system_timezone;
+
+		for (let [country, info] of Object.entries(country_info)) {
+			let possible_timezones = (info.timezones || []).filter((t) => t == system_timezone);
+			if (possible_timezones.length) return country;
+		}
+	} catch (e) {
+		console.log("Could not guess country", e);
+	}
+}

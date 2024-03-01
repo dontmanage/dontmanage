@@ -53,9 +53,7 @@ def read_csv_content(fcontent):
 			)
 
 	fcontent = fcontent.encode("utf-8")
-	content = []
-	for line in fcontent.splitlines(True):
-		content.append(dontmanage.safe_decode(line))
+	content = [dontmanage.safe_decode(line) for line in fcontent.splitlines(True)]
 
 	try:
 		rows = []
@@ -135,7 +133,9 @@ def check_record(d):
 			if docfield.fieldtype == "Select" and val and docfield.options:
 				if val not in docfield.options.split("\n"):
 					dontmanage.throw(
-						_("{0} must be one of {1}").format(_(docfield.label), comma_or(docfield.options.split("\n")))
+						_("{0} must be one of {1}").format(
+							_(docfield.label, context=docfield.parent), comma_or(docfield.options.split("\n"))
+						)
 					)
 
 			if val and docfield.fieldtype == "Date":
@@ -174,7 +174,7 @@ def import_doc(d, doctype, overwrite, row_idx, submit=False, ignore_links=False)
 
 
 def getlink(doctype, name):
-	return '<a href="/app/Form/%(doctype)s/%(name)s">%(name)s</a>' % locals()
+	return '<a href="/app/Form/{doctype}/{name}">{name}</a>'.format(**locals())
 
 
 def get_csv_content_from_google_sheets(url):

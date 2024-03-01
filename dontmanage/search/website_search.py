@@ -98,7 +98,7 @@ def slugs_with_web_view(_items_to_index):
 			fields = ["route", doctype.website_search_field]
 			filters = ({doctype.is_published_field: 1},)
 			if doctype.website_search_field:
-				docs = dontmanage.get_all(doctype.name, filters=filters, fields=fields + ["title"])
+				docs = dontmanage.get_all(doctype.name, filters=filters, fields=[*fields, "title"])
 				for doc in docs:
 					content = dontmanage.utils.md_to_html(getattr(doc, doctype.website_search_field))
 					soup = BeautifulSoup(content, "html.parser")
@@ -141,5 +141,8 @@ def remove_document_from_index(path):
 
 
 def build_index_for_all_routes():
-	ws = WebsiteSearch(INDEX_NAME)
-	return ws.build()
+	from dontmanage.utils.synchronization import filelock
+
+	with filelock("building_website_search"):
+		ws = WebsiteSearch(INDEX_NAME)
+		return ws.build()

@@ -1,6 +1,7 @@
 from unittest.mock import patch
 
 import dontmanage
+from dontmanage import get_hooks
 from dontmanage.tests.utils import DontManageTestCase
 from dontmanage.utils import set_request
 from dontmanage.website.page_renderers.static_page import StaticPage
@@ -11,10 +12,16 @@ from dontmanage.website.utils import build_response, clear_website_cache, get_ho
 class TestWebsite(DontManageTestCase):
 	def setUp(self):
 		dontmanage.set_user("Guest")
+		self._clearRequest()
 
 	def tearDown(self):
 		dontmanage.db.delete("Access Log")
 		dontmanage.set_user("Administrator")
+		self._clearRequest()
+
+	def _clearRequest(self):
+		if hasattr(dontmanage.local, "request"):
+			delattr(dontmanage.local, "request")
 
 	def test_home_page(self):
 		dontmanage.set_user("Administrator")
@@ -43,20 +50,20 @@ class TestWebsite(DontManageTestCase):
 		dontmanage.db.set_value("Role", "home-page-test", "home_page", "")
 
 		# home page via portal settings
-		dontmanage.db.set_value("Portal Settings", None, "default_portal_home", "test-portal-home")
+		dontmanage.db.set_single_value("Portal Settings", "default_portal_home", "test-portal-home")
 
 		dontmanage.set_user("test-user-for-home-page@example.com")
-		dontmanage.cache().hdel("home_page", dontmanage.session.user)
+		dontmanage.cache.hdel("home_page", dontmanage.session.user)
 		self.assertEqual(get_home_page(), "test-portal-home")
 
-		dontmanage.db.set_value("Portal Settings", None, "default_portal_home", "")
+		dontmanage.db.set_single_value("Portal Settings", "default_portal_home", "")
 		clear_website_cache()
 
 		# home page via website settings
-		dontmanage.db.set_value("Website Settings", None, "home_page", "contact")
+		dontmanage.db.set_single_value("Website Settings", "home_page", "contact")
 		self.assertEqual(get_home_page(), "contact")
 
-		dontmanage.db.set_value("Website Settings", None, "home_page", None)
+		dontmanage.db.set_single_value("Website Settings", "home_page", None)
 		clear_website_cache()
 
 		# fallback homepage
@@ -66,17 +73,6 @@ class TestWebsite(DontManageTestCase):
 		dontmanage.set_user("Guest")
 		self.assertEqual(get_home_page(), "login")
 		dontmanage.set_user("Administrator")
-
-		from dontmanage import get_hooks
-
-		def patched_get_hooks(hook, value):
-			def wrapper(*args, **kwargs):
-				return_value = get_hooks(*args, **kwargs)
-				if args[0] == hook:
-					return_value = value
-				return return_value
-
-			return wrapper
 
 		# test homepage via hooks
 		clear_website_cache()
@@ -171,9 +167,7 @@ class TestWebsite(DontManageTestCase):
 			dict(source=r"/testfrom", target=r"://testto1"),
 			dict(source=r"/testfromregex.*", target=r"://testto2"),
 			dict(source=r"/testsub/(.*)", target=r"://testto3/\1"),
-			dict(
-				source=r"/courses/course\?course=(.*)", target=r"/courses/\1", match_with_query_string=True
-			),
+			dict(source=r"/courses/course\?course=(.*)", target=r"/courses/\1", match_with_query_string=True),
 		]
 
 		website_settings = dontmanage.get_doc("Website Settings")
@@ -210,7 +204,7 @@ class TestWebsite(DontManageTestCase):
 		self.assertEqual(response.headers.get("Location"), "/courses/data")
 
 		delattr(dontmanage.hooks, "website_redirects")
-		dontmanage.cache().delete_key("app_hooks")
+		dontmanage.cache.delete_key("app_hooks")
 
 	def test_custom_page_renderer(self):
 		from dontmanage import get_hooks
@@ -236,6 +230,7 @@ class TestWebsite(DontManageTestCase):
 
 	def test_printview_page(self):
 		dontmanage.db.value_cache[("DocType", "Language", "name")] = (("Language",),)
+		dontmanage.set_user("Administrator")
 		content = get_response_content("/Language/ru")
 		self.assertIn('<div class="print-format">', content)
 		self.assertIn("<div>Language</div>", content)
@@ -276,9 +271,7 @@ class TestWebsite(DontManageTestCase):
 
 		content = get_response_content("/_test/_test_folder/_test_page")
 		# test if {next} was rendered
-		self.assertIn(
-			'Next: <a class="btn-next" href="/_test/_test_folder/_test_toc">Test TOC</a>', content
-		)
+		self.assertIn('Next: <a class="btn-next" href="/_test/_test_folder/_test_toc">Test TOC</a>', content)
 
 	def test_colocated_assets(self):
 		content = get_response_content("/_test/_test_folder/_test_page")
@@ -339,8 +332,9 @@ class TestWebsite(DontManageTestCase):
 		FILES_TO_SKIP = choices(list(WWW.glob("**/*.py*")), k=10)
 
 		for suffix in FILES_TO_SKIP:
-			content = get_response_content(suffix.relative_to(WWW))
-			self.assertIn("404", content)
+			path: str = suffix.relative_to(WWW).as_posix()
+			content = get_response_content(path)
+			self.assertIn("<title>Not Found</title>", content)
 
 	def test_metatags(self):
 		content = get_response_content("/_test/_test_metatags")
@@ -388,10 +382,21 @@ class TestWebsite(DontManageTestCase):
 			)
 			self.assertIn('<link type="text/css" rel="stylesheet" href="/test_app_include.css">', content)
 			self.assertIn(
-				'<link type="text/css" rel="stylesheet" href="/test_app_include_via_site_config.css">', content
+				'<link type="text/css" rel="stylesheet" href="/test_app_include_via_site_config.css">',
+				content,
 			)
 			delattr(dontmanage.local, "request")
 			dontmanage.set_user("Guest")
+
+
+def patched_get_hooks(hook, value):
+	def wrapper(*args, **kwargs):
+		return_value = get_hooks(*args, **kwargs)
+		if args[0] == hook:
+			return_value = value
+		return return_value
+
+	return wrapper
 
 
 class CustomPageRenderer:

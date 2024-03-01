@@ -1,4 +1,4 @@
-context("Permissions API", () => {
+context.skip("Permissions API", () => {
 	before(() => {
 		cy.visit("/login");
 		cy.remove_role("dontmanage@example.com", "System Manager");

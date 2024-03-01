@@ -8,7 +8,7 @@ dontmanage.ui.form.on("Website Theme", {
 
 	refresh(frm) {
 		frm.clear_custom_buttons();
-		frm.toggle_display(["module", "custom"], !dontmanage.boot.developer_mode);
+		frm.toggle_display(["module", "custom"], dontmanage.boot.developer_mode);
 
 		frm.trigger("set_default_theme_button_and_indicator");
 		frm.trigger("make_app_theme_selector");
@@ -19,6 +19,7 @@ dontmanage.ui.form.on("Website Theme", {
 		} else {
 			frm.enable_save();
 		}
+		frm.set_df_property("custom_scss", "max_lines", 45);
 	},
 
 	set_default_theme_button_and_indicator(frm) {

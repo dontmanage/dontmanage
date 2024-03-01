@@ -2,10 +2,11 @@
 # License: MIT. See LICENSE
 import io
 
-from PyPDF2 import PdfReader
+from pypdf import PdfReader
 
 import dontmanage
 import dontmanage.utils.pdf as pdfgen
+from dontmanage.core.doctype.file.test_file import make_test_image_file
 from dontmanage.tests.utils import DontManageTestCase
 
 
@@ -43,10 +44,23 @@ class TestPdf(DontManageTestCase):
 		password = "qwe"
 		pdf = pdfgen.get_pdf(self.html, options={"password": password})
 		reader = PdfReader(io.BytesIO(pdf))
-		self.assertTrue(reader.isEncrypted)
+		self.assertTrue(reader.is_encrypted)
 		self.assertTrue(reader.decrypt(password))
 
 	def test_pdf_generation_as_a_user(self):
 		dontmanage.set_user("Administrator")
 		pdf = pdfgen.get_pdf(self.html)
 		self.assertTrue(pdf)
+
+	def test_private_images_in_pdf(self):
+		with make_test_image_file(private=True) as file:
+			html = f""" <div>
+				<img src="{file.file_url}" class='responsive'>
+				<img src="{file.unique_url}" class='responsive'>
+			</div>
+			"""
+
+			pdf = pdfgen.get_pdf(html)
+
+		# If image was actually retrieved then size will be  in few kbs, else bytes.
+		self.assertGreaterEqual(len(pdf), 10_000)

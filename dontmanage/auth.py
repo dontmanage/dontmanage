@@ -1,6 +1,10 @@
 # Copyright (c) 2021, DontManage and Contributors
 # MIT License. See LICENSE
-from urllib.parse import quote
+import base64
+import binascii
+from urllib.parse import quote, urlencode, urlparse
+
+from werkzeug.wrappers import Response
 
 import dontmanage
 import dontmanage.database
@@ -8,8 +12,7 @@ import dontmanage.utils
 import dontmanage.utils.user
 from dontmanage import _
 from dontmanage.core.doctype.activity_log.activity_log import add_authentication_log
-from dontmanage.modules.patch_handler import check_session_stopped
-from dontmanage.sessions import Session, clear_sessions, delete_session
+from dontmanage.sessions import Session, clear_sessions, delete_session, get_expiry_in_seconds
 from dontmanage.translate import get_language
 from dontmanage.twofactor import (
 	authenticate_for_2factor,
@@ -18,8 +21,13 @@ from dontmanage.twofactor import (
 	should_run_2fa,
 )
 from dontmanage.utils import cint, date_diff, datetime, get_datetime, today
-from dontmanage.utils.password import check_password
+from dontmanage.utils.deprecations import deprecation_warning
+from dontmanage.utils.password import check_password, get_decrypted_password
 from dontmanage.website.utils import get_home_page
+
+SAFE_HTTP_METHODS = frozenset(("GET", "HEAD", "OPTIONS"))
+UNSAFE_HTTP_METHODS = frozenset(("POST", "PUT", "DELETE", "PATCH"))
+MAX_PASSWORD_SIZE = 512
 
 
 class HTTPRequest:
@@ -53,9 +61,7 @@ class HTTPRequest:
 
 	def set_request_ip(self):
 		if dontmanage.get_request_header("X-Forwarded-For"):
-			dontmanage.local.request_ip = (
-				dontmanage.get_request_header("X-Forwarded-For").split(",", 1)[0]
-			).strip()
+			dontmanage.local.request_ip = (dontmanage.get_request_header("X-Forwarded-For").split(",", 1)[0]).strip()
 
 		elif dontmanage.get_request_header("REMOTE_ADDR"):
 			dontmanage.local.request_ip = dontmanage.get_request_header("REMOTE_ADDR")
@@ -70,32 +76,27 @@ class HTTPRequest:
 		dontmanage.local.login_manager = LoginManager()
 
 	def validate_csrf_token(self):
-		if dontmanage.local.request and dontmanage.local.request.method in ("POST", "PUT", "DELETE"):
-			if not dontmanage.local.session:
-				return
-			if (
-				not dontmanage.local.session.data.csrf_token
-				or dontmanage.local.session.data.device == "mobile"
-				or dontmanage.conf.get("ignore_csrf", None)
-			):
-				# not via boot
-				return
+		if (
+			not dontmanage.request
+			or dontmanage.request.method not in UNSAFE_HTTP_METHODS
+			or dontmanage.conf.ignore_csrf
+			or not dontmanage.session
+			or not (saved_token := dontmanage.session.data.csrf_token)
+			or (
+				(dontmanage.get_request_header("X-DontManage-CSRF-Token") or dontmanage.form_dict.pop("csrf_token", None))
+				== saved_token
+			)
+		):
+			return
 
-			csrf_token = dontmanage.get_request_header("X-DontManage-CSRF-Token")
-			if not csrf_token and "csrf_token" in dontmanage.local.form_dict:
-				csrf_token = dontmanage.local.form_dict.csrf_token
-				del dontmanage.local.form_dict["csrf_token"]
-
-			if dontmanage.local.session.data.csrf_token != csrf_token:
-				dontmanage.local.flags.disable_traceback = True
-				dontmanage.throw(_("Invalid Request"), dontmanage.CSRFTokenError)
+		dontmanage.flags.disable_traceback = True
+		dontmanage.throw(_("Invalid Request"), dontmanage.CSRFTokenError)
 
 	def set_lang(self):
 		dontmanage.local.lang = get_language()
 
 
 class LoginManager:
-
 	__slots__ = ("user", "info", "full_name", "user_type", "resume")
 
 	def __init__(self):
@@ -104,9 +105,7 @@ class LoginManager:
 		self.full_name = None
 		self.user_type = None
 
-		if (
-			dontmanage.local.form_dict.get("cmd") == "login" or dontmanage.local.request.path == "/api/method/login"
-		):
+		if dontmanage.local.form_dict.get("cmd") == "login" or dontmanage.local.request.path == "/api/method/login":
 			if self.login() is False:
 				return
 			self.resume = False
@@ -135,9 +134,7 @@ class LoginManager:
 		self.authenticate(user=user, pwd=pwd)
 		if self.force_user_to_reset_password():
 			doc = dontmanage.get_doc("User", self.user)
-			dontmanage.local.response["redirect_to"] = doc.reset_password(
-				send_email=False, password_expired=True
-			)
+			dontmanage.local.response["redirect_to"] = doc.reset_password(send_email=False, password_expired=True)
 			dontmanage.local.response["message"] = "Password Reset"
 			return False
 
@@ -190,10 +187,10 @@ class LoginManager:
 			dontmanage.response["full_name"] = self.full_name
 
 		# redirect information
-		redirect_to = dontmanage.cache().hget("redirect_after_login", self.user)
+		redirect_to = dontmanage.cache.hget("redirect_after_login", self.user)
 		if redirect_to:
 			dontmanage.local.response["redirect_to"] = redirect_to
-			dontmanage.cache().hdel("redirect_after_login", self.user)
+			dontmanage.cache.hdel("redirect_after_login", self.user)
 
 		dontmanage.local.cookie_manager.set_cookie("full_name", self.full_name)
 		dontmanage.local.cookie_manager.set_cookie("user_id", self.user)
@@ -226,7 +223,7 @@ class LoginManager:
 
 		clear_sessions(dontmanage.session.user, keep_current=True)
 
-	def authenticate(self, user: str = None, pwd: str = None):
+	def authenticate(self, user: str | None = None, pwd: str | None = None):
 		from dontmanage.core.doctype.user.user import User
 
 		if not (user and pwd):
@@ -234,26 +231,34 @@ class LoginManager:
 		if not (user and pwd):
 			self.fail(_("Incomplete login details"), user=user)
 
+		if len(pwd) > MAX_PASSWORD_SIZE:
+			self.fail(_("Password size exceeded the maximum allowed size"), user=user)
+
 		_raw_user_name = user
 		user = User.find_by_credentials(user, pwd)
 
+		ip_tracker = get_login_attempt_tracker(dontmanage.local.request_ip)
 		if not user:
+			ip_tracker and ip_tracker.add_failure_attempt()
 			self.fail("Invalid login credentials", user=_raw_user_name)
 
 		# Current login flow uses cached credentials for authentication while checking OTP.
 		# Incase of OTP check, tracker for auth needs to be disabled(If not, it can remove tracker history as it is going to succeed anyway)
 		# Tracker is activated for 2FA incase of OTP.
 		ignore_tracker = should_run_2fa(user.name) and ("otp" in dontmanage.form_dict)
-		tracker = None if ignore_tracker else get_login_attempt_tracker(user.name)
+		user_tracker = None if ignore_tracker else get_login_attempt_tracker(user.name)
 
 		if not user.is_authenticated:
-			tracker and tracker.add_failure_attempt()
+			user_tracker and user_tracker.add_failure_attempt()
+			ip_tracker and ip_tracker.add_failure_attempt()
 			self.fail("Invalid login credentials", user=user.name)
 		elif not (user.name == "Administrator" or user.enabled):
-			tracker and tracker.add_failure_attempt()
+			user_tracker and user_tracker.add_failure_attempt()
+			ip_tracker and ip_tracker.add_failure_attempt()
 			self.fail("User disabled or missing", user=user.name)
 		else:
-			tracker and tracker.add_success_attempt()
+			user_tracker and user_tracker.add_success_attempt()
+			ip_tracker and ip_tracker.add_success_attempt()
 		self.user = user.name
 
 	def force_user_to_reset_password(self):
@@ -323,6 +328,12 @@ class LoginManager:
 		self.user = user
 		self.post_login()
 
+	def impersonate(self, user):
+		current_user = dontmanage.session.user
+		self.login_as(user)
+		# Flag this session as impersonated session, so other code can log this.
+		dontmanage.local.session_obj.set_impersonsated(current_user)
+
 	def logout(self, arg="", user=None):
 		if not user:
 			user = dontmanage.session.user
@@ -347,20 +358,21 @@ class CookieManager:
 		if not dontmanage.local.session.get("sid"):
 			return
 
-		# sid expires in 3 days
-		expires = datetime.datetime.now() + datetime.timedelta(days=3)
 		if dontmanage.session.sid:
-			self.set_cookie("sid", dontmanage.session.sid, expires=expires, httponly=True)
-		if dontmanage.session.session_country:
-			self.set_cookie("country", dontmanage.session.session_country)
+			self.set_cookie("sid", dontmanage.session.sid, max_age=get_expiry_in_seconds(), httponly=True)
 
-	def set_cookie(self, key, value, expires=None, secure=False, httponly=False, samesite="Lax"):
+	def set_cookie(
+		self,
+		key,
+		value,
+		expires=None,
+		secure=False,
+		httponly=False,
+		samesite="Lax",
+		max_age=None,
+	):
 		if not secure and hasattr(dontmanage.local, "request"):
 			secure = dontmanage.local.request.scheme == "https"
-
-		# Cordova does not work with Lax
-		if dontmanage.local.session.data.device == "mobile":
-			samesite = None
 
 		self.cookies[key] = {
 			"value": value,
@@ -368,15 +380,16 @@ class CookieManager:
 			"secure": secure,
 			"httponly": httponly,
 			"samesite": samesite,
+			"max_age": max_age,
 		}
 
 	def delete_cookie(self, to_delete):
-		if not isinstance(to_delete, (list, tuple)):
+		if not isinstance(to_delete, list | tuple):
 			to_delete = [to_delete]
 
 		self.to_delete.extend(to_delete)
 
-	def flush_cookies(self, response):
+	def flush_cookies(self, response: Response):
 		for key, opts in self.cookies.items():
 			response.set_cookie(
 				key,
@@ -385,6 +398,7 @@ class CookieManager:
 				secure=opts.get("secure"),
 				httponly=opts.get("httponly"),
 				samesite=opts.get("samesite"),
+				max_age=opts.get("max_age"),
 			)
 
 		# expires yesterday!
@@ -401,9 +415,7 @@ def get_logged_user():
 def clear_cookies():
 	if hasattr(dontmanage.local, "session"):
 		dontmanage.session.sid = ""
-	dontmanage.local.cookie_manager.delete_cookie(
-		["full_name", "user_id", "sid", "user_image", "system_user"]
-	)
+	dontmanage.local.cookie_manager.delete_cookie(["full_name", "user_id", "sid", "user_image", "system_user"])
 
 
 def validate_ip_address(user):
@@ -441,7 +453,7 @@ def validate_ip_address(user):
 	dontmanage.throw(_("Access not allowed from this IP Address"), dontmanage.AuthenticationError)
 
 
-def get_login_attempt_tracker(user_name: str, raise_locked_exception: bool = True):
+def get_login_attempt_tracker(key: str, raise_locked_exception: bool = True):
 	"""Get login attempt tracker instance.
 
 	:param user_name: Name of the loggedin user
@@ -455,7 +467,7 @@ def get_login_attempt_tracker(user_name: str, raise_locked_exception: bool = Tru
 		tracker_kwargs["lock_interval"] = sys_settings.allow_login_after_fail
 		tracker_kwargs["max_consecutive_login_attempts"] = sys_settings.allow_consecutive_login_attempts
 
-	tracker = LoginAttemptTracker(user_name, **tracker_kwargs)
+	tracker = LoginAttemptTracker(key, **tracker_kwargs)
 
 	if raise_locked_exception and track_login_attempts and not tracker.is_user_allowed():
 		dontmanage.throw(
@@ -474,7 +486,12 @@ class LoginAttemptTracker:
 	"""
 
 	def __init__(
-		self, user_name: str, max_consecutive_login_attempts: int = 3, lock_interval: int = 5 * 60
+		self,
+		key: str,
+		max_consecutive_login_attempts: int = 3,
+		lock_interval: int = 5 * 60,
+		*,
+		user_name: str | None = None,
 	):
 		"""Initialize the tracker.
 
@@ -482,21 +499,23 @@ class LoginAttemptTracker:
 		:param max_consecutive_login_attempts: Maximum allowed consecutive failed login attempts
 		:param lock_interval: Locking interval incase of maximum failed attempts
 		"""
-		self.user_name = user_name
+		if user_name:
+			deprecation_warning("`username` parameter is deprecated, use `key` instead.")
+		self.key = key or user_name
 		self.lock_interval = datetime.timedelta(seconds=lock_interval)
 		self.max_failed_logins = max_consecutive_login_attempts
 
 	@property
 	def login_failed_count(self):
-		return dontmanage.cache().hget("login_failed_count", self.user_name)
+		return dontmanage.cache.hget("login_failed_count", self.key)
 
 	@login_failed_count.setter
 	def login_failed_count(self, count):
-		dontmanage.cache().hset("login_failed_count", self.user_name, count)
+		dontmanage.cache.hset("login_failed_count", self.key, count)
 
 	@login_failed_count.deleter
 	def login_failed_count(self):
-		dontmanage.cache().hdel("login_failed_count", self.user_name)
+		dontmanage.cache.hdel("login_failed_count", self.key)
 
 	@property
 	def login_failed_time(self):
@@ -504,15 +523,15 @@ class LoginAttemptTracker:
 
 		For every user we track only First failed login attempt time within lock interval of time.
 		"""
-		return dontmanage.cache().hget("login_failed_time", self.user_name)
+		return dontmanage.cache.hget("login_failed_time", self.key)
 
 	@login_failed_time.setter
 	def login_failed_time(self, timestamp):
-		dontmanage.cache().hset("login_failed_time", self.user_name, timestamp)
+		dontmanage.cache.hset("login_failed_time", self.key, timestamp)
 
 	@login_failed_time.deleter
 	def login_failed_time(self):
-		dontmanage.cache().hdel("login_failed_time", self.user_name)
+		dontmanage.cache.hdel("login_failed_time", self.key)
 
 	def add_failure_attempt(self):
 		"""Log user failure attempts into the system.
@@ -555,3 +574,112 @@ class LoginAttemptTracker:
 		):
 			return False
 		return True
+
+
+def validate_auth():
+	"""
+	Authenticate and sets user for the request.
+	"""
+	authorization_header = dontmanage.get_request_header("Authorization", "").split(" ")
+
+	if len(authorization_header) == 2:
+		validate_oauth(authorization_header)
+		validate_auth_via_api_keys(authorization_header)
+
+	validate_auth_via_hooks()
+
+	# If login via bearer, basic or keypair didn't work then authentication failed and we
+	# should terminate here.
+	if len(authorization_header) == 2 and dontmanage.session.user in ("", "Guest"):
+		raise dontmanage.AuthenticationError
+
+
+def validate_oauth(authorization_header):
+	"""
+	Authenticate request using OAuth and set session user
+
+	Args:
+	        authorization_header (list of str): The 'Authorization' header containing the prefix and token
+	"""
+
+	from dontmanage.integrations.oauth2 import get_oauth_server
+	from dontmanage.oauth import get_url_delimiter
+
+	if authorization_header[0].lower() != "bearer":
+		return
+
+	form_dict = dontmanage.local.form_dict
+	token = authorization_header[1]
+	req = dontmanage.request
+	parsed_url = urlparse(req.url)
+	access_token = {"access_token": token}
+	uri = parsed_url.scheme + "://" + parsed_url.netloc + parsed_url.path + "?" + urlencode(access_token)
+	http_method = req.method
+	headers = req.headers
+	body = req.get_data()
+	if req.content_type and "multipart/form-data" in req.content_type:
+		body = None
+
+	try:
+		required_scopes = dontmanage.db.get_value("OAuth Bearer Token", token, "scopes").split(
+			get_url_delimiter()
+		)
+		valid, oauthlib_request = get_oauth_server().verify_request(
+			uri, http_method, body, headers, required_scopes
+		)
+		if valid:
+			dontmanage.set_user(dontmanage.db.get_value("OAuth Bearer Token", token, "user"))
+			dontmanage.local.form_dict = form_dict
+	except AttributeError:
+		pass
+
+
+def validate_auth_via_api_keys(authorization_header):
+	"""
+	Authenticate request using API keys and set session user
+
+	Args:
+	        authorization_header (list of str): The 'Authorization' header containing the prefix and token
+	"""
+
+	try:
+		auth_type, auth_token = authorization_header
+		authorization_source = dontmanage.get_request_header("DontManage-Authorization-Source")
+		if auth_type.lower() == "basic":
+			api_key, api_secret = dontmanage.safe_decode(base64.b64decode(auth_token)).split(":")
+			validate_api_key_secret(api_key, api_secret, authorization_source)
+		elif auth_type.lower() == "token":
+			api_key, api_secret = auth_token.split(":")
+			validate_api_key_secret(api_key, api_secret, authorization_source)
+	except binascii.Error:
+		dontmanage.throw(
+			_("Failed to decode token, please provide a valid base64-encoded token."),
+			dontmanage.InvalidAuthorizationToken,
+		)
+	except (AttributeError, TypeError, ValueError):
+		pass
+
+
+def validate_api_key_secret(api_key, api_secret, dontmanage_authorization_source=None):
+	"""dontmanage_authorization_source to provide api key and secret for a doctype apart from User"""
+	doctype = dontmanage_authorization_source or "User"
+	doc = dontmanage.db.get_value(doctype=doctype, filters={"api_key": api_key}, fieldname=["name"])
+	if not doc:
+		raise dontmanage.AuthenticationError
+	form_dict = dontmanage.local.form_dict
+	doc_secret = get_decrypted_password(doctype, doc, fieldname="api_secret")
+	if api_secret == doc_secret:
+		if doctype == "User":
+			user = dontmanage.db.get_value(doctype="User", filters={"api_key": api_key}, fieldname=["name"])
+		else:
+			user = dontmanage.db.get_value(doctype, doc, "user")
+		if dontmanage.local.login_manager.user in ("", "Guest"):
+			dontmanage.set_user(user)
+		dontmanage.local.form_dict = form_dict
+	else:
+		raise dontmanage.AuthenticationError
+
+
+def validate_auth_via_hooks():
+	for auth_hook in dontmanage.get_hooks("auth_hooks", []):
+		dontmanage.get_attr(auth_hook)()

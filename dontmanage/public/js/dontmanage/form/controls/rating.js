@@ -1,4 +1,4 @@
-dontmanage.ui.form.ControlRating = class ControlRating extends dontmanage.ui.form.ControlInt {
+dontmanage.ui.form.ControlRating = class ControlRating extends dontmanage.ui.form.ControlFloat {
 	make_input() {
 		super.make_input();
 		let stars = "";
@@ -17,6 +17,8 @@ dontmanage.ui.form.ControlRating = class ControlRating extends dontmanage.ui.for
 		`;
 
 		$(this.input_area).html(star_template);
+
+		if (this.disabled) return;
 
 		let me = this;
 		$(this.input_area)

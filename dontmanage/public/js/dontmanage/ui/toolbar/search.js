@@ -51,7 +51,7 @@ dontmanage.search.SearchDialog = class {
 				no_results_status: () => __("No Results found"),
 				get_results: (keywords, callback) => {
 					let start = 0,
-						limit = 1000;
+						limit = 100;
 					let results = dontmanage.search.utils.get_nav_results(keywords);
 					dontmanage.search.utils.get_global_results(keywords, start, limit).then(
 						(global_results) => {
@@ -59,7 +59,6 @@ dontmanage.search.SearchDialog = class {
 							callback(results, keywords);
 						},
 						(err) => {
-							// eslint-disable-next-line no-console
 							console.error(err);
 						}
 					);
@@ -78,7 +77,6 @@ dontmanage.search.SearchDialog = class {
 							callback(results, keywords);
 						},
 						(err) => {
-							// eslint-disable-next-line no-console
 							console.error(err);
 						}
 					);
@@ -177,7 +175,6 @@ dontmanage.search.SearchDialog = class {
 							doctype_results.length && this.add_more_results(doctype_results);
 						},
 						(err) => {
-							// eslint-disable-next-line no-console
 							console.error(err);
 						}
 					);
@@ -320,7 +317,7 @@ dontmanage.search.SearchDialog = class {
 	get_link(result) {
 		let link = "";
 		if (result.route) {
-			link = `href="/app/${result.route.join("/")}"`;
+			link = `href="${dontmanage.router.make_url(result.route)}"`;
 		} else if (result.data_path) {
 			link = `data-path=${result.data_path}"`;
 		}

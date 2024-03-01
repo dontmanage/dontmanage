@@ -11,7 +11,7 @@ filter_dict = {"doctype": 0, "docfield": 1, "operator": 2, "value": 3}
 
 
 def get_user_settings(doctype, for_update=False):
-	user_settings = dontmanage.cache().hget("_user_settings", f"{doctype}::{dontmanage.session.user}")
+	user_settings = dontmanage.cache.hget("_user_settings", f"{doctype}::{dontmanage.session.user}")
 
 	if user_settings is None:
 		user_settings = dontmanage.db.sql(
@@ -41,12 +41,12 @@ def update_user_settings(doctype, user_settings, for_update=False):
 
 		current.update(user_settings)
 
-	dontmanage.cache().hset("_user_settings", f"{doctype}::{dontmanage.session.user}", json.dumps(current))
+	dontmanage.cache.hset("_user_settings", f"{doctype}::{dontmanage.session.user}", json.dumps(current))
 
 
 def sync_user_settings():
 	"""Sync from cache to database (called asynchronously via the browser)"""
-	for key, data in dontmanage.cache().hgetall("_user_settings").items():
+	for key, data in dontmanage.cache.hgetall("_user_settings").items():
 		key = safe_decode(key)
 		doctype, user = key.split("::")  # WTF?
 		dontmanage.db.multisql(
@@ -87,7 +87,10 @@ def update_user_settings_data(
 			if view_settings and view_settings.get("filters"):
 				view_filters = view_settings.get("filters")
 				for view_filter in view_filters:
-					if condition_fieldname and view_filter[filter_dict[condition_fieldname]] != condition_values:
+					if (
+						condition_fieldname
+						and view_filter[filter_dict[condition_fieldname]] != condition_values
+					):
 						continue
 					if view_filter[filter_dict[fieldname]] == old:
 						view_filter[filter_dict[fieldname]] = new
@@ -99,4 +102,4 @@ def update_user_settings_data(
 			)
 
 			# clear that user settings from the redis cache
-			dontmanage.cache().hset("_user_settings", f"{user_setting.doctype}::{user_setting.user}", None)
+			dontmanage.cache.hset("_user_settings", f"{user_setting.doctype}::{user_setting.user}", None)

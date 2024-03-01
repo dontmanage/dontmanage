@@ -88,8 +88,8 @@ class TestDataExporter(DontManageTestCase):
 		self.assertEqual(dontmanage.response["type"], "csv")
 		self.assertEqual(dontmanage.response["doctype"], self.doctype_name)
 		self.assertTrue(dontmanage.response["result"])
-		self.assertIn('Child Title 1",50', dontmanage.response["result"])
-		self.assertIn('Child Title 2",51', dontmanage.response["result"])
+		self.assertRegex(dontmanage.response["result"], r"Child Title 1.*?,50")
+		self.assertRegex(dontmanage.response["result"], r"Child Title 2.*?,51")
 
 	def test_export_type(self):
 		for type in ["csv", "Excel"]:

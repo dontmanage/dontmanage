@@ -1,7 +1,9 @@
 # Copyright (c) 2015, DontManage and Contributors
 # License: MIT. See LICENSE
+import os
 import random
 import string
+import unittest
 from unittest.mock import patch
 
 import dontmanage
@@ -16,8 +18,11 @@ from dontmanage.core.doctype.doctype.doctype import (
 	WrongOptionsDoctypeLinkError,
 	validate_links_table_fieldnames,
 )
+from dontmanage.core.doctype.rq_job.test_rq_job import wait_for_completion
 from dontmanage.custom.doctype.custom_field.custom_field import create_custom_fields
 from dontmanage.desk.form.load import getdoc
+from dontmanage.model.delete_doc import delete_controllers
+from dontmanage.model.sync import remove_orphan_doctypes
 from dontmanage.tests.utils import DontManageTestCase
 
 
@@ -172,6 +177,9 @@ class TestDocType(DontManageTestCase):
 				if condition:
 					self.assertFalse(re.match(pattern, condition))
 
+	@unittest.skipUnless(
+		os.access(dontmanage.get_app_path("dontmanage"), os.W_OK), "Only run if dontmanage app paths is writable"
+	)
 	def test_sync_field_order(self):
 		import os
 
@@ -212,9 +220,7 @@ class TestDocType(DontManageTestCase):
 			self.assertListEqual(
 				[f["fieldname"] for f in test_doctype_json["fields"]], test_doctype_json["field_order"]
 			)
-			self.assertListEqual(
-				[f["fieldname"] for f in test_doctype_json["fields"]], initial_fields_order
-			)
+			self.assertListEqual([f["fieldname"] for f in test_doctype_json["fields"]], initial_fields_order)
 			self.assertListEqual(test_doctype_json["field_order"], initial_fields_order)
 
 			# remove field_order to test reload_doc/sync/migrate is backwards compatible without field_order
@@ -238,9 +244,7 @@ class TestDocType(DontManageTestCase):
 			self.assertListEqual(
 				[f["fieldname"] for f in test_doctype_json["fields"]], test_doctype_json["field_order"]
 			)
-			self.assertListEqual(
-				[f["fieldname"] for f in test_doctype_json["fields"]], initial_fields_order
-			)
+			self.assertListEqual([f["fieldname"] for f in test_doctype_json["fields"]], initial_fields_order)
 			self.assertListEqual(test_doctype_json["field_order"], initial_fields_order)
 
 			# reorder fields: swap row 1 and 3
@@ -251,9 +255,7 @@ class TestDocType(DontManageTestCase):
 			# assert that reordering fields only affects `field_order` rather than `fields` attr
 			test_doctype.save()
 			test_doctype_json = dontmanage.get_file_json(path)
-			self.assertListEqual(
-				[f["fieldname"] for f in test_doctype_json["fields"]], initial_fields_order
-			)
+			self.assertListEqual([f["fieldname"] for f in test_doctype_json["fields"]], initial_fields_order)
 			self.assertListEqual(
 				test_doctype_json["field_order"], ["field_3", "field_2", "field_1", "field_4"]
 			)
@@ -562,20 +564,10 @@ class TestDocType(DontManageTestCase):
 				"options": "Test Virtual DocType as Child Table",
 			},
 		)
+		self.assertRaises(dontmanage.exceptions.ValidationError, parent_doc.insert)
+		parent_doc.is_virtual = 1
 		parent_doc.insert(ignore_permissions=True)
-
-		# create entry for parent doctype
-		parent_doc_entry = dontmanage.get_doc(
-			{"doctype": "Test Parent Virtual DocType", "some_fieldname": "Test"}
-		)
-		parent_doc_entry.insert(ignore_permissions=True)
-
-		# update the parent doc (should not abort because of any DB query to a virtual child table, as there is none)
-		parent_doc_entry.some_fieldname = "Test update"
-		parent_doc_entry.save(ignore_permissions=True)
-
-		# delete the parent doc (should not abort because of any DB query to a virtual child table, as there is none)
-		parent_doc_entry.delete()
+		self.assertFalse(dontmanage.db.table_exists("Test Parent Virtual DocType"))
 
 	def test_default_fieldname(self):
 		fields = [
@@ -645,6 +637,53 @@ class TestDocType(DontManageTestCase):
 
 		self.assertEqual(test_json.test_json_field["hello"], "world")
 
+	def test_no_delete_doc(self):
+		self.assertRaises(dontmanage.ValidationError, dontmanage.delete_doc, "DocType", "Address")
+
+	@unittest.skipUnless(
+		os.access(dontmanage.get_app_path("dontmanage"), os.W_OK), "Only run if dontmanage app paths is writable"
+	)
+	@patch.dict(dontmanage.conf, {"developer_mode": 1})
+	def test_export_types(self):
+		"""Export python types."""
+		import ast
+
+		from dontmanage.types.exporter import TypeExporter
+
+		def validate(code):
+			ast.parse(code)
+
+		doctype = new_doctype(custom=0).insert()
+
+		exporter = TypeExporter(doctype)
+		code = exporter.controller_path.read_text()
+		validate(code)
+
+		# regenerate and verify and file is same word to word.
+		exporter.export_types()
+		new_code = exporter.controller_path.read_text()
+		validate(new_code)
+
+		self.assertEqual(code, new_code)
+
+		# Add fields and save
+
+		fieldname = "test_type"
+		doctype.append("fields", {"fieldname": fieldname, "fieldtype": "Int"})
+		doctype.save()
+
+		new_field_code = exporter.controller_path.read_text()
+		validate(new_field_code)
+
+		self.assertIn(fieldname, new_field_code)
+		self.assertIn("Int", new_field_code)
+
+		doctype.delete()
+		dontmanage.db.commit()
+
+	@unittest.skipUnless(
+		os.access(dontmanage.get_app_path("dontmanage"), os.W_OK), "Only run if dontmanage app paths is writable"
+	)
 	@patch.dict(dontmanage.conf, {"developer_mode": 1})
 	def test_custom_field_deletion(self):
 		"""Custom child tables whose doctype doesn't exist should be auto deleted."""
@@ -657,6 +696,9 @@ class TestDocType(DontManageTestCase):
 		dontmanage.delete_doc("DocType", child)
 		self.assertFalse(dontmanage.get_meta(doctype).get_field(field))
 
+	@unittest.skipUnless(
+		os.access(dontmanage.get_app_path("dontmanage"), os.W_OK), "Only run if dontmanage app paths is writable"
+	)
 	@patch.dict(dontmanage.conf, {"developer_mode": 1})
 	def test_delete_doctype_with_customization(self):
 		from dontmanage.custom.doctype.property_setter.property_setter import make_property_setter
@@ -694,6 +736,21 @@ class TestDocType(DontManageTestCase):
 		self.assertEqual(dontmanage.get_meta(doctype).get_field(field).default, "DELETETHIS")
 		dontmanage.delete_doc("DocType", doctype)
 
+	@unittest.skipUnless(
+		os.access(dontmanage.get_app_path("dontmanage"), os.W_OK), "Only run if dontmanage app paths is writable"
+	)
+	@patch.dict(dontmanage.conf, {"developer_mode": 1})
+	def test_delete_orphaned_doctypes(self):
+		doctype = new_doctype(custom=0).insert()
+		dontmanage.db.commit()
+
+		delete_controllers(doctype.name, doctype.module)
+		job = dontmanage.enqueue(remove_orphan_doctypes)
+		wait_for_completion(job)
+
+		dontmanage.db.rollback()
+		self.assertFalse(dontmanage.db.exists("DocType", doctype.name))
+
 	def test_not_in_list_view_for_not_allowed_mandatory_field(self):
 		doctype = new_doctype(
 			fields=[
@@ -722,6 +779,8 @@ def new_doctype(
 	unique: bool = False,
 	depends_on: str = "",
 	fields: list[dict] | None = None,
+	custom: bool = True,
+	default: str | None = None,
 	**kwargs,
 ):
 	if not name:
@@ -732,13 +791,14 @@ def new_doctype(
 		{
 			"doctype": "DocType",
 			"module": "Core",
-			"custom": 1,
+			"custom": custom,
 			"fields": [
 				{
 					"label": "Some Field",
 					"fieldname": "some_fieldname",
 					"fieldtype": "Data",
 					"unique": unique,
+					"default": default,
 					"depends_on": depends_on,
 				}
 			],

@@ -5,15 +5,47 @@ import json
 from datetime import datetime
 
 import click
-from croniter import croniter
+from croniter import CroniterBadCronError, croniter
 
 import dontmanage
+from dontmanage import _
 from dontmanage.model.document import Document
 from dontmanage.utils import get_datetime, now_datetime
-from dontmanage.utils.background_jobs import enqueue, get_jobs
+from dontmanage.utils.background_jobs import enqueue, is_job_enqueued
 
 
 class ScheduledJobType(Document):
+	# begin: auto-generated types
+	# This code is auto-generated. Do not modify anything in this block.
+
+	from typing import TYPE_CHECKING
+
+	if TYPE_CHECKING:
+		from dontmanage.types import DF
+
+		create_log: DF.Check
+		cron_format: DF.Data | None
+		frequency: DF.Literal[
+			"All",
+			"Hourly",
+			"Hourly Long",
+			"Daily",
+			"Daily Long",
+			"Weekly",
+			"Weekly Long",
+			"Monthly",
+			"Monthly Long",
+			"Cron",
+			"Yearly",
+			"Annual",
+		]
+		last_execution: DF.Datetime | None
+		method: DF.Data
+		next_execution: DF.Datetime | None
+		server_script: DF.Link | None
+		stopped: DF.Check
+
+	# end: auto-generated types
 	def autoname(self):
 		self.name = ".".join(self.method.split(".")[-2:])
 
@@ -22,22 +54,32 @@ class ScheduledJobType(Document):
 			# force logging for all events other than continuous ones (ALL)
 			self.create_log = 1
 
-	def enqueue(self, force=False):
+		if self.frequency == "Cron":
+			if not self.cron_format:
+				dontmanage.throw(_("Cron format is required for job types with Cron frequency."))
+			try:
+				croniter(self.cron_format)
+			except CroniterBadCronError:
+				dontmanage.throw(
+					_("{0} is not a valid Cron expression.").format(f"<code>{self.cron_format}</code>"),
+					title=_("Bad Cron Expression"),
+				)
+
+	def enqueue(self, force=False) -> bool:
 		# enqueue event if last execution is done
 		if self.is_event_due() or force:
-			if dontmanage.flags.enqueued_jobs:
-				dontmanage.flags.enqueued_jobs.append(self.method)
-
-			if dontmanage.flags.execute_job:
-				self.execute()
+			if not self.is_job_in_queue():
+				enqueue(
+					"dontmanage.core.doctype.scheduled_job_type.scheduled_job_type.run_scheduled_job",
+					queue=self.get_queue_name(),
+					job_type=self.method,
+					job_id=self.rq_job_id,
+				)
+				return True
 			else:
-				if not self.is_job_in_queue():
-					enqueue(
-						"dontmanage.core.doctype.scheduled_job_type.scheduled_job_type.run_scheduled_job",
-						queue=self.get_queue_name(),
-						job_type=self.method,
-					)
-					return True
+				dontmanage.logger("scheduler").error(
+					f"Skipped queueing {self.method} because it was found in queue for {dontmanage.local.site}"
+				)
 
 		return False
 
@@ -46,9 +88,13 @@ class ScheduledJobType(Document):
 		# if the next scheduled event is before NOW, then its due!
 		return self.get_next_execution() <= (current_time or now_datetime())
 
-	def is_job_in_queue(self):
-		queued_jobs = get_jobs(site=dontmanage.local.site, key="job_type")[dontmanage.local.site]
-		return self.method in queued_jobs
+	def is_job_in_queue(self) -> bool:
+		return is_job_enqueued(self.rq_job_id)
+
+	@property
+	def rq_job_id(self):
+		"""Unique ID created to deduplicate jobs with single RQ call."""
+		return f"scheduled_job::{self.method}"
 
 	@property
 	def next_execution(self):
@@ -66,15 +112,18 @@ class ScheduledJobType(Document):
 			"Daily Long": "0 0 * * *",
 			"Hourly": "0 * * * *",
 			"Hourly Long": "0 * * * *",
-			"All": "0/" + str((dontmanage.get_conf().scheduler_interval or 240) // 60) + " * * * *",
+			"All": f"*/{(dontmanage.get_conf().scheduler_interval or 240) // 60} * * * *",
 		}
 
 		if not self.cron_format:
 			self.cron_format = CRON_MAP[self.frequency]
 
-		return croniter(
-			self.cron_format, get_datetime(self.last_execution or datetime(2000, 1, 1))
-		).get_next(datetime)
+		# If this is a cold start then last_execution will not be set.
+		# Creation is set as fallback because if very old fallback is set job might trigger
+		# immediately, even when it's meant to be daily.
+		# A dynamic fallback like current time might miss the scheduler interval and job will never start.
+		last_execution = get_datetime(self.last_execution or self.creation)
+		return croniter(self.cron_format, last_execution).get_next(datetime)
 
 	def execute(self):
 		self.scheduler_log = None
@@ -110,7 +159,7 @@ class ScheduledJobType(Document):
 			).insert(ignore_permissions=True)
 		self.scheduler_log.db_set("status", status)
 		if status == "Failed":
-			self.scheduler_log.db_set("details", dontmanage.get_traceback())
+			self.scheduler_log.db_set("details", dontmanage.get_traceback(with_context=True))
 		if status == "Start":
 			self.db_set("last_execution", now_datetime(), update_modified=False)
 		dontmanage.db.commit()
@@ -138,7 +187,7 @@ def run_scheduled_job(job_type: str):
 		print(dontmanage.get_traceback())
 
 
-def sync_jobs(hooks: dict = None):
+def sync_jobs(hooks: dict | None = None):
 	dontmanage.reload_doc("core", "doctype", "scheduled_job_type")
 	scheduler_events = hooks or dontmanage.get_hooks("scheduler_events")
 	all_events = insert_events(scheduler_events)
@@ -175,7 +224,7 @@ def insert_event_jobs(events: list, event_type: str) -> list:
 	return event_jobs
 
 
-def insert_single_event(frequency: str, event: str, cron_format: str = None):
+def insert_single_event(frequency: str, event: str, cron_format: str | None = None):
 	cron_expr = {"cron_format": cron_format} if cron_format else {}
 
 	try:
@@ -192,9 +241,7 @@ def insert_single_event(frequency: str, event: str, cron_format: str = None):
 		}
 	)
 
-	if not dontmanage.db.exists(
-		"Scheduled Job Type", {"method": event, "frequency": frequency, **cron_expr}
-	):
+	if not dontmanage.db.exists("Scheduled Job Type", {"method": event, "frequency": frequency, **cron_expr}):
 		savepoint = "scheduled_job_type_creation"
 		try:
 			dontmanage.db.savepoint(savepoint)

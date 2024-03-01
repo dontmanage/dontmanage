@@ -41,6 +41,7 @@ dontmanage.ui.form.Form = class DontManageForm {
 		this.doctype_layout = dontmanage.get_doc("DocType Layout", doctype_layout_name);
 		this.undo_manager = new UndoManager({ frm: this });
 		this.setup_meta(doctype);
+		this.debounced_reload_doc = dontmanage.utils.debounce(this.reload_doc.bind(this), 1000);
 
 		this.beforeUnloadListener = (event) => {
 			event.preventDefault();
@@ -77,9 +78,12 @@ dontmanage.ui.form.Form = class DontManageForm {
 		// wrapper
 		this.wrapper = this.parent;
 		this.$wrapper = $(this.wrapper);
+
+		let is_single_column = this.doctype === "DocType" ? true : this.meta.hide_toolbar;
+
 		dontmanage.ui.make_app_page({
 			parent: this.wrapper,
-			single_column: this.meta.hide_toolbar,
+			single_column: is_single_column,
 		});
 		this.page = this.wrapper.page;
 		this.layout_main = this.page.main.get(0);
@@ -91,6 +95,11 @@ dontmanage.ui.form.Form = class DontManageForm {
 		this.toolbar = new dontmanage.ui.form.Toolbar({
 			frm: this,
 			page: this.page,
+		});
+
+		this.viewers = new dontmanage.ui.form.FormViewers({
+			frm: this,
+			parent: $('<div class="form-viewers d-flex"></div>').prependTo(this.page.page_actions),
 		});
 
 		// navigate records keyboard shortcuts
@@ -146,24 +155,18 @@ dontmanage.ui.form.Form = class DontManageForm {
 			condition: () => !this.is_new(),
 		});
 
-		// Undo and redo
-		dontmanage.ui.keys.add_shortcut({
-			shortcut: "ctrl+z",
-			action: () => this.undo_manager.undo(),
-			page: this.page,
-			description: __("Undo last action"),
-		});
+		// Alternate for redo, main shortcut are present in toolbar.js
 		dontmanage.ui.keys.add_shortcut({
 			shortcut: "shift+ctrl+z",
 			action: () => this.undo_manager.redo(),
 			page: this.page,
 			description: __("Redo last action"),
+			condition: () => !this.is_form_builder(),
 		});
 		dontmanage.ui.keys.add_shortcut({
-			shortcut: "ctrl+y",
-			action: () => this.undo_manager.redo(),
-			page: this.page,
-			description: __("Redo last action"),
+			shortcut: "ctrl+p",
+			action: () => this.print_doc(),
+			description: __("Print document"),
 		});
 
 		let grid_shortcut_keys = [
@@ -448,6 +451,7 @@ dontmanage.ui.form.Form = class DontManageForm {
 				.toggleClass("cancelled-form", this.doc.docstatus === 2);
 
 			this.show_conflict_message();
+			this.show_submission_queue_banner();
 
 			if (dontmanage.boot.read_only) {
 				this.disable_form();
@@ -532,7 +536,7 @@ dontmanage.ui.form.Form = class DontManageForm {
 			this.doc.__last_sync_on &&
 			new Date() - this.doc.__last_sync_on > this.refresh_if_stale_for * 1000
 		) {
-			this.reload_doc();
+			this.debounced_reload_doc();
 			return true;
 		}
 	}
@@ -635,10 +639,18 @@ dontmanage.ui.form.Form = class DontManageForm {
 	}
 
 	focus_on_first_input() {
-		let first = this.form_wrapper.find(".form-layout :input:visible:first");
-		if (!in_list(["Date", "Datetime"], first.attr("data-fieldtype"))) {
-			first.focus();
+		const layout_wrapper = this.layout.wrapper;
+
+		// dont do anything if the current active element is inside the form
+		// user must have clicked on some element before this function trigerred
+		if (!layout_wrapper || layout_wrapper.has(":focus").length) {
+			return;
 		}
+
+		layout_wrapper
+			.find(":input:visible:first")
+			.not("[data-fieldtype^='Date']")
+			.trigger("focus");
 	}
 
 	run_after_load_hook() {
@@ -708,6 +720,7 @@ dontmanage.ui.form.Form = class DontManageForm {
 			}
 			this.toolbar.refresh();
 		}
+		this.viewers.refresh();
 
 		this.dashboard.refresh();
 		dontmanage.breadcrumbs.update();
@@ -740,7 +753,7 @@ dontmanage.ui.form.Form = class DontManageForm {
 				me.show_success_action();
 			})
 			.catch((e) => {
-				console.error(e); // eslint-disable-line
+				console.error(e);
 			});
 	}
 
@@ -1120,7 +1133,7 @@ dontmanage.ui.form.Form = class DontManageForm {
 					"alert-warning"
 				);
 			} else {
-				this.reload_doc();
+				this.debounced_reload_doc();
 			}
 		}
 	}
@@ -1354,6 +1367,13 @@ dontmanage.ui.form.Form = class DontManageForm {
 		return this.doc.__islocal;
 	}
 
+	is_form_builder() {
+		return (
+			["DocType", "Customize Form"].includes(this.doctype) &&
+			this.get_active_tab().label == "Form"
+		);
+	}
+
 	get_perm(permlevel, access_type) {
 		return this.perm[permlevel] ? this.perm[permlevel][access_type] : null;
 	}
@@ -1413,8 +1433,13 @@ dontmanage.ui.form.Form = class DontManageForm {
 			if (selector.length) {
 				dontmanage.utils.scroll_to(selector);
 			}
-		} else if (window.location.hash && $(window.location.hash).length) {
-			dontmanage.utils.scroll_to(window.location.hash, true, 200, null, null, true);
+		} else if (window.location.hash) {
+			if ($(window.location.hash).length) {
+				dontmanage.utils.scroll_to(window.location.hash, true, 200, null, null, true);
+			} else {
+				this.scroll_to_field(window.location.hash.replace("#", "")) &&
+					history.replaceState(null, null, " ");
+			}
 		}
 	}
 
@@ -1443,7 +1468,10 @@ dontmanage.ui.form.Form = class DontManageForm {
 		$.each(fields_list, function (i, fname) {
 			var docfield = dontmanage.meta.docfield_map[doctype][fname];
 			if (docfield) {
-				var label = __(docfield.label || "").replace(/\([^\)]*\)/g, ""); // eslint-disable-line
+				var label = __(docfield.label || "", null, docfield.parent).replace(
+					/\([^\)]*\)/g,
+					""
+				); // eslint-disable-line
 				if (parentfield) {
 					grid_field_label_map[doctype + "-" + fname] =
 						label.trim() + " (" + __(currency) + ")";
@@ -1518,7 +1546,7 @@ dontmanage.ui.form.Form = class DontManageForm {
 				if (this.fields_dict[fieldname].grid.grid_rows_by_docname[table_row_name]) {
 					this.fields_dict[fieldname].grid.grid_rows_by_docname[
 						table_row_name
-					].refresh_field(fieldname);
+					].refresh_field(table_field);
 				}
 			} else {
 				this.refresh_field(fieldname);
@@ -1804,7 +1832,7 @@ dontmanage.ui.form.Form = class DontManageForm {
 						<a class="indicator ${get_color(doc || {})}"
 							href="/app/${dontmanage.router.slug(df.options)}/${escaped_name}"
 							data-doctype="${df.options}"
-							data-name="${value}">
+							data-name="${dontmanage.utils.escape_html(value)}">
 							${label}
 						</a>
 					`;
@@ -1910,7 +1938,7 @@ dontmanage.ui.form.Form = class DontManageForm {
 		}
 
 		// uncollapse section
-		if (field.section.is_collapsed()) {
+		if (field.section?.is_collapsed()) {
 			field.section.collapse(false);
 		}
 
@@ -1919,15 +1947,18 @@ dontmanage.ui.form.Form = class DontManageForm {
 
 		// focus if text field
 		if (focus) {
-			$el.find("input, select, textarea").focus();
+			setTimeout(() => {
+				$el.find("input, select, textarea").focus();
+			}, 500);
 		}
 
 		// highlight control inside field
-		let control_element = $el.find(".form-control");
+		let control_element = $el.closest(".dontmanage-control");
 		control_element.addClass("highlight");
 		setTimeout(() => {
 			control_element.removeClass("highlight");
 		}, 2000);
+		return true;
 	}
 
 	setup_docinfo_change_listener() {
@@ -1935,7 +1966,7 @@ dontmanage.ui.form.Form = class DontManageForm {
 		let docname = this.docname;
 
 		if (this.doc && !this.is_new()) {
-			dontmanage.socketio.doc_subscribe(doctype, docname);
+			dontmanage.realtime.doc_subscribe(doctype, docname);
 		}
 		dontmanage.realtime.off("docinfo_update");
 		dontmanage.realtime.on("docinfo_update", ({ doc, key, action = "update" }) => {
@@ -1991,7 +2022,8 @@ dontmanage.ui.form.Form = class DontManageForm {
 		return new Promise((resolve) => {
 			dontmanage.model.with_doctype(reference_doctype, () => {
 				dontmanage.get_meta(reference_doctype).fields.map((df) => {
-					filter_function(df) && options.push({ label: df.label, value: df.fieldname });
+					filter_function(df) &&
+						options.push({ label: df.label || df.fieldname, value: df.fieldname });
 				});
 				options &&
 					this.set_df_property(
@@ -2010,6 +2042,8 @@ dontmanage.ui.form.Form = class DontManageForm {
 			this.active_tab_map = {};
 		}
 		this.active_tab_map[this.docname] = tab;
+
+		this.script_manager.trigger("on_tab_change");
 	}
 	get_active_tab() {
 		return this.active_tab_map && this.active_tab_map[this.docname];
@@ -2037,22 +2071,70 @@ dontmanage.ui.form.Form = class DontManageForm {
 			.filter((user) => !["Administrator", dontmanage.session.user].includes(user))
 			.filter(Boolean);
 	}
+
+	show_submission_queue_banner() {
+		let wrapper = this.layout.wrapper.find(".submission-queue-banner");
+
+		if (
+			!(
+				this.meta.is_submittable &&
+				this.meta.queue_in_background &&
+				!this.doc.__islocal &&
+				this.doc.docstatus === 0
+			)
+		) {
+			wrapper.length && wrapper.remove();
+			return;
+		}
+
+		if (!wrapper.length) {
+			wrapper = $('<div class="submission-queue-banner form-message">');
+			this.layout.wrapper.prepend(wrapper);
+		}
+
+		dontmanage
+			.call({
+				method: "dontmanage.core.doctype.submission_queue.submission_queue.get_latest_submissions",
+				args: { doctype: this.doctype, docname: this.docname },
+			})
+			.then((r) => {
+				if (r.message?.latest_submission) {
+					// if we are here that means some submission(s) were queued and are in queued/failed state
+					let submission_label = __("Previous Submission");
+					let secondary = "";
+					let div_class = "col-md-12";
+
+					if (r.message.exc) {
+						secondary = `: <span>${r.message.exc}</span>`;
+					} else {
+						div_class = "col-md-6";
+						secondary = `
+						</div>
+						<div class="col-md-6">
+							<a href='/app/submission-queue?ref_doctype=${encodeURIComponent(
+								this.doctype
+							)}&ref_docname=${encodeURIComponent(this.docname)}'>${__(
+							"All Submissions"
+						)}</a>
+						`;
+					}
+
+					let html = `
+					<div class="row">
+						<div class="${div_class}">
+							<a href='/app/submission-queue/${r.message.latest_submission}'>${submission_label} (${r.message.status})</a>${secondary}
+						</div>
+					</div>
+					`;
+
+					wrapper.removeClass("red").removeClass("yellow");
+					wrapper.addClass(r.message.status == "Failed" ? "red" : "yellow");
+					wrapper.html(html);
+				} else {
+					wrapper.remove();
+				}
+			});
+	}
 };
 
 dontmanage.validated = 0;
-// Proxy for dontmanage.validated
-Object.defineProperty(window, "validated", {
-	get: function () {
-		console.warn(
-			"Please use `dontmanage.validated` instead of `validated`. It will be deprecated soon."
-		); // eslint-disable-line
-		return dontmanage.validated;
-	},
-	set: function (value) {
-		console.warn(
-			"Please use `dontmanage.validated` instead of `validated`. It will be deprecated soon."
-		); // eslint-disable-line
-		dontmanage.validated = value;
-		return dontmanage.validated;
-	},
-});

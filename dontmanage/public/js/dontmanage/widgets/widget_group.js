@@ -6,6 +6,7 @@ import OnboardingWidget from "../widgets/onboarding_widget";
 import NewWidget from "../widgets/new_widget";
 import NumberCardWidget from "../widgets/number_card_widget";
 import QuickListWidget from "../widgets/quick_list_widget";
+import CustomBlock from "../widgets/custom_block_widget";
 
 dontmanage.provide("dontmanage.widget");
 
@@ -17,6 +18,7 @@ dontmanage.widget.widget_factory = {
 	onboarding: OnboardingWidget,
 	number_card: NumberCardWidget,
 	quick_list: QuickListWidget,
+	custom_block: CustomBlock,
 };
 
 dontmanage.widget.make_widget = (opts) => {
@@ -24,7 +26,6 @@ dontmanage.widget.make_widget = (opts) => {
 	if (widget_class) {
 		return new widget_class(opts);
 	} else {
-		// eslint-disable-next-line
 		console.warn("Invalid Widget Name: " + opts.widget_type);
 	}
 };

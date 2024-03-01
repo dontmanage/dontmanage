@@ -48,7 +48,7 @@ def custom(code: str, state: str):
 	"""
 	Callback for processing code and state for user added providers
 
-	process social login from /api/method/dontmanage.integrations.custom/<provider>
+	process social login from /api/method/dontmanage.integrations.oauth2_logins.custom/<provider>
 	"""
 	path = dontmanage.request.path[1:].split("/")
 	if len(path) == 4 and path[3]:

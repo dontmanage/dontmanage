@@ -30,9 +30,7 @@ class TestWorkspace(DontManageTestCase):
 
 
 def create_module(module_name):
-	module = dontmanage.get_doc(
-		{"doctype": "Module Def", "module_name": module_name, "app_name": "dontmanage"}
-	)
+	module = dontmanage.get_doc({"doctype": "Module Def", "module_name": module_name, "app_name": "dontmanage"})
 	module.insert(ignore_if_duplicate=True)
 
 	return module

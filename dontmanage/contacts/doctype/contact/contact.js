@@ -21,7 +21,12 @@ dontmanage.ui.form.on("Contact", {
 			}
 		}
 
-		if (!frm.doc.user && !frm.is_new() && frm.perm[0].write) {
+		if (
+			!frm.doc.user &&
+			!frm.is_new() &&
+			frm.perm[0].write &&
+			dontmanage.boot.user.can_create.includes("User")
+		) {
 			frm.add_custom_button(__("Invite as User"), function () {
 				return dontmanage.call({
 					method: "dontmanage.contacts.doctype.contact.contact.invite_user",

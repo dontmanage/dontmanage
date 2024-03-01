@@ -1,6 +1,8 @@
 # Copyright (c) 2015, DontManage and Contributors
 # License: MIT. See LICENSE
 
+from typing import TYPE_CHECKING
+
 import dontmanage
 from dontmanage import _
 from dontmanage.desk.doctype.notification_log.notification_log import (
@@ -10,6 +12,9 @@ from dontmanage.desk.doctype.notification_log.notification_log import (
 )
 from dontmanage.desk.form.document_follow import follow_document
 from dontmanage.utils import cint
+
+if TYPE_CHECKING:
+	from dontmanage.model.document import Document
 
 
 @dontmanage.whitelist()
@@ -44,9 +49,7 @@ def add_docshare(
 		doc = dontmanage.get_doc("DocShare", share_name)
 	else:
 		doc = dontmanage.new_doc("DocShare")
-		doc.update(
-			{"user": user, "share_doctype": doctype, "share_name": name, "everyone": cint(everyone)}
-		)
+		doc.update({"user": user, "share_doctype": doctype, "share_name": name, "everyone": cint(everyone)})
 
 	if flags:
 		doc.flags.update(flags)
@@ -71,9 +74,7 @@ def add_docshare(
 
 
 def remove(doctype, name, user, flags=None):
-	share_name = dontmanage.db.get_value(
-		"DocShare", {"user": user, "share_name": name, "share_doctype": doctype}
-	)
+	share_name = dontmanage.db.get_value("DocShare", {"user": user, "share_name": name, "share_doctype": doctype})
 
 	if share_name:
 		dontmanage.delete_doc("DocShare", share_name, flags=flags)
@@ -122,26 +123,36 @@ def set_docshare_permission(doctype, name, user, permission_to, value=1, everyon
 
 
 @dontmanage.whitelist()
-def get_users(doctype, name):
+def get_users(doctype: str, name: str) -> list:
 	"""Get list of users with which this document is shared"""
+	doc = dontmanage.get_doc(doctype, name)
+	return _get_users(doc)
+
+
+def _get_users(doc: "Document") -> list:
+	from dontmanage.permissions import has_permission
+
+	if not has_permission(doc.doctype, "read", doc, raise_exception=False):
+		return []
+
 	return dontmanage.get_all(
 		"DocShare",
 		fields=[
-			"`name`",
-			"`user`",
-			"`read`",
-			"`write`",
-			"`submit`",
-			"`share`",
+			"name",
+			"user",
+			"read",
+			"write",
+			"submit",
+			"share",
 			"everyone",
 			"owner",
 			"creation",
 		],
-		filters=dict(share_doctype=doctype, share_name=name),
+		filters=dict(share_doctype=doc.doctype, share_name=doc.name),
 	)
 
 
-def get_shared(doctype, user=None, rights=None):
+def get_shared(doctype, user=None, rights=None, *, filters=None, limit=None):
 	"""Get list of shared document names for given user and DocType.
 
 	:param doctype: DocType of which shared names are queried.
@@ -154,14 +165,22 @@ def get_shared(doctype, user=None, rights=None):
 	if not rights:
 		rights = ["read"]
 
-	filters = [[right, "=", 1] for right in rights]
-	filters += [["share_doctype", "=", doctype]]
+	share_filters = [[right, "=", 1] for right in rights]
+	share_filters += [["share_doctype", "=", doctype]]
+	if filters:
+		share_filters += filters
+
 	or_filters = [["user", "=", user]]
 	if user != "Guest":
 		or_filters += [["everyone", "=", 1]]
 
 	shared_docs = dontmanage.get_all(
-		"DocShare", fields=["share_name"], filters=filters, or_filters=or_filters
+		"DocShare",
+		fields=["share_name"],
+		filters=share_filters,
+		or_filters=or_filters,
+		order_by=None,
+		limit_page_length=limit,
 	)
 
 	return [doc.share_name for doc in shared_docs]
@@ -203,7 +222,6 @@ def check_share_permission(doctype, name):
 
 
 def notify_assignment(shared_by, doctype, doc_name, everyone, notify=0):
-
 	if not (shared_by and doctype and doc_name) or everyone or not notify:
 		return
 

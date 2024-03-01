@@ -12,6 +12,7 @@ from dontmanage.core.doctype.doctype.doctype import (
 from dontmanage.exceptions import DoesNotExistError
 from dontmanage.modules.import_file import get_file_path, read_doc_from_file
 from dontmanage.permissions import (
+	AUTOMATIC_ROLES,
 	add_permission,
 	get_all_perms,
 	get_linked_doctypes,
@@ -43,10 +44,8 @@ def get_roles_and_doctypes():
 	restricted_roles = ["Administrator"]
 	if dontmanage.session.user != "Administrator":
 		custom_user_type_roles = dontmanage.get_all("User Type", filters={"is_standard": 0}, fields=["role"])
-		for row in custom_user_type_roles:
-			restricted_roles.append(row.role)
-
-		restricted_roles.append("All")
+		restricted_roles.extend(row.role for row in custom_user_type_roles)
+		restricted_roles.extend(AUTOMATIC_ROLES)
 
 	roles = dontmanage.get_all(
 		"Role",
@@ -62,8 +61,8 @@ def get_roles_and_doctypes():
 	roles_list = [{"label": _(d.get("name")), "value": d.get("name")} for d in roles]
 
 	return {
-		"doctypes": sorted(doctypes_list, key=lambda d: d["label"]),
-		"roles": sorted(roles_list, key=lambda d: d["label"]),
+		"doctypes": sorted(doctypes_list, key=lambda d: d["label"].casefold()),
+		"roles": sorted(roles_list, key=lambda d: d["label"].casefold()),
 	}
 
 
@@ -110,7 +109,7 @@ def add(parent, role, permlevel):
 
 
 @dontmanage.whitelist()
-def update(doctype, role, permlevel, ptype, value=None):
+def update(doctype, role, permlevel, ptype, value=None, if_owner=0):
 	"""Update role permission params
 
 	Args:
@@ -123,17 +122,34 @@ def update(doctype, role, permlevel, ptype, value=None):
 	Returns:
 	        str: Refresh flag is permission is updated successfully
 	"""
+
+	def clear_cache():
+		dontmanage.clear_cache(doctype=doctype)
+
 	dontmanage.only_for("System Manager")
-	out = update_permission_property(doctype, role, permlevel, ptype, value)
+
+	if ptype == "report" and value == "1" and if_owner == "1":
+		dontmanage.throw(_("Cannot set 'Report' permission if 'Only If Creator' permission is set"))
+
+	out = update_permission_property(doctype, role, permlevel, ptype, value, if_owner=if_owner)
+
+	if ptype == "if_owner" and value == "1":
+		update_permission_property(doctype, role, permlevel, "report", "0", if_owner=value)
+
+	dontmanage.db.after_commit.add(clear_cache)
+
 	return "refresh" if out else None
 
 
 @dontmanage.whitelist()
-def remove(doctype, role, permlevel):
+def remove(doctype, role, permlevel, if_owner=0):
 	dontmanage.only_for("System Manager")
 	setup_custom_perms(doctype)
 
-	dontmanage.db.delete("Custom DocPerm", {"parent": doctype, "role": role, "permlevel": permlevel})
+	dontmanage.db.delete(
+		"Custom DocPerm",
+		{"parent": doctype, "role": role, "permlevel": permlevel, "if_owner": if_owner},
+	)
 
 	if not dontmanage.get_all("Custom DocPerm", {"parent": doctype}):
 		dontmanage.throw(_("There must be atleast one permission rule."), title=_("Cannot Remove"))

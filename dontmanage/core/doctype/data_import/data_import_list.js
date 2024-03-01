@@ -20,13 +20,14 @@ dontmanage.listview_settings["Data Import"] = {
 			Success: "green",
 			"In Progress": "orange",
 			Error: "red",
+			"Timed Out": "orange",
 		};
 		let status = doc.status;
 
 		if (imports_in_progress.includes(doc.name)) {
 			status = "In Progress";
 		}
-		if (status == "Pending") {
+		if (status === "Pending") {
 			status = "Not Started";
 		}
 

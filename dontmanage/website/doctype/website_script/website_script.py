@@ -8,6 +8,17 @@ from dontmanage.model.document import Document
 
 
 class WebsiteScript(Document):
+	# begin: auto-generated types
+	# This code is auto-generated. Do not modify anything in this block.
+
+	from typing import TYPE_CHECKING
+
+	if TYPE_CHECKING:
+		from dontmanage.types import DF
+
+		javascript: DF.Code | None
+
+	# end: auto-generated types
 	def on_update(self):
 		"""clear cache"""
 		dontmanage.clear_cache(user="Guest")

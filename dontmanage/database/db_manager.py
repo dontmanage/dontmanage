@@ -51,12 +51,12 @@ class DbManager:
 	@staticmethod
 	def restore_database(target, source, user, password):
 		import os
-		from distutils.spawn import find_executable
+		from shutil import which
 
 		from dontmanage.utils import make_esc
 
 		esc = make_esc("$ ")
-		pv = find_executable("pv")
+		pv = which("pv")
 
 		if pv:
 			pipe = f"{pv} {source} |"
@@ -68,18 +68,16 @@ class DbManager:
 		if pipe:
 			print("Restoring Database file...")
 
-		command = (
-			"{pipe} mysql -u {user} -p{password} -h{host} "
-			+ ("-P{port}" if dontmanage.db.port else "")
-			+ " {target} {source}"
-		)
+		command = "{pipe} mariadb -u {user} -p{password} -h{host} -P{port} {target} {source}"
 		command = command.format(
 			pipe=pipe,
 			user=esc(user),
 			password=esc(password),
-			host=esc(dontmanage.db.host),
+			host=esc(dontmanage.conf.db_host),
 			target=esc(target),
 			source=source,
-			port=dontmanage.db.port,
+			port=dontmanage.conf.db_port,
 		)
+
 		os.system(command)
+		dontmanage.cache.delete_keys("")  # Delete all keys associated with this site.

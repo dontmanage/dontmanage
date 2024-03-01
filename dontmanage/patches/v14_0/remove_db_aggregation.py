@@ -32,4 +32,4 @@ def execute():
 		for agg in ["avg", "max", "min", "sum"]:
 			script = re.sub(f"dontmanage.db.{agg}\\(", f"dontmanage.qb.{agg}(", script)
 
-		dontmanage.db.update("Server Script", name, "script", script)
+		dontmanage.db.set_value("Server Script", name, "script", script)

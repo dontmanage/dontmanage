@@ -1,9 +1,12 @@
 # Copyright (c) 2015, DontManage and Contributors
 # License: MIT. See LICENSE
 
+from contextlib import suppress
+
 import dontmanage
 from dontmanage import _
-from dontmanage.utils import now
+from dontmanage.rate_limiter import rate_limit
+from dontmanage.utils import validate_email_address
 
 sitemap = 1
 
@@ -22,38 +25,23 @@ def get_context(context):
 	return out
 
 
-max_communications_per_hour = 1000
-
-
 @dontmanage.whitelist(allow_guest=True)
-def send_message(subject="Website Query", message="", sender=""):
-	if not message:
-		dontmanage.response["message"] = "Please write something"
-		return
+@rate_limit(limit=1000, seconds=60 * 60)
+def send_message(sender, message, subject="Website Query"):
+	sender = validate_email_address(sender, throw=True)
 
-	if not sender:
-		dontmanage.response["message"] = "Email Address Required"
-		return
+	with suppress(dontmanage.OutgoingEmailError):
+		if forward_to_email := dontmanage.db.get_single_value("Contact Us Settings", "forward_to_email"):
+			dontmanage.sendmail(recipients=forward_to_email, reply_to=sender, content=message, subject=subject)
 
-	# guest method, cap max writes per hour
-	if (
-		dontmanage.db.sql(
-			"""select count(*) from `tabCommunication`
-		where `sent_or_received`="Received"
-		and TIMEDIFF(%s, modified) < '01:00:00'""",
-			now(),
-		)[0][0]
-		> max_communications_per_hour
-	):
-		dontmanage.response[
-			"message"
-		] = "Sorry: we believe we have received an unreasonably high number of requests of this kind. Please try later"
-		return
+		dontmanage.sendmail(
+			recipients=sender,
+			content=f"<div style='white-space: pre-wrap'>Thank you for reaching out to us. We will get back to you at the earliest.\n\n\nYour query:\n\n{message}</div>",
+			subject="We've received your query!",
+		)
 
-	# send email
-	forward_to_email = dontmanage.db.get_single_value("Contact Us Settings", "forward_to_email")
-	if forward_to_email:
-		dontmanage.sendmail(recipients=forward_to_email, sender=sender, content=message, subject=subject)
+	# for clearing outgoing email error message
+	dontmanage.clear_last_message()
 
 	# add to to-do ?
 	dontmanage.get_doc(
@@ -66,5 +54,3 @@ def send_message(subject="Website Query", message="", sender=""):
 			status="Open",
 		)
 	).insert(ignore_permissions=True)
-
-	return "okay"

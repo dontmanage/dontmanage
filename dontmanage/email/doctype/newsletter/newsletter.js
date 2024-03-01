@@ -4,7 +4,7 @@
 dontmanage.ui.form.on("Newsletter", {
 	refresh(frm) {
 		let doc = frm.doc;
-		let can_write = in_list(dontmanage.boot.user.can_write, doc.doctype);
+		let can_write = dontmanage.boot.user.can_write.includes(doc.doctype);
 		if (!frm.is_new() && !frm.is_dirty() && !doc.email_sent && can_write) {
 			frm.add_custom_button(
 				__("Send a test email"),
@@ -112,12 +112,14 @@ dontmanage.ui.form.on("Newsletter", {
 					options: {
 						minDate: new Date(),
 					},
+					reqd: true,
 				},
 				{
 					label: __("Time"),
 					fieldname: "time",
 					fieldtype: "Select",
 					options: time_slots,
+					reqd: true,
 				},
 			],
 			primary_action_label: __("Schedule"),

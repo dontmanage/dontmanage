@@ -12,9 +12,7 @@ $.extend(dontmanage.contacts, {
 			$(frm.fields_dict["address_html"].wrapper)
 				.html(dontmanage.render_template("address_list", frm.doc.__onload))
 				.find(".btn-address")
-				.on("click", function () {
-					dontmanage.new_doc("Address");
-				});
+				.on("click", () => new_record("Address", frm.doc));
 		}
 
 		// render contact
@@ -22,9 +20,7 @@ $.extend(dontmanage.contacts, {
 			$(frm.fields_dict["contact_html"].wrapper)
 				.html(dontmanage.render_template("contact_list", frm.doc.__onload))
 				.find(".btn-contact")
-				.on("click", function () {
-					dontmanage.new_doc("Contact");
-				});
+				.on("click", () => new_record("Contact", frm.doc));
 		}
 	},
 	get_last_doc: function (frm) {
@@ -42,4 +38,33 @@ $.extend(dontmanage.contacts, {
 			docname,
 		};
 	},
+	get_address_display: function (frm, address_field, display_field) {
+		if (frm.updating_party_details) {
+			return;
+		}
+
+		let _address_field = address_field || "address";
+		let _display_field = display_field || "address_display";
+
+		if (!frm.doc[_address_field]) {
+			frm.set_value(_display_field, "");
+			return;
+		}
+
+		dontmanage
+			.xcall("dontmanage.contacts.doctype.address.address.get_address_display", {
+				address_dict: frm.doc[_address_field],
+			})
+			.then((address_display) => frm.set_value(_display_field, address_display));
+	},
 });
+
+function new_record(doctype, source_doc) {
+	dontmanage.dynamic_link = {
+		doctype: source_doc.doctype,
+		doc: source_doc,
+		fieldname: "name",
+	};
+
+	return dontmanage.new_doc(doctype);
+}

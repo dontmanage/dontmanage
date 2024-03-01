@@ -7,6 +7,22 @@ from dontmanage.model.document import Document
 
 
 class PrintFormatFieldTemplate(Document):
+	# begin: auto-generated types
+	# This code is auto-generated. Do not modify anything in this block.
+
+	from typing import TYPE_CHECKING
+
+	if TYPE_CHECKING:
+		from dontmanage.types import DF
+
+		document_type: DF.Link
+		field: DF.Data | None
+		module: DF.Link | None
+		standard: DF.Check
+		template: DF.Code | None
+		template_file: DF.Data | None
+
+	# end: auto-generated types
 	def validate(self):
 		if self.standard and not (dontmanage.conf.developer_mode or dontmanage.flags.in_patch):
 			dontmanage.throw(_("Enable developer mode to create a standard Print Template"))

@@ -1,10 +1,10 @@
 # Copyright (c) 2015, DontManage and Contributors
 # License: MIT. See LICENSE
-
 import dontmanage
 from dontmanage.cache_manager import clear_controller_cache
 from dontmanage.desk.doctype.todo.todo import ToDo
-from dontmanage.tests.utils import DontManageTestCase
+from dontmanage.tests.test_api import DontManageAPITestCase
+from dontmanage.tests.utils import DontManageTestCase, patch_hooks
 
 
 class TestHooks(DontManageTestCase):
@@ -26,7 +26,7 @@ class TestHooks(DontManageTestCase):
 		hooks.override_doctype_class = {"ToDo": ["dontmanage.tests.test_hooks.CustomToDo"]}
 
 		# Clear cache
-		dontmanage.cache().delete_value("app_hooks")
+		dontmanage.cache.delete_value("app_hooks")
 		clear_controller_cache("ToDo")
 
 		todo = dontmanage.get_doc(doctype="ToDo", description="asdf")
@@ -45,7 +45,7 @@ class TestHooks(DontManageTestCase):
 		hooks.has_permission["Address"] = address_has_permission_hook
 
 		# Clear cache
-		dontmanage.cache().delete_value("app_hooks")
+		dontmanage.cache.delete_value("app_hooks")
 
 		# Init User and Address
 		username = "test@example.com"
@@ -96,9 +96,27 @@ class TestHooks(DontManageTestCase):
 		event.delete()
 
 
+class TestAPIHooks(DontManageAPITestCase):
+	def test_auth_hook(self):
+		with patch_hooks({"auth_hooks": ["dontmanage.tests.test_hooks.custom_auth"]}):
+			site_url = dontmanage.utils.get_site_url(dontmanage.local.site)
+			response = self.get(
+				site_url + "/api/method/dontmanage.auth.get_logged_user",
+				headers={"Authorization": "Bearer set_test_example_user"},
+			)
+			# Test!
+			self.assertTrue(response.json.get("message") == "test@example.com")
+
+
 def custom_has_permission(doc, ptype, user):
 	if doc.flags.dont_touch_me:
 		return False
+
+
+def custom_auth():
+	auth_type, token = dontmanage.get_request_header("Authorization", "Bearer ").split(" ")
+	if token == "set_test_example_user":
+		dontmanage.set_user("test@example.com")
 
 
 class CustomToDo(ToDo):

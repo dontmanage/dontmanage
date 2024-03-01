@@ -13,13 +13,13 @@ test_dependencies = ["Blog Category", "Blogger"]
 class TestFormLoad(DontManageTestCase):
 	def test_load(self):
 		getdoctype("DocType")
-		meta = list(filter(lambda d: d.name == "DocType", dontmanage.response.docs))[0]
+		meta = next(filter(lambda d: d.name == "DocType", dontmanage.response.docs))
 		self.assertEqual(meta.name, "DocType")
 		self.assertTrue(meta.get("__js"))
 
 		dontmanage.response.docs = []
 		getdoctype("Event")
-		meta = list(filter(lambda d: d.name == "Event", dontmanage.response.docs))[0]
+		meta = next(filter(lambda d: d.name == "Event", dontmanage.response.docs))
 		self.assertTrue(meta.get("__calendar_js"))
 
 	def test_fieldlevel_permissions_in_load(self):
@@ -197,5 +197,4 @@ class TestFormLoad(DontManageTestCase):
 def get_blog(blog_name):
 	dontmanage.response.docs = []
 	getdoc("Blog Post", blog_name)
-	doc = dontmanage.response.docs[0]
-	return doc
+	return dontmanage.response.docs[0]

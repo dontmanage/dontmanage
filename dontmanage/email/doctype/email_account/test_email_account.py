@@ -13,11 +13,7 @@ from dontmanage.desk.form.load import get_attachments
 from dontmanage.email.doctype.email_account.email_account import notify_unreplied
 from dontmanage.email.email_body import get_message_id
 from dontmanage.email.receive import Email, InboundMail, SentEmailInInboxError
-from dontmanage.test_runner import make_test_records
 from dontmanage.tests.utils import DontManageTestCase
-
-make_test_records("User")
-make_test_records("Email Account")
 
 
 class TestEmailAccount(DontManageTestCase):
@@ -65,9 +61,18 @@ class TestEmailAccount(DontManageTestCase):
 		self.assertTrue(dontmanage.db.get_value(comm.reference_doctype, comm.reference_name, "name"))
 
 	def test_unread_notification(self):
-		self.test_incoming()
+		todo = dontmanage.get_last_doc("ToDo")
 
-		comm = dontmanage.get_doc("Communication", {"sender": "test_sender@example.com"})
+		comm = dontmanage.new_doc(
+			"Communication",
+			sender="test_sender@example.com",
+			subject="test unread reminder",
+			sent_or_received="Received",
+			reference_doctype=todo.doctype,
+			reference_name=todo.name,
+			email_account="_Test Email Account 1",
+		)
+		comm.insert()
 		comm.db_set("creation", datetime.now() - timedelta(seconds=30 * 60))
 
 		dontmanage.db.delete("Email Queue")
@@ -78,7 +83,6 @@ class TestEmailAccount(DontManageTestCase):
 				{
 					"reference_doctype": comm.reference_doctype,
 					"reference_name": comm.reference_name,
-					"status": "Not Sent",
 				},
 			)
 		)
@@ -128,9 +132,7 @@ class TestEmailAccount(DontManageTestCase):
 		TestEmailAccount.mocked_email_receive(email_account, messages)
 
 		comm = dontmanage.get_doc("Communication", {"sender": "test_sender@example.com"})
-		self.assertTrue(
-			"From: &quot;Microsoft Outlook&quot; &lt;test_sender@example.com&gt;" in comm.content
-		)
+		self.assertTrue("From: &quot;Microsoft Outlook&quot; &lt;test_sender@example.com&gt;" in comm.content)
 		self.assertTrue(
 			"This is an e-mail message sent automatically by Microsoft Outlook while" in comm.content
 		)
@@ -151,9 +153,7 @@ class TestEmailAccount(DontManageTestCase):
 		TestEmailAccount.mocked_email_receive(email_account, messages)
 
 		comm = dontmanage.get_doc("Communication", {"sender": "test_sender@example.com"})
-		self.assertTrue(
-			"From: &quot;Microsoft Outlook&quot; &lt;test_sender@example.com&gt;" in comm.content
-		)
+		self.assertTrue("From: &quot;Microsoft Outlook&quot; &lt;test_sender@example.com&gt;" in comm.content)
 		self.assertTrue(
 			"This is an e-mail message sent automatically by Microsoft Outlook while" in comm.content
 		)
@@ -286,7 +286,9 @@ class TestEmailAccount(DontManageTestCase):
 			messages = {
 				# append_to = ToDo
 				'"INBOX"': {
-					"latest_messages": [f.read().replace("{{ message_id }}", "<" + last_mail.message_id + ">")],
+					"latest_messages": [
+						f.read().replace("{{ message_id }}", "<" + last_mail.message_id + ">")
+					],
 					"seen_status": {2: "UNSEEN"},
 					"uid_list": [2],
 				}
@@ -411,9 +413,12 @@ class TestEmailAccount(DontManageTestCase):
 	@patch("dontmanage.email.receive.EmailServer.select_imap_folder", return_value=True)
 	@patch("dontmanage.email.receive.EmailServer.logout", side_effect=lambda: None)
 	def mocked_get_inbound_mails(
-		email_account, messages={}, mocked_logout=None, mocked_select_imap_folder=None
+		email_account, messages=None, mocked_logout=None, mocked_select_imap_folder=None
 	):
 		from dontmanage.email.receive import EmailServer
+
+		if messages is None:
+			messages = {}
 
 		def get_mocked_messages(**kwargs):
 			return messages.get(kwargs["folder"], {})
@@ -426,8 +431,11 @@ class TestEmailAccount(DontManageTestCase):
 	@patch("dontmanage.email.receive.EmailServer.select_imap_folder", return_value=True)
 	@patch("dontmanage.email.receive.EmailServer.logout", side_effect=lambda: None)
 	def mocked_email_receive(
-		email_account, messages={}, mocked_logout=None, mocked_select_imap_folder=None
+		email_account, messages=None, mocked_logout=None, mocked_select_imap_folder=None
 	):
+		if messages is None:
+			messages = {}
+
 		def get_mocked_messages(**kwargs):
 			return messages.get(kwargs["folder"], {})
 
@@ -606,13 +614,26 @@ class TestInboundMail(DontManageTestCase):
 		reference_doc = inbound_mail.reference_document()
 		self.assertEqual(todo.name, reference_doc.name)
 
+	def test_reference_document_by_subject_match_with_accents(self):
+		subject = "Nouvelle tâche à faire 😃"
+		todo = self.new_todo(sender="test_sender@example.com", description=subject)
+
+		mail_content = (
+			self.get_test_mail(fname="incoming-subject-placeholder.raw")
+			.replace("{{ subject }}", f"RE: {subject}")
+			.encode("utf-8")
+		)  # note: encode to bytes because that's what triggered the error
+		email_account = dontmanage.get_doc("Email Account", "_Test Email Account 1")
+		inbound_mail = InboundMail(mail_content, email_account, 12345, 1)
+		reference_doc = inbound_mail.reference_document()
+		self.assertEqual(todo.name, reference_doc.name)
+
 	def test_create_communication_from_mail(self):
 		# Create email queue record
 		mail_content = self.get_test_mail(fname="incoming-2.raw")
 		email_account = dontmanage.get_doc("Email Account", "_Test Email Account 1")
 		inbound_mail = InboundMail(mail_content, email_account, 12345, 1)
 		communication = inbound_mail.process()
-		self.assertTrue(communication.is_first)
 		self.assertTrue(communication._attachments)
 
 

@@ -2,6 +2,9 @@
 # License: MIT. See LICENSE
 import datetime
 import json
+import weakref
+from functools import cached_property
+from typing import TYPE_CHECKING, TypeVar
 
 import dontmanage
 from dontmanage import _, _dict
@@ -18,8 +21,24 @@ from dontmanage.model.docstatus import DocStatus
 from dontmanage.model.naming import set_new_name
 from dontmanage.model.utils.link_count import notify_link_count
 from dontmanage.modules import load_doctype_module
-from dontmanage.utils import cast_fieldtype, cint, cstr, flt, now, sanitize_html, strip_html
+from dontmanage.utils import (
+	cast_fieldtype,
+	cint,
+	compare,
+	cstr,
+	flt,
+	is_a_property,
+	now,
+	sanitize_html,
+	strip_html,
+)
 from dontmanage.utils.html_utils import unescape_html
+
+if TYPE_CHECKING:
+	from dontmanage.model.document import Document
+
+D = TypeVar("D", bound="Document")
+
 
 max_positive_value = {"smallint": 2**15 - 1, "int": 2**31 - 1, "bigint": 2**63 - 1}
 
@@ -36,68 +55,76 @@ DOCTYPES_FOR_DOCTYPE = {"DocType", *TABLE_DOCTYPES_FOR_DOCTYPE.values()}
 
 
 def get_controller(doctype):
-	"""Returns the **class** object of the given DocType.
+	"""
+	Returns the locally cached **class** object of the given DocType.
 	For `custom` type, returns `dontmanage.model.document.Document`.
 
-	:param doctype: DocType name as string."""
-
-	def _get_controller():
-		from dontmanage.model.document import Document
-		from dontmanage.utils.nestedset import NestedSet
-
-		module_name, custom = dontmanage.db.get_value(
-			"DocType", doctype, ("module", "custom"), cache=not dontmanage.flags.in_migrate
-		) or ("Core", False)
-
-		if custom:
-			is_tree = dontmanage.db.get_value("DocType", doctype, "is_tree", ignore=True, cache=True)
-			_class = NestedSet if is_tree else Document
-		else:
-			class_overrides = dontmanage.get_hooks("override_doctype_class")
-			if class_overrides and class_overrides.get(doctype):
-				import_path = class_overrides[doctype][-1]
-				module_path, classname = import_path.rsplit(".", 1)
-				module = dontmanage.get_module(module_path)
-				if not hasattr(module, classname):
-					raise ImportError(f"{doctype}: {classname} does not exist in module {module_path}")
-			else:
-				module = load_doctype_module(doctype, module_name)
-				classname = doctype.replace(" ", "").replace("-", "")
-
-			if hasattr(module, classname):
-				_class = getattr(module, classname)
-				if issubclass(_class, BaseDocument):
-					_class = getattr(module, classname)
-				else:
-					raise ImportError(doctype)
-			else:
-				raise ImportError(doctype)
-		return _class
+	:param doctype: DocType name as string.
+	"""
 
 	if dontmanage.local.dev_server or dontmanage.flags.in_migrate:
-		return _get_controller()
+		return import_controller(doctype)
 
 	site_controllers = dontmanage.controllers.setdefault(dontmanage.local.site, {})
 	if doctype not in site_controllers:
-		site_controllers[doctype] = _get_controller()
+		site_controllers[doctype] = import_controller(doctype)
 
 	return site_controllers[doctype]
 
 
+def import_controller(doctype):
+	from dontmanage.model.document import Document
+	from dontmanage.utils.nestedset import NestedSet
+
+	module_name = "Core"
+	if doctype not in DOCTYPES_FOR_DOCTYPE:
+		doctype_info = dontmanage.db.get_value("DocType", doctype, fieldname="*")
+		if doctype_info:
+			if doctype_info.custom:
+				return NestedSet if doctype_info.is_tree else Document
+			module_name = doctype_info.module
+
+	module_path = None
+	class_overrides = dontmanage.get_hooks("override_doctype_class")
+	if class_overrides and class_overrides.get(doctype):
+		import_path = class_overrides[doctype][-1]
+		module_path, classname = import_path.rsplit(".", 1)
+		module = dontmanage.get_module(module_path)
+
+	else:
+		module = load_doctype_module(doctype, module_name)
+		classname = doctype.replace(" ", "").replace("-", "")
+
+	class_ = getattr(module, classname, None)
+	if class_ is None:
+		raise ImportError(
+			doctype
+			if module_path is None
+			else f"{doctype}: {classname} does not exist in module {module_path}"
+		)
+
+	if not issubclass(class_, BaseDocument):
+		raise ImportError(f"{doctype}: {classname} is not a subclass of BaseDocument")
+
+	return class_
+
+
 class BaseDocument:
-	_reserved_keywords = {
-		"doctype",
-		"meta",
-		"_meta",
-		"flags",
-		"parent_doc",
-		"_table_fields",
-		"_valid_columns",
-		"_doc_before_save",
-		"_table_fieldnames",
-		"_reserved_keywords",
-		"dont_update_if_missing",
-	}
+	_reserved_keywords = frozenset(
+		(
+			"doctype",
+			"meta",
+			"flags",
+			"parent_doc",
+			"_table_fields",
+			"_valid_columns",
+			"_doc_before_save",
+			"_table_fieldnames",
+			"_reserved_keywords",
+			"permitted_fieldnames",
+			"dont_update_if_missing",
+		)
+	)
 
 	def __init__(self, d):
 		if d.get("doctype"):
@@ -110,18 +137,18 @@ class BaseDocument:
 		if hasattr(self, "__setup__"):
 			self.__setup__()
 
-	@property
+	@cached_property
 	def meta(self):
-		if not (meta := getattr(self, "_meta", None)):
-			self._meta = meta = dontmanage.get_meta(self.doctype)
+		return dontmanage.get_meta(self.doctype)
 
-		return meta
+	@cached_property
+	def permitted_fieldnames(self):
+		return get_permitted_fields(doctype=self.doctype, parenttype=getattr(self, "parenttype", None))
 
 	def __getstate__(self):
 		"""
 		Called when pickling.
-		Returns a copy of `__dict__` excluding unpicklable values like `_meta`.
-
+		Returns a copy of `__dict__` excluding unpicklable values like `meta`.
 		More info: https://docs.python.org/3/library/pickle.html#handling-stateful-objects
 		"""
 
@@ -134,7 +161,9 @@ class BaseDocument:
 	def remove_unpicklable_values(self, state):
 		"""Remove unpicklable values before pickling"""
 
-		state.pop("_meta", None)
+		state.pop("meta", None)
+		state.pop("permitted_fieldnames", None)
+		state.pop("_parent_doc", None)
 
 	def update(self, d):
 		"""Update multiple fields of a doctype using a dictionary of key-value pairs.
@@ -187,7 +216,7 @@ class BaseDocument:
 
 		value = self.__dict__.get(key, default)
 
-		if limit and isinstance(value, (list, tuple)) and len(value) > limit:
+		if limit and isinstance(value, list | tuple) and len(value) > limit:
 			value = value[:limit]
 
 		return value
@@ -214,7 +243,7 @@ class BaseDocument:
 		if key in self.__dict__:
 			del self.__dict__[key]
 
-	def append(self, key, value=None):
+	def append(self, key: str, value: D | dict | None = None) -> D:
 		"""Append an item to a child table.
 
 		Example:
@@ -230,13 +259,30 @@ class BaseDocument:
 		if (table := self.__dict__.get(key)) is None:
 			self.__dict__[key] = table = []
 
-		value = self._init_child(value, key)
-		table.append(value)
+		ret_value = self._init_child(value, key)
+		table.append(ret_value)
 
-		# reference parent document
-		value.parent_doc = self
+		# reference parent document but with weak reference, parent_doc will be deleted if self is garbage collected.
+		ret_value.parent_doc = weakref.ref(self)
 
-		return value
+		return ret_value
+
+	@property
+	def parent_doc(self):
+		parent_doc_ref = getattr(self, "_parent_doc", None)
+
+		if isinstance(parent_doc_ref, BaseDocument):
+			return parent_doc_ref
+		elif isinstance(parent_doc_ref, weakref.ReferenceType):
+			return parent_doc_ref()
+
+	@parent_doc.setter
+	def parent_doc(self, value):
+		self._parent_doc = value
+
+	@parent_doc.deleter
+	def parent_doc(self):
+		self._parent_doc = None
 
 	def extend(self, key, value):
 		try:
@@ -296,18 +342,16 @@ class BaseDocument:
 
 	def get_valid_dict(
 		self, sanitize=True, convert_dates_to_str=False, ignore_nulls=False, ignore_virtual=False
-	) -> dict:
+	) -> _dict:
 		d = _dict()
-		permitted_fields = get_permitted_fields(doctype=self.doctype)
+		field_values = self.__dict__
 
 		for fieldname in self.meta.get_valid_columns():
-			field_value = getattr(self, fieldname, None)
-
-			# column is valid, we can use getattr
-			d[fieldname] = field_value
+			value = field_values.get(fieldname)
 
 			# if no need for sanitization and value is None, continue
-			if not sanitize and d[fieldname] is None:
+			if not sanitize and value is None:
+				d[fieldname] = None
 				continue
 
 			df = self.meta.get_field(fieldname)
@@ -315,46 +359,50 @@ class BaseDocument:
 
 			if df:
 				if is_virtual_field:
-					if ignore_virtual or fieldname not in permitted_fields:
-						del d[fieldname]
+					if ignore_virtual or fieldname not in self.permitted_fieldnames:
 						continue
 
-					if d[fieldname] is None and (options := getattr(df, "options", None)):
+					if (prop := getattr(type(self), fieldname, None)) and is_a_property(prop):
+						value = getattr(self, fieldname)
+
+					elif options := getattr(df, "options", None):
 						from dontmanage.utils.safe_exec import get_safe_globals
 
-						d[fieldname] = dontmanage.safe_eval(
+						value = dontmanage.safe_eval(
 							code=options,
 							eval_globals=get_safe_globals(),
 							eval_locals={"doc": self},
 						)
 
-				if isinstance(d[fieldname], list) and df.fieldtype not in table_fields:
-					dontmanage.throw(_("Value for {0} cannot be a list").format(_(df.label)))
+				if isinstance(value, list) and df.fieldtype not in table_fields:
+					dontmanage.throw(_("Value for {0} cannot be a list").format(_(df.label, context=df.parent)))
 
 				if df.fieldtype == "Check":
-					d[fieldname] = 1 if cint(d[fieldname]) else 0
+					value = 1 if cint(value) else 0
 
-				elif df.fieldtype == "Int" and not isinstance(d[fieldname], int):
-					d[fieldname] = cint(d[fieldname])
+				elif df.fieldtype == "Int" and not isinstance(value, int):
+					value = cint(value)
 
-				elif df.fieldtype == "JSON" and isinstance(d[fieldname], dict):
-					d[fieldname] = json.dumps(d[fieldname], sort_keys=True, indent=4, separators=(",", ": "))
+				elif df.fieldtype == "JSON" and isinstance(value, dict):
+					value = json.dumps(value, sort_keys=True, indent=4, separators=(",", ": "))
 
-				elif df.fieldtype in float_like_fields and not isinstance(d[fieldname], float):
-					d[fieldname] = flt(d[fieldname])
+				elif df.fieldtype in float_like_fields and not isinstance(value, float):
+					value = flt(value)
 
-				elif (df.fieldtype in datetime_fields and d[fieldname] == "") or (
-					getattr(df, "unique", False) and cstr(d[fieldname]).strip() == ""
+				elif (df.fieldtype in datetime_fields and value == "") or (
+					getattr(df, "unique", False) and cstr(value).strip() == ""
 				):
-					d[fieldname] = None
+					value = None
 
 			if convert_dates_to_str and isinstance(
-				d[fieldname], (datetime.datetime, datetime.date, datetime.time, datetime.timedelta)
+				value, datetime.datetime | datetime.date | datetime.time | datetime.timedelta
 			):
-				d[fieldname] = str(d[fieldname])
+				value = str(value)
 
-			if ignore_nulls and not is_virtual_field and d[fieldname] is None:
-				del d[fieldname]
+			if ignore_nulls and not is_virtual_field and value is None:
+				continue
+
+			d[fieldname] = value
 
 		return d
 
@@ -488,7 +536,7 @@ class BaseDocument:
 
 		if not self.creation:
 			self.creation = self.modified = now()
-			self.created_by = self.modified_by = dontmanage.session.user
+			self.owner = self.modified_by = dontmanage.session.user
 
 		# if doctype is "DocType", don't insert null values as we don't know who is valid yet
 		d = self.get_valid_dict(
@@ -522,7 +570,7 @@ class BaseDocument:
 
 				if not ignore_if_duplicate:
 					dontmanage.msgprint(
-						_("{0} {1} already exists").format(self.doctype, dontmanage.bold(self.name)),
+						_("{0} {1} already exists").format(_(self.doctype), dontmanage.bold(self.name)),
 						title=_("Duplicate Name"),
 						indicator="red",
 					)
@@ -560,7 +608,7 @@ class BaseDocument:
 				SET {values} WHERE `name`=%s""".format(
 					doctype=self.doctype, values=", ".join("`" + c + "`=%s" for c in columns)
 				),
-				list(d.values()) + [name],
+				[*list(d.values()), name],
 			)
 		except Exception as e:
 			if dontmanage.db.is_unique_key_violation(e):
@@ -638,7 +686,10 @@ class BaseDocument:
 	def update_modified(self):
 		"""Update modified timestamp"""
 		self.set("modified", now())
-		dontmanage.db.set_value(self.doctype, self.name, "modified", self.modified, update_modified=False)
+		if getattr(self.meta, "issingle", False):
+			dontmanage.db.set_single_value(self.doctype, "modified", self.modified, update_modified=False)
+		else:
+			dontmanage.db.set_value(self.doctype, self.name, "modified", self.modified, update_modified=False)
 
 	def _fix_numeric_types(self):
 		for df in self.meta.get("fields"):
@@ -660,7 +711,9 @@ class BaseDocument:
 
 		def get_msg(df):
 			if df.fieldtype in table_fields:
-				return "{}: {}: {}".format(_("Error"), _("Data missing in table"), _(df.label))
+				return "{}: {}: {}".format(
+					_("Error"), _("Data missing in table"), _(df.label, context=df.parent)
+				)
 
 			# check if parentfield exists (only applicable for child table doctype)
 			elif self.get("parentfield"):
@@ -670,10 +723,10 @@ class BaseDocument:
 					_("Row"),
 					self.idx,
 					_("Value missing for"),
-					_(df.label),
+					_(df.label, context=df.parent),
 				)
 
-			return _("Error: Value missing for {0}: {1}").format(_(df.parent), _(df.label))
+			return _("Error: Value missing for {0}: {1}").format(_(df.parent), _(df.label, context=df.parent))
 
 		def has_content(df):
 			value = cstr(self.get(df.fieldname))
@@ -708,16 +761,14 @@ class BaseDocument:
 		def get_msg(df, docname):
 			# check if parentfield exists (only applicable for child table doctype)
 			if self.get("parentfield"):
-				return "{} #{}: {}: {}".format(_("Row"), self.idx, _(df.label), docname)
+				return "{} #{}: {}: {}".format(_("Row"), self.idx, _(df.label, context=df.parent), docname)
 
-			return f"{_(df.label)}: {docname}"
+			return f"{_(df.label, context=df.parent)}: {docname}"
 
 		invalid_links = []
 		cancelled_links = []
 
-		for df in self.meta.get_link_fields() + self.meta.get(
-			"fields", {"fieldtype": ("=", "Dynamic Link")}
-		):
+		for df in self.meta.get_link_fields() + self.meta.get("fields", {"fieldtype": ("=", "Dynamic Link")}):
 			docname = self.get(df.fieldname)
 
 			if docname:
@@ -747,7 +798,9 @@ class BaseDocument:
 						# cache a single value type
 						values = _dict(name=dontmanage.db.get_value(doctype, docname, "name", cache=True))
 					else:
-						values_to_fetch = ["name"] + [_df.fetch_from.split(".")[-1] for _df in fields_to_fetch]
+						values_to_fetch = ["name"] + [
+							_df.fetch_from.split(".")[-1] for _df in fields_to_fetch
+						]
 
 						# don't cache if fetching other values too
 						values = dontmanage.db.get_value(doctype, docname, values_to_fetch, as_dict=True)
@@ -776,7 +829,6 @@ class BaseDocument:
 						and dontmanage.get_meta(doctype).is_submittable
 						and cint(dontmanage.db.get_value(doctype, docname, "docstatus")) == DocStatus.cancelled()
 					):
-
 						cancelled_links.append((df.fieldname, docname, get_msg(df, docname)))
 
 		return invalid_links, cancelled_links
@@ -793,7 +845,9 @@ class BaseDocument:
 
 			if not fetch_from_df:
 				dontmanage.throw(
-					_('Please check the value of "Fetch From" set for field {0}').format(dontmanage.bold(df.label)),
+					_('Please check the value of "Fetch From" set for field {0}').format(
+						dontmanage.bold(df.label)
+					),
 					title=_("Wrong Fetch From value"),
 				)
 
@@ -948,7 +1002,7 @@ class BaseDocument:
 
 		dontmanage.throw(
 			_("{0}: '{1}' ({3}) will get truncated, as max characters allowed is {2}").format(
-				reference, _(df.label), max_length, value
+				reference, _(df.label, context=df.parent), max_length, value
 			),
 			dontmanage.CharacterLengthExceededError,
 			title=_("Value too big"),
@@ -983,7 +1037,7 @@ class BaseDocument:
 					dontmanage.throw(
 						_("{0} Not allowed to change {1} after submission from {2} to {3}").format(
 							f"Row #{self.idx}:" if self.get("parent") else "",
-							dontmanage.bold(_(df.label)),
+							dontmanage.bold(_(df.label, context=df.parent)),
 							dontmanage.bold(db_value),
 							dontmanage.bold(self_value),
 						),
@@ -1061,9 +1115,7 @@ class BaseDocument:
 		if self.get(fieldname) and not self.is_dummy_password(self.get(fieldname)):
 			return self.get(fieldname)
 
-		return get_decrypted_password(
-			self.doctype, self.name, fieldname, raise_exception=raise_exception
-		)
+		return get_decrypted_password(self.doctype, self.name, fieldname, raise_exception=raise_exception)
 
 	def is_dummy_password(self, pwd):
 		return "".join(set(pwd)) == "*"
@@ -1125,7 +1177,7 @@ class BaseDocument:
 		if not doc:
 			doc = getattr(self, "parent_doc", None) or self
 
-		if (absolute_value or doc.get("absolute_value")) and isinstance(val, (int, float)):
+		if (absolute_value or doc.get("absolute_value")) and isinstance(val, int | float):
 			val = abs(self.get(fieldname))
 
 		return format_value(val, df=df, doc=doc, currency=currency, format=format)
@@ -1171,15 +1223,15 @@ class BaseDocument:
 
 	def reset_values_if_no_permlevel_access(self, has_access_to, high_permlevel_fields):
 		"""If the user does not have permissions at permlevel > 0, then reset the values to original / default"""
-		to_reset = []
-
-		for df in high_permlevel_fields:
+		to_reset = [
+			df
+			for df in high_permlevel_fields
 			if (
 				df.permlevel not in has_access_to
 				and df.fieldtype not in display_fieldtypes
 				and df.fieldname not in self.flags.get("ignore_permlevel_for_fields", [])
-			):
-				to_reset.append(df)
+			)
+		]
 
 		if to_reset:
 			if self.is_new():
@@ -1187,7 +1239,7 @@ class BaseDocument:
 				ref_doc = dontmanage.new_doc(self.doctype)
 			else:
 				# get values from old doc
-				if self.get("parent_doc"):
+				if self.parent_doc:
 					parent_doc = self.parent_doc.get_latest()
 					child_docs = [d for d in parent_doc.get(self.parentfield) if d.name == self.name]
 					if not child_docs:
@@ -1232,7 +1284,7 @@ def _filter(data, filters, limit=None):
 		for f in filters:
 			fval = filters[f]
 
-			if not isinstance(fval, (tuple, list)):
+			if not isinstance(fval, tuple | list):
 				if fval is True:
 					fval = ("not None", fval)
 				elif fval is False:
@@ -1246,7 +1298,7 @@ def _filter(data, filters, limit=None):
 
 	for d in data:
 		for f, fval in _filters.items():
-			if not dontmanage.compare(getattr(d, f, None), fval[0], fval[1]):
+			if not compare(getattr(d, f, None), fval[0], fval[1]):
 				break
 		else:
 			out.append(d)

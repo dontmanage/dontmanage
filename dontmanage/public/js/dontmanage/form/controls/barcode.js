@@ -27,6 +27,7 @@ dontmanage.ui.form.ControlBarcode = class ControlBarcode extends dontmanage.ui.f
 		let svg = value;
 		let barcode_value = "";
 
+		this.set_empty_description();
 		if (value && value.startsWith("<svg")) {
 			barcode_value = $(svg).attr("data-barcode-value");
 		}
@@ -44,10 +45,14 @@ dontmanage.ui.form.ControlBarcode = class ControlBarcode extends dontmanage.ui.f
 		if (value) {
 			// Get svg
 			const svg = this.barcode_area.find("svg")[0];
-			JsBarcode(svg, value, this.get_options(value));
-			$(svg).attr("data-barcode-value", value);
-			$(svg).attr("width", "100%");
-			return this.barcode_area.html();
+			try {
+				JsBarcode(svg, value, this.get_options(value));
+				$(svg).attr("data-barcode-value", value);
+				$(svg).attr("width", "100%");
+				return this.barcode_area.html();
+			} catch (e) {
+				this.set_description(`Invalid Barcode: ${String(e)}`);
+			}
 		}
 	}
 

@@ -24,6 +24,37 @@ from dontmanage.website.website_generator import WebsiteGenerator
 
 
 class BlogPost(WebsiteGenerator):
+	# begin: auto-generated types
+	# This code is auto-generated. Do not modify anything in this block.
+
+	from typing import TYPE_CHECKING
+
+	if TYPE_CHECKING:
+		from dontmanage.types import DF
+
+		blog_category: DF.Link
+		blog_intro: DF.SmallText | None
+		blogger: DF.Link
+		content: DF.TextEditor | None
+		content_html: DF.HTMLEditor | None
+		content_md: DF.MarkdownEditor | None
+		content_type: DF.Literal["Markdown", "Rich Text", "HTML"]
+		disable_comments: DF.Check
+		disable_likes: DF.Check
+		email_sent: DF.Check
+		enable_email_notification: DF.Check
+		featured: DF.Check
+		hide_cta: DF.Check
+		meta_description: DF.SmallText | None
+		meta_image: DF.AttachImage | None
+		meta_title: DF.Data | None
+		published: DF.Check
+		published_on: DF.Date | None
+		read_time: DF.Int
+		route: DF.Data | None
+		title: DF.Data
+
+	# end: auto-generated types
 	@dontmanage.whitelist()
 	def make_route(self):
 		if not self.route:
@@ -32,9 +63,6 @@ class BlogPost(WebsiteGenerator):
 				+ "/"
 				+ self.scrub(self.title)
 			)
-
-	def get_feed(self):
-		return self.title
 
 	def validate(self):
 		super().validate()
@@ -148,17 +176,24 @@ class BlogPost(WebsiteGenerator):
 
 		url = dontmanage.local.site + "/" + self.route
 
-		social_links = [
+		return [
 			{
 				"icon": "twitter",
 				"link": "https://twitter.com/intent/tweet?text=" + self.title + "&url=" + url,
 			},
-			{"icon": "facebook", "link": "https://www.facebook.com/sharer.php?u=" + url},
-			{"icon": "linkedin", "link": "https://www.linkedin.com/sharing/share-offsite/?url=" + url},
-			{"icon": "envelope", "link": "mailto:?subject=" + self.title + "&body=" + url},
+			{
+				"icon": "facebook",
+				"link": "https://www.facebook.com/sharer.php?u=" + url,
+			},
+			{
+				"icon": "linkedin",
+				"link": "https://www.linkedin.com/sharing/share-offsite/?url=" + url,
+			},
+			{
+				"icon": "envelope",
+				"link": "mailto:?subject=" + self.title + "&body=" + url,
+			},
 		]
-
-		return social_links
 
 	def load_comments(self, context):
 		context.comment_list = get_comment_list(self.doctype, self.name)
@@ -204,13 +239,19 @@ def get_list_context(context=None):
 		title=_("Blog"),
 	)
 
-	category = dontmanage.utils.escape_html(
+	blog_settings = dontmanage.get_doc("Blog Settings").as_dict(no_default_fields=True)
+	list_context.update(blog_settings)
+
+	category_name = dontmanage.utils.escape_html(
 		dontmanage.local.form_dict.blog_category or dontmanage.local.form_dict.category
 	)
-	if category:
-		category_title = get_blog_category(category)
-		list_context.sub_title = _("Posts filed under {0}").format(category_title)
-		list_context.title = category_title
+	if category_name:
+		category = dontmanage.get_doc("Blog Category", category_name)
+		list_context.blog_introduction = category.description or _("Posts filed under {0}").format(
+			category.title
+		)
+		list_context.blog_title = category.title
+		list_context.preview_image = category.preview_image
 
 	elif dontmanage.local.form_dict.blogger:
 		blogger = dontmanage.db.get_value("Blogger", {"name": dontmanage.local.form_dict.blogger}, "full_name")
@@ -225,11 +266,15 @@ def get_list_context(context=None):
 	else:
 		list_context.parents = [{"name": _("Home"), "route": "/"}]
 
-	blog_settings = dontmanage.get_doc("Blog Settings").as_dict(no_default_fields=True)
-	list_context.update(blog_settings)
-
 	if blog_settings.browse_by_category:
 		list_context.blog_categories = get_blog_categories()
+
+	list_context.metatags = {
+		"name": list_context.blog_title,
+		"title": list_context.blog_title,
+		"description": list_context.blog_introduction,
+		"image": list_context.preview_image,
+	}
 
 	return list_context
 
@@ -256,22 +301,13 @@ def get_blog_categories():
 
 
 def clear_blog_cache():
-	for blog in dontmanage.db.sql_list(
-		"""select route from
-		`tabBlog Post` where ifnull(published,0)=1"""
-	):
+	for blog in dontmanage.db.get_list("Blog Post", fields=["route"], pluck="route", filters={"published": True}):
 		clear_cache(blog)
 
 	clear_cache("writers")
 
 
-def get_blog_category(route):
-	return dontmanage.db.get_value("Blog Category", {"name": route}, "title") or route
-
-
-def get_blog_list(
-	doctype, txt=None, filters=None, limit_start=0, limit_page_length=20, order_by=None
-):
+def get_blog_list(doctype, txt=None, filters=None, limit_start=0, limit_page_length=20, order_by=None):
 	conditions = []
 	if filters and filters.get("blog_category"):
 		category = filters.get("blog_category")
@@ -313,7 +349,7 @@ def get_blog_list(
 						and reference_doctype='Blog Post'
 						and reference_name=t1.name) as comments
 		from `tabBlog Post` t1, `tabBlogger` t2
-		where ifnull(t1.published,0)=1
+		where t1.published = 1
 		and t1.blogger = t2.name
 		{condition}
 		order by featured desc, published_on desc, name asc
@@ -346,7 +382,7 @@ def get_blog_list(
 
 		if (
 			post.avatar
-			and (not "http:" in post.avatar and not "https:" in post.avatar)
+			and ("http:" not in post.avatar and "https:" not in post.avatar)
 			and not post.avatar.startswith("/")
 		):
 			post.avatar = "/" + post.avatar

@@ -57,6 +57,7 @@ dontmanage.views.TreeView = class TreeView {
 		this.get_tree_nodes = me.opts.get_tree_nodes || "dontmanage.desk.treeview.get_children";
 
 		this.get_permissions();
+
 		this.make_page();
 		this.make_filters();
 		this.root_value = null;
@@ -66,7 +67,11 @@ dontmanage.views.TreeView = class TreeView {
 		}
 
 		this.onload();
-		this.set_menu_item();
+
+		if (!this.opts.do_not_setup_menu) {
+			this.set_menu_item();
+		}
+
 		this.set_primary_action();
 	}
 	get_permissions() {
@@ -79,23 +84,27 @@ dontmanage.views.TreeView = class TreeView {
 	}
 	make_page() {
 		var me = this;
-		this.parent = dontmanage.container.add_page(this.page_name);
-		dontmanage.ui.make_app_page({ parent: this.parent, single_column: true });
+		if (!this.opts || !this.opts.do_not_make_page) {
+			this.parent = dontmanage.container.add_page(this.page_name);
+			dontmanage.ui.make_app_page({ parent: this.parent, single_column: true });
+			this.page = this.parent.page;
+			dontmanage.container.change_to(this.page_name);
+			dontmanage.breadcrumbs.add(
+				me.opts.breadcrumb || locals.DocType[me.doctype].module,
+				me.doctype
+			);
 
-		this.page = this.parent.page;
-		dontmanage.container.change_to(this.page_name);
-		dontmanage.breadcrumbs.add(
-			me.opts.breadcrumb || locals.DocType[me.doctype].module,
-			me.doctype
-		);
+			this.set_title();
 
-		this.set_title();
+			this.page.main.css({
+				"min-height": "300px",
+			});
 
-		this.page.main.css({
-			"min-height": "300px",
-		});
-
-		this.page.main.addClass("dontmanage-card");
+			this.page.main.addClass("dontmanage-card");
+		} else {
+			this.page = this.opts.page;
+			$(this.page[0]).addClass("dontmanage-card");
+		}
 
 		if (this.opts.show_expand_all) {
 			this.page.add_inner_button(__("Collapse All"), function () {
@@ -154,6 +163,7 @@ dontmanage.views.TreeView = class TreeView {
 	}
 	get_root() {
 		var me = this;
+
 		dontmanage.call({
 			method: me.get_tree_nodes,
 			args: me.args,
@@ -211,7 +221,6 @@ dontmanage.views.TreeView = class TreeView {
 			method: "dontmanage.utils.nestedset.rebuild_tree",
 			args: {
 				doctype: me.doctype,
-				parent_field: "parent_" + me.doctype.toLowerCase().replace(/ /g, "_"),
 			},
 			callback: function (r) {
 				if (!r.exc) {

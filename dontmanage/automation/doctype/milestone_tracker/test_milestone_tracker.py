@@ -9,7 +9,7 @@ class TestMilestoneTracker(DontManageTestCase):
 	def test_milestone(self):
 		dontmanage.db.delete("Milestone Tracker")
 
-		dontmanage.cache().delete_key("milestone_tracker_map")
+		dontmanage.cache.delete_key("milestone_tracker_map")
 
 		milestone_tracker = dontmanage.get_doc(
 			dict(doctype="Milestone Tracker", document_type="ToDo", track_field="status")

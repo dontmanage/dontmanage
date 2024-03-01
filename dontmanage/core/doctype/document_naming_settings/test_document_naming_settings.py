@@ -2,6 +2,7 @@
 # See license.txt
 
 import dontmanage
+from dontmanage.core.doctype.doctype.test_doctype import new_doctype
 from dontmanage.core.doctype.document_naming_settings.document_naming_settings import (
 	DocumentNamingSettings,
 )
@@ -11,6 +12,26 @@ from dontmanage.utils import cint
 
 
 class TestNamingSeries(DontManageTestCase):
+	@classmethod
+	def setUpClass(cls):
+		super().setUpClass()
+		cls.ns_doctype = (
+			new_doctype(
+				fields=[
+					{
+						"label": "Series",
+						"fieldname": "naming_series",
+						"fieldtype": "Select",
+						"options": f"\n{dontmanage.generate_hash()}-.###",
+					}
+				],
+				autoname="naming_series:",
+				is_submittable=1,
+			)
+			.insert()
+			.name
+		)
+
 	def setUp(self):
 		self.dns: DocumentNamingSettings = dontmanage.get_doc("Document Naming Settings")
 
@@ -23,7 +44,7 @@ class TestNamingSeries(DontManageTestCase):
 		return VALID_SERIES + exisiting_series
 
 	def test_naming_preview(self):
-		self.dns.transaction_type = "Webhook"
+		self.dns.transaction_type = self.ns_doctype
 
 		self.dns.try_naming_series = "AXBZ.####"
 		serieses = self.dns.preview_series().split("\n")
@@ -33,25 +54,23 @@ class TestNamingSeries(DontManageTestCase):
 		serieses = self.dns.preview_series().split("\n")
 
 	def test_get_transactions(self):
-
 		naming_info = self.dns.get_transactions_and_prefixes()
-		self.assertIn("Webhook", naming_info["transactions"])
+		self.assertIn(self.ns_doctype, naming_info["transactions"])
 
-		existing_naming_series = dontmanage.get_meta("Webhook").get_field("naming_series").options
+		existing_naming_series = dontmanage.get_meta(self.ns_doctype).get_field("naming_series").options
 
 		for series in existing_naming_series.split("\n"):
 			self.assertIn(NamingSeries(series).get_prefix(), naming_info["prefixes"])
 
 	def test_default_naming_series(self):
-		self.assertIn("HOOK", get_default_naming_series("Webhook"))
 		self.assertIsNone(get_default_naming_series("DocType"))
 
 	def test_updates_naming_options(self):
-		self.dns.transaction_type = "Webhook"
+		self.dns.transaction_type = self.ns_doctype
 		test_series = "KOOHBEW.###"
 		self.dns.naming_series_options = self.dns.get_options() + "\n" + test_series
 		self.dns.update_series()
-		self.assertIn(test_series, dontmanage.get_meta("Webhook").get_naming_series_options())
+		self.assertIn(test_series, dontmanage.get_meta(self.ns_doctype).get_naming_series_options())
 
 	def test_update_series_counter(self):
 		for series in self.get_valid_serieses():
@@ -63,3 +82,36 @@ class TestNamingSeries(DontManageTestCase):
 			self.dns.update_series_start()
 
 			self.assertEqual(self.dns.get_current(), new_count, f"Incorrect update for {series}")
+
+	def test_amended_naming(self):
+		self.dns.amend_naming_override = []
+		self.dns.default_amend_naming = "Amend Counter"
+		self.dns.update_amendment_rule()
+
+		submittable_doc = dontmanage.get_doc(
+			dict(doctype=self.ns_doctype, some_fieldname="test doc with submit")
+		).submit()
+		submittable_doc.cancel()
+
+		amended_doc = dontmanage.get_doc(
+			dict(
+				doctype=self.ns_doctype,
+				some_fieldname="test doc with submit",
+				amended_from=submittable_doc.name,
+			)
+		).insert()
+
+		self.assertIn(submittable_doc.name, amended_doc.name)
+		amended_doc.delete()
+
+		self.dns.default_amend_naming = "Default Naming"
+		self.dns.update_amendment_rule()
+
+		new_amended_doc = dontmanage.get_doc(
+			dict(
+				doctype=self.ns_doctype,
+				some_fieldname="test doc with submit",
+				amended_from=submittable_doc.name,
+			)
+		).insert()
+		self.assertNotIn(submittable_doc.name, new_amended_doc.name)

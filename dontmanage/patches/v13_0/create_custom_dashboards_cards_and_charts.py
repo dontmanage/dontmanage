@@ -34,9 +34,7 @@ def execute():
 
 
 def get_modified_docs(doctype):
-	return dontmanage.get_all(
-		doctype, filters={"owner": "Administrator", "modified_by": ["!=", "Administrator"]}
-	)
+	return dontmanage.get_all(doctype, filters={"owner": "Administrator", "modified_by": ["!=", "Administrator"]})
 
 
 def rename_modified_doc(docname, doctype):

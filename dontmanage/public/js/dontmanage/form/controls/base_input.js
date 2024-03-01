@@ -138,7 +138,7 @@ dontmanage.ui.form.ControlInput = class ControlInput extends dontmanage.ui.form.
 
 	set_disp_area(value) {
 		if (
-			in_list(["Currency", "Int", "Float"], this.df.fieldtype) &&
+			["Currency", "Int", "Float"].includes(this.df.fieldtype) &&
 			(this.value === 0 || value === 0)
 		) {
 			// to set the 0 value in readonly for currency, int, float field
@@ -160,7 +160,8 @@ dontmanage.ui.form.ControlInput = class ControlInput extends dontmanage.ui.form.
 
 		var icon = "";
 		this.label_span.innerHTML =
-			(icon ? '<i class="' + icon + '"></i> ' : "") + __(this.df.label) || "&nbsp;";
+			(icon ? '<i class="' + icon + '"></i> ' : "") +
+				__(this.df.label, null, this.df.parent) || "&nbsp;";
 		this._label = this.df.label;
 	}
 
@@ -172,13 +173,13 @@ dontmanage.ui.form.ControlInput = class ControlInput extends dontmanage.ui.form.
 		if (
 			!this.df.label ||
 			!this.df?.documentation_url ||
-			in_list(unsupported_fieldtypes, this.df.fieldtype)
+			unsupported_fieldtypes.includes(this.df.fieldtype)
 		)
 			return;
 
 		let $help = this.$wrapper.find("span.help");
 		$help.empty();
-		$(`<a href="${this.df.documentation_url}" target="_blank">
+		$(`<a href="${this.df.documentation_url}" target="_blank" title="${__("Documentation")}">
 			${dontmanage.utils.icon("help", "sm")}
 		</a>`).appendTo($help);
 	}
@@ -217,7 +218,7 @@ dontmanage.ui.form.ControlInput = class ControlInput extends dontmanage.ui.form.
 		let invalid = !!this.df.invalid;
 		if (this.grid) {
 			this.$wrapper.parents(".grid-static-col").toggleClass("invalid", invalid);
-			this.$input.toggleClass("invalid", invalid);
+			this.$input?.toggleClass("invalid", invalid);
 			this.grid_row.columns[this.df.fieldname].is_invalid = invalid;
 		} else {
 			this.$wrapper.toggleClass("has-error", invalid);

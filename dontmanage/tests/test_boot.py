@@ -27,6 +27,13 @@ class TestBootData(DontManageTestCase):
 		unseen_notes = [d.title for d in get_unseen_notes()]
 		self.assertListEqual(unseen_notes, [])
 
+
+class TestPermissionQueries(DontManageTestCase):
+	@classmethod
+	def setUpClass(cls) -> None:
+		cls.enable_safe_exec()
+		return super().setUpClass()
+
 	def test_get_user_pages_or_reports_with_permission_query(self):
 		# Create a ToDo custom report with admin user
 		dontmanage.set_user("Administrator")
@@ -65,7 +72,7 @@ class TestBootData(DontManageTestCase):
 		).insert(ignore_permissions=True)
 
 		get_user_pages_or_reports("Report")
-		allowed_reports = dontmanage.cache().get_value("has_role:Report", user=dontmanage.session.user)
+		allowed_reports = dontmanage.cache.get_value("has_role:Report", user=dontmanage.session.user)
 
 		# Test user must not see admin user's report
 		self.assertNotIn("Test Admin Report", allowed_reports)

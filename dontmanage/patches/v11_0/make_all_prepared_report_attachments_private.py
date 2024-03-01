@@ -2,10 +2,7 @@ import dontmanage
 
 
 def execute():
-	if (
-		dontmanage.db.count("File", filters={"attached_to_doctype": "Prepared Report", "is_private": 0})
-		> 10000
-	):
+	if dontmanage.db.count("File", filters={"attached_to_doctype": "Prepared Report", "is_private": 0}) > 10000:
 		dontmanage.db.auto_commit_on_many_writes = True
 
 	files = dontmanage.get_all(

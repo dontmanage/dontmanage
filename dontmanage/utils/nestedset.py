@@ -89,15 +89,11 @@ def update_add_node(doc, parent, parent_field):
 	dontmanage.qb.update(Table).set(Table.rgt, Table.rgt + 2).where(Table.rgt >= right).run()
 	dontmanage.qb.update(Table).set(Table.lft, Table.lft + 2).where(Table.lft >= right).run()
 
-	if (
-		dontmanage.qb.from_(Table).select("*").where((Table.lft == right) | (Table.rgt == right + 1)).run()
-	):
+	if dontmanage.qb.from_(Table).select("*").where((Table.lft == right) | (Table.rgt == right + 1)).run():
 		dontmanage.throw(_("Nested set error. Please contact the Administrator."))
 
 	# update index of new node
-	dontmanage.qb.update(Table).set(Table.lft, right).set(Table.rgt, right + 1).where(
-		Table.name == name
-	).run()
+	dontmanage.qb.update(Table).set(Table.lft, right).set(Table.rgt, right + 1).where(Table.name == name).run()
 	return right
 
 
@@ -162,15 +158,16 @@ def update_move_node(doc: Document, parent_field: str):
 		new_diff = max_rgt + 1 - doc.lft
 
 	# bring back from dark side
-	dontmanage.qb.update(Table).set(Table.lft, -Table.lft + new_diff).set(
-		Table.rgt, -Table.rgt + new_diff
-	).where(Table.lft < 0).run()
+	dontmanage.qb.update(Table).set(Table.lft, -Table.lft + new_diff).set(Table.rgt, -Table.rgt + new_diff).where(
+		Table.lft < 0
+	).run()
 
 
 @dontmanage.whitelist()
-def rebuild_tree(doctype, parent_field):
-	"""
-	call rebuild_node for all root nodes
+def rebuild_tree(doctype, parent_field=None):
+	"""Call rebuild_node for all root nodes.
+
+	The `parent_field` parameter is ignored and will be removed in v16+ (kept for backward compatibility).
 	"""
 
 	# Check for perm if called from client-side
@@ -183,6 +180,8 @@ def rebuild_tree(doctype, parent_field):
 			_("Rebuilding of tree is not supported for {}").format(dontmanage.bold(doctype)),
 			title=_("Invalid Action"),
 		)
+
+	parent_field = meta.nsm_parent_field or f"parent_{dontmanage.scrub(doctype)}"
 
 	# get all roots
 	right = 1
@@ -221,9 +220,7 @@ def rebuild_node(doctype, parent, left, parent_field):
 
 	# we've got the left value, and now that we've processed
 	# the children of this node we also know the right value
-	dontmanage.db.set_value(
-		doctype, parent, {"lft": left, "rgt": right}, for_update=False, update_modified=False
-	)
+	dontmanage.db.set_value(doctype, parent, {"lft": left, "rgt": right}, update_modified=False)
 
 	# return the right value of this node + 1
 	return right + 1
@@ -231,14 +228,15 @@ def rebuild_node(doctype, parent, left, parent_field):
 
 def validate_loop(doctype, name, lft, rgt):
 	"""check if item not an ancestor (loop)"""
-	if name in dontmanage.get_all(
-		doctype, filters={"lft": ["<=", lft], "rgt": [">=", rgt]}, pluck="name"
-	):
-		dontmanage.throw(_("Item cannot be added to its own descendents"), NestedSetRecursionError)
+	if name in dontmanage.get_all(doctype, filters={"lft": ["<=", lft], "rgt": [">=", rgt]}, pluck="name"):
+		dontmanage.throw(_("Item cannot be added to its own descendants"), NestedSetRecursionError)
 
 
 def remove_subtree(doctype: str, name: str, throw=True):
-	"""Remove doc and all its children."""
+	"""Remove doc and all its children.
+
+	WARN: This does not run any controller hooks for deletion and deletes them with raw SQL query.
+	"""
 	dontmanage.has_permission(doctype, ptype="delete", throw=throw)
 
 	# Determine the `lft` and `rgt` of the subtree to be removed.
@@ -269,11 +267,17 @@ class NestedSet(Document):
 		self.validate_ledger()
 
 	def on_trash(self, allow_root_deletion=False):
+		"""
+		Runs on deletion of a document/node
+
+		:param allow_root_deletion: used for allowing root document deletion (DEPRECATED)
+		"""
+
 		if not getattr(self, "nsm_parent_field", None):
 			self.nsm_parent_field = dontmanage.scrub(self.doctype) + "_parent"
 
 		parent = self.get(self.nsm_parent_field)
-		if not parent and not allow_root_deletion:
+		if not parent and not getattr(self, "allow_root_deletion", True):
 			dontmanage.throw(_("Root {0} cannot be deleted").format(_(self.doctype)))
 
 		# cannot delete non-empty group
@@ -285,7 +289,7 @@ class NestedSet(Document):
 			update_nsm(self)
 		except dontmanage.DoesNotExistError:
 			if self.flags.on_rollback:
-				dontmanage.message_log.pop()
+				dontmanage.clear_last_message()
 			else:
 				raise
 
@@ -317,7 +321,6 @@ class NestedSet(Document):
 			{"old_parent": newdn},
 			{parent_field: newdn},
 			update_modified=False,
-			for_update=False,
 		)
 
 		if merge:
@@ -349,9 +352,7 @@ class NestedSet(Document):
 
 	def get_children(self) -> Iterator["NestedSet"]:
 		"""Return a generator that yields child Documents."""
-		child_names = dontmanage.get_list(
-			self.doctype, filters={self.nsm_parent_field: self.name}, pluck="name"
-		)
+		child_names = dontmanage.get_list(self.doctype, filters={self.nsm_parent_field: self.name}, pluck="name")
 		for name in child_names:
 			yield dontmanage.get_doc(self.doctype, name)
 
@@ -364,9 +365,7 @@ def get_root_of(doctype):
 	t1 = Table.as_("t1")
 	t2 = Table.as_("t2")
 
-	node_query = SubQuery(
-		dontmanage.qb.from_(t2).select(Count("*")).where((t2.lft < t1.lft) & (t2.rgt > t1.rgt))
-	)
+	node_query = SubQuery(dontmanage.qb.from_(t2).select(Count("*")).where((t2.lft < t1.lft) & (t2.rgt > t1.rgt)))
 	result = dontmanage.qb.from_(t1).select(t1.name).where((node_query == 0) & (t1.rgt > t1.lft)).run()
 
 	return result[0][0] if result else None

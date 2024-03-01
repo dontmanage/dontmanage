@@ -7,6 +7,18 @@ from dontmanage.model.document import Document
 
 
 class GlobalSearchSettings(Document):
+	# begin: auto-generated types
+	# This code is auto-generated. Do not modify anything in this block.
+
+	from typing import TYPE_CHECKING
+
+	if TYPE_CHECKING:
+		from dontmanage.desk.doctype.global_search_doctype.global_search_doctype import GlobalSearchDocType
+		from dontmanage.types import DF
+
+		allowed_in_global_search: DF.Table[GlobalSearchDocType]
+
+	# end: auto-generated types
 	def validate(self):
 		dts, core_dts, repeated_dts = [], [], []
 
@@ -28,7 +40,7 @@ class GlobalSearchSettings(Document):
 			dontmanage.throw(_("Document Type {0} has been repeated.").format(repeated_dts))
 
 		# reset cache
-		dontmanage.cache().hdel("global_search", "search_priorities")
+		dontmanage.cache.hdel("global_search", "search_priorities")
 
 
 def get_doctypes_for_global_search():
@@ -36,7 +48,7 @@ def get_doctypes_for_global_search():
 		doctypes = dontmanage.get_all("Global Search DocType", fields=["document_type"], order_by="idx ASC")
 		return [d.document_type for d in doctypes] or []
 
-	return dontmanage.cache().hget("global_search", "search_priorities", get_from_db)
+	return dontmanage.cache.hget("global_search", "search_priorities", get_from_db)
 
 
 @dontmanage.whitelist()

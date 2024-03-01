@@ -19,7 +19,7 @@ def get_mariadb_version(version_string: str = ""):
 	# MariaDB classifies their versions as Major (1st and 2nd number), and Minor (3rd number)
 	# Example: Version 10.3.13 is Major Version = 10.3, Minor Version = 13
 	version_string = version_string or get_mariadb_variables().get("version")
-	version = version_string.split("-")[0]
+	version = version_string.split("-", 1)[0]
 	return version.rsplit(".", 1)
 
 
@@ -56,23 +56,6 @@ def setup_database(force, source_sql, verbose, no_mariadb_socket=False):
 	root_conn.close()
 
 	bootstrap_database(db_name, verbose, source_sql)
-
-
-def setup_help_database(help_db_name):
-	dbman = DbManager(get_root_connection(dontmanage.flags.root_login, dontmanage.flags.root_password))
-	dbman.drop_database(help_db_name)
-
-	# make database
-	if not help_db_name in dbman.get_database_list():
-		try:
-			dbman.create_user(help_db_name, help_db_name)
-		except Exception as e:
-			# user already exists
-			if e.args[0] != 1396:
-				raise
-		dbman.create_database(help_db_name)
-		dbman.grant_all_privileges(help_db_name, help_db_name)
-		dbman.flush_privileges()
 
 
 def drop_user_and_database(db_name, root_login, root_password):
@@ -120,7 +103,6 @@ def import_db_from_sql(source_sql=None, verbose=False):
 
 
 def check_database_settings():
-
 	check_compatible_versions()
 
 	# Check each expected value vs. actuals:
@@ -128,10 +110,7 @@ def check_database_settings():
 	result = True
 	for key, expected_value in REQUIRED_MARIADB_CONFIG.items():
 		if mariadb_variables.get(key) != expected_value:
-			print(
-				"For key %s. Expected value %s, found value %s"
-				% (key, expected_value, mariadb_variables.get(key))
-			)
+			print(f"For key {key}. Expected value {expected_value}, found value {mariadb_variables.get(key)}")
 			result = False
 
 	if not result:
@@ -152,9 +131,9 @@ def check_compatible_versions():
 		version = get_mariadb_version()
 		version_tuple = tuple(int(v) for v in version[0].split("."))
 
-		if version_tuple < (10, 3):
+		if version_tuple < (10, 6):
 			click.secho(
-				f"Warning: MariaDB version {version} is less than 10.3 which is not supported by DontManage",
+				f"Warning: MariaDB version {version} is less than 10.6 which is not supported by DontManage",
 				fg="yellow",
 			)
 		elif version_tuple >= (10, 9):
@@ -183,7 +162,10 @@ def get_root_connection(root_login, root_password):
 			root_password = getpass.getpass("MySQL root password: ")
 
 		dontmanage.local.flags.root_connection = dontmanage.database.get_db(
-			user=root_login, password=root_password
+			host=dontmanage.conf.db_host,
+			port=dontmanage.conf.db_port,
+			user=root_login,
+			password=root_password,
 		)
 
 	return dontmanage.local.flags.root_connection

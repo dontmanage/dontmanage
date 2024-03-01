@@ -1,10 +1,11 @@
 dontmanage.user_info = function (uid) {
 	if (!uid) uid = dontmanage.session.user;
 
+	let user_info;
 	if (!(dontmanage.boot.user_info && dontmanage.boot.user_info[uid])) {
-		var user_info = { fullname: uid || "Unknown" };
+		user_info = { fullname: uid || "Unknown" };
 	} else {
-		var user_info = dontmanage.boot.user_info[uid];
+		user_info = dontmanage.boot.user_info[uid];
 	}
 
 	user_info.abbr = dontmanage.get_abbr(user_info.fullname);

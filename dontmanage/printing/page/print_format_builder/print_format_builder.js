@@ -280,7 +280,7 @@ dontmanage.PrintFormatBuilder = class PrintFormatBuilder {
 				set_section(f.label);
 			} else if (f.fieldtype === "Column Break") {
 				set_column();
-			} else if (!in_list(dontmanage.model.layout_fields, f.fieldtype)) {
+			} else if (!dontmanage.model.layout_fields.includes(f.fieldtype)) {
 				if (!column) set_column();
 
 				if (f.fieldtype === "Table") {
@@ -317,7 +317,7 @@ dontmanage.PrintFormatBuilder = class PrintFormatBuilder {
 		f.visible_columns = [];
 		$.each(dontmanage.get_meta(f.options).fields, function (i, _f) {
 			if (
-				!in_list(["Section Break", "Column Break", "Tab Break"], _f.fieldtype) &&
+				!["Section Break", "Column Break", "Tab Break"].includes(_f.fieldtype) &&
 				!_f.print_hide &&
 				f.label
 			) {
@@ -372,10 +372,11 @@ dontmanage.PrintFormatBuilder = class PrintFormatBuilder {
 				if (!$item.hasClass("print-format-builder-field")) {
 					var fieldname = $item.attr("data-fieldname");
 
+					let field;
 					if (fieldname === "_custom_html") {
-						var field = me.get_custom_html_field();
+						field = me.get_custom_html_field();
 					} else {
-						var field = dontmanage.meta.get_docfield(me.print_format.doc_type, fieldname);
+						field = dontmanage.meta.get_docfield(me.print_format.doc_type, fieldname);
 					}
 
 					var html = dontmanage.render_template("print_format_builder_field", {
@@ -561,7 +562,7 @@ dontmanage.PrintFormatBuilder = class PrintFormatBuilder {
 			resize();
 		} else if (new_no_of_columns > no_of_columns) {
 			// add empty column and resize old columns
-			for (var i = no_of_columns; i < new_no_of_columns; i++) {
+			for (let i = no_of_columns; i < new_no_of_columns; i++) {
 				var col = $(
 					'<div class="section-column">\
 					<div class="print-format-builder-column"></div></div>'
@@ -635,7 +636,7 @@ dontmanage.PrintFormatBuilder = class PrintFormatBuilder {
 			// add field which are in column_names first to preserve order
 			var fields = [];
 			$.each(column_names, function (i, v) {
-				if (in_list(Object.keys(docfields_by_name), v)) {
+				if (Object.keys(docfields_by_name).includes(v)) {
 					fields.push(docfields_by_name[v]);
 				}
 			});
@@ -643,8 +644,8 @@ dontmanage.PrintFormatBuilder = class PrintFormatBuilder {
 			$.each(doc_fields, function (j, f) {
 				if (
 					f &&
-					!in_list(column_names, f.fieldname) &&
-					!in_list(["Section Break", "Column Break", "Tab Break"], f.fieldtype) &&
+					!column_names.includes(f.fieldname) &&
+					!["Section Break", "Column Break", "Tab Break"].includes(f.fieldtype) &&
 					f.label
 				) {
 					fields.push(f);

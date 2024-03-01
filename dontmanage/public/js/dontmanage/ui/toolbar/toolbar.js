@@ -13,6 +13,9 @@ dontmanage.ui.toolbar.Toolbar = class {
 			})
 		);
 		$(".dropdown-toggle").dropdown();
+		$("#toolbar-user a[href]").click(function () {
+			$(this).closest(".dropdown-menu").prev().dropdown("toggle");
+		});
 
 		this.setup_awesomebar();
 		this.setup_notifications();
@@ -79,7 +82,7 @@ dontmanage.ui.toolbar.Toolbar = class {
 			var breadcrumbs = route.split("/");
 
 			var links = [];
-			for (var i = 0; i < breadcrumbs.length; i++) {
+			for (let i = 0; i < breadcrumbs.length; i++) {
 				var r = route.split("/", i + 1);
 				var key = r.join("/");
 				var help_links = dontmanage.help.help_links[key] || [];
@@ -92,7 +95,7 @@ dontmanage.ui.toolbar.Toolbar = class {
 				$help_links.next().show();
 			}
 
-			for (var i = 0; i < links.length; i++) {
+			for (let i = 0; i < links.length; i++) {
 				var link = links[i];
 				var url = link.url;
 				$("<a>", {
@@ -129,10 +132,16 @@ dontmanage.ui.toolbar.Toolbar = class {
 			let awesome_bar = new dontmanage.search.AwesomeBar();
 			awesome_bar.setup("#navbar-search");
 
-			// TODO: Remove this in v14
-			dontmanage.search.utils.make_function_searchable(function () {
-				dontmanage.set_route("List", "Client Script");
-			}, __("Custom Script List"));
+			dontmanage.search.utils.make_function_searchable(
+				dontmanage.utils.generate_tracking_url,
+				__("Generate Tracking URL")
+			);
+
+			if (dontmanage.model.can_read("RQ Job")) {
+				dontmanage.search.utils.make_function_searchable(function () {
+					dontmanage.set_route("List", "RQ Job");
+				}, __("Background Jobs"));
+			}
 		}
 	}
 
@@ -238,7 +247,7 @@ dontmanage.ui.toolbar.setup_session_defaults = function () {
 			fields = JSON.parse(data.message);
 			let perms = dontmanage.perm.get_perm("Session Default Settings");
 			//add settings button only if user is a System Manager or has permission on 'Session Default Settings'
-			if (in_list(dontmanage.user_roles, "System Manager") || perms[0].read == 1) {
+			if (dontmanage.user_roles.includes("System Manager") || perms[0].read == 1) {
 				fields[fields.length] = {
 					fieldname: "settings",
 					fieldtype: "Button",

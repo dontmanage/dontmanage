@@ -5,9 +5,7 @@ import dontmanage
 
 
 def execute():
-	signatures = dontmanage.db.get_list(
-		"User", {"email_signature": ["!=", ""]}, ["name", "email_signature"]
-	)
+	signatures = dontmanage.db.get_list("User", {"email_signature": ["!=", ""]}, ["name", "email_signature"])
 	dontmanage.reload_doc("core", "doctype", "user")
 	for d in signatures:
 		signature = d.get("email_signature")

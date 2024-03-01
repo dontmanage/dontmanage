@@ -17,10 +17,7 @@ class RedisQueue:
 
 	@classmethod
 	def get_connection(cls, username=None, password=None):
-		rq_url = dontmanage.local.conf.redis_queue
-		domain = rq_url.split("redis://", 1)[-1]
-		url = (username and f"redis://{username}:{password or ''}@{domain}") or rq_url
-		conn = redis.from_url(url)
+		conn = redis.from_url(dontmanage.conf.redis_queue, username=username, password=password)
 		conn.ping()
 		return conn
 
@@ -33,9 +30,7 @@ class RedisQueue:
 		username = "default"
 		conn = cls.get_connection(username, cur_password)
 		password = "+" + (new_password or conn.acl_genpass())
-		conn.acl_setuser(
-			username=username, enabled=True, reset_passwords=reset_passwords, passwords=password
-		)
+		conn.acl_setuser(username=username, enabled=True, reset_passwords=reset_passwords, passwords=password)
 		return password[1:]
 
 	@classmethod

@@ -47,16 +47,6 @@ dontmanage.views.FormFactory = class FormFactory extends dontmanage.views.Factor
 			$(document).on("page-change", function () {
 				dontmanage.ui.form.close_grid_form();
 			});
-
-			dontmanage.realtime.on("doc_viewers", function (data) {
-				// set users that currently viewing the form
-				dontmanage.ui.form.FormViewers.set_users(data, "viewers");
-			});
-
-			dontmanage.realtime.on("doc_typers", function (data) {
-				// set users that currently typing on the form
-				dontmanage.ui.form.FormViewers.set_users(data, "typers");
-			});
 		}
 		this.initialized = true;
 	}

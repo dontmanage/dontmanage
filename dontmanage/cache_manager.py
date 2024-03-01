@@ -1,19 +1,23 @@
 # Copyright (c) 2018, DontManage and Contributors
 # License: MIT. See LICENSE
 
-import json
-
 import dontmanage
-from dontmanage.desk.notifications import clear_notifications, delete_notification_count_for
 
 common_default_keys = ["__default", "__global"]
 
-doctype_map_keys = (
-	"energy_point_rule_map",
-	"assignment_rule_map",
-	"milestone_tracker_map",
-	"event_consumer_document_type_map",
-)
+doctypes_for_mapping = {
+	"Energy Point Rule",
+	"Assignment Rule",
+	"Milestone Tracker",
+	"Document Naming Rule",
+}
+
+
+def get_doctype_map_key(doctype):
+	return dontmanage.scrub(doctype) + "_map"
+
+
+doctype_map_keys = tuple(map(get_doctype_map_key, doctypes_for_mapping))
 
 bench_cache_keys = ("assets_json",)
 
@@ -35,10 +39,10 @@ global_cache_keys = (
 	"domain_restricted_doctypes",
 	"domain_restricted_pages",
 	"information_schema:counts",
-	"sitemap_routes",
 	"db_tables",
 	"server_script_autocompletion_items",
-) + doctype_map_keys
+	*doctype_map_keys,
+)
 
 user_cache_keys = (
 	"bootinfo",
@@ -68,11 +72,11 @@ doctype_cache_keys = (
 	"notifications",
 	"workflow",
 	"data_import_column_header_map",
-) + doctype_map_keys
+)
 
 
 def clear_user_cache(user=None):
-	cache = dontmanage.cache()
+	from dontmanage.desk.notifications import clear_notifications
 
 	# this will automatically reload the global cache
 	# so it is important to clear this first
@@ -80,20 +84,19 @@ def clear_user_cache(user=None):
 
 	if user:
 		for name in user_cache_keys:
-			cache.hdel(name, user)
-		cache.delete_keys("user:" + user)
+			dontmanage.cache.hdel(name, user)
+		dontmanage.cache.delete_keys("user:" + user)
 		clear_defaults_cache(user)
 	else:
 		for name in user_cache_keys:
-			cache.delete_key(name)
+			dontmanage.cache.delete_key(name)
 		clear_defaults_cache()
 		clear_global_cache()
 
 
 def clear_domain_cache(user=None):
-	cache = dontmanage.cache()
 	domain_cache_keys = ("domain_restricted_doctypes", "domain_restricted_pages")
-	cache.delete_value(domain_cache_keys)
+	dontmanage.cache.delete_value(domain_cache_keys)
 
 
 def clear_global_cache():
@@ -101,31 +104,38 @@ def clear_global_cache():
 
 	clear_doctype_cache()
 	clear_website_cache()
-	dontmanage.cache().delete_value(global_cache_keys)
-	dontmanage.cache().delete_value(bench_cache_keys)
+	dontmanage.cache.delete_value(global_cache_keys)
+	dontmanage.cache.delete_value(bench_cache_keys)
 	dontmanage.setup_module_map()
 
 
 def clear_defaults_cache(user=None):
 	if user:
-		for p in [user] + common_default_keys:
-			dontmanage.cache().hdel("defaults", p)
+		for p in [user, *common_default_keys]:
+			dontmanage.cache.hdel("defaults", p)
 	elif dontmanage.flags.in_install != "dontmanage":
-		dontmanage.cache().delete_key("defaults")
+		dontmanage.cache.delete_key("defaults")
 
 
 def clear_doctype_cache(doctype=None):
 	clear_controller_cache(doctype)
-	cache = dontmanage.cache()
 
-	for key in ("is_table", "doctype_modules", "document_cache"):
-		cache.delete_value(key)
+	_clear_doctype_cache_from_redis(doctype)
+	if hasattr(dontmanage.db, "after_commit"):
+		dontmanage.db.after_commit.add(lambda: _clear_doctype_cache_from_redis(doctype))
+		dontmanage.db.after_rollback.add(lambda: _clear_doctype_cache_from_redis(doctype))
 
-	dontmanage.local.document_cache = {}
+
+def _clear_doctype_cache_from_redis(doctype: str | None = None):
+	from dontmanage.desk.notifications import delete_notification_count_for
+
+	for key in ("is_table", "doctype_modules"):
+		dontmanage.cache.delete_value(key)
 
 	def clear_single(dt):
+		dontmanage.clear_document_cache(dt)
 		for name in doctype_cache_keys:
-			cache.hdel(name, dt)
+			dontmanage.cache.hdel(name, dt)
 
 	if doctype:
 		clear_single(doctype)
@@ -149,7 +159,8 @@ def clear_doctype_cache(doctype=None):
 	else:
 		# clear all
 		for name in doctype_cache_keys:
-			cache.delete_value(name)
+			dontmanage.cache.delete_value(name)
+		dontmanage.cache.delete_keys("document_cache::")
 
 
 def clear_controller_cache(doctype=None):
@@ -162,27 +173,15 @@ def clear_controller_cache(doctype=None):
 
 
 def get_doctype_map(doctype, name, filters=None, order_by=None):
-	cache = dontmanage.cache()
-	cache_key = dontmanage.scrub(doctype) + "_map"
-	doctype_map = cache.hget(cache_key, name)
-
-	if doctype_map is not None:
-		# cached, return
-		items = json.loads(doctype_map)
-	else:
-		# non cached, build cache
-		try:
-			items = dontmanage.get_all(doctype, filters=filters, order_by=order_by)
-			cache.hset(cache_key, name, json.dumps(items))
-		except dontmanage.db.TableMissingError:
-			# executed from inside patch, ignore
-			items = []
-
-	return items
+	return dontmanage.cache.hget(
+		get_doctype_map_key(doctype),
+		name,
+		lambda: dontmanage.get_all(doctype, filters=filters, order_by=order_by, ignore_ddl=True),
+	)
 
 
 def clear_doctype_map(doctype, name):
-	dontmanage.cache().hdel(dontmanage.scrub(doctype) + "_map", name)
+	dontmanage.cache.hdel(dontmanage.scrub(doctype) + "_map", name)
 
 
 def build_table_count_cache():
@@ -195,16 +194,13 @@ def build_table_count_cache():
 	):
 		return
 
-	_cache = dontmanage.cache()
 	table_name = dontmanage.qb.Field("table_name").as_("name")
 	table_rows = dontmanage.qb.Field("table_rows").as_("count")
 	information_schema = dontmanage.qb.Schema("information_schema")
 
-	data = (dontmanage.qb.from_(information_schema.tables).select(table_name, table_rows)).run(
-		as_dict=True
-	)
+	data = (dontmanage.qb.from_(information_schema.tables).select(table_name, table_rows)).run(as_dict=True)
 	counts = {d.get("name").replace("tab", "", 1): d.get("count", None) for d in data}
-	_cache.set_value("information_schema:counts", counts)
+	dontmanage.cache.set_value("information_schema:counts", counts)
 
 	return counts
 
@@ -218,11 +214,10 @@ def build_domain_restriced_doctype_cache(*args, **kwargs):
 		or dontmanage.flags.in_setup_wizard
 	):
 		return
-	_cache = dontmanage.cache()
 	active_domains = dontmanage.get_active_domains()
 	doctypes = dontmanage.get_all("DocType", filters={"restrict_to_domain": ("IN", active_domains)})
 	doctypes = [doc.name for doc in doctypes]
-	_cache.set_value("domain_restricted_doctypes", doctypes)
+	dontmanage.cache.set_value("domain_restricted_doctypes", doctypes)
 
 	return doctypes
 
@@ -236,10 +231,9 @@ def build_domain_restriced_page_cache(*args, **kwargs):
 		or dontmanage.flags.in_setup_wizard
 	):
 		return
-	_cache = dontmanage.cache()
 	active_domains = dontmanage.get_active_domains()
 	pages = dontmanage.get_all("Page", filters={"restrict_to_domain": ("IN", active_domains)})
 	pages = [page.name for page in pages]
-	_cache.set_value("domain_restricted_pages", pages)
+	dontmanage.cache.set_value("domain_restricted_pages", pages)
 
 	return pages

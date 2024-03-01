@@ -17,7 +17,7 @@ dontmanage.ui.FieldGroup = class FieldGroup extends dontmanage.ui.form.Layout {
 	}
 
 	make() {
-		var me = this;
+		let me = this;
 		if (this.fields) {
 			super.make();
 			this.refresh();
@@ -55,7 +55,7 @@ dontmanage.ui.FieldGroup = class FieldGroup extends dontmanage.ui.form.Layout {
 	focus_on_first_input() {
 		if (this.no_focus) return;
 		$.each(this.fields_list, function (i, f) {
-			if (!in_list(["Date", "Datetime", "Time", "Check"], f.df.fieldtype) && f.set_focus) {
+			if (!["Date", "Datetime", "Time", "Check"].includes(f.df.fieldtype) && f.set_focus) {
 				f.set_focus();
 				return false;
 			}
@@ -63,7 +63,7 @@ dontmanage.ui.FieldGroup = class FieldGroup extends dontmanage.ui.form.Layout {
 	}
 
 	catch_enter_as_submit() {
-		var me = this;
+		let me = this;
 		$(this.body)
 			.find('input[type="text"], input[type="password"], select')
 			.keypress(function (e) {
@@ -77,7 +77,8 @@ dontmanage.ui.FieldGroup = class FieldGroup extends dontmanage.ui.form.Layout {
 	}
 
 	get_input(fieldname) {
-		var field = this.fields_dict[fieldname];
+		let field = this.fields_dict[fieldname];
+		if (!field) return "";
 		return $(field.txt ? field.txt : field.input);
 	}
 
@@ -85,13 +86,15 @@ dontmanage.ui.FieldGroup = class FieldGroup extends dontmanage.ui.form.Layout {
 		return this.fields_dict[fieldname];
 	}
 
-	get_values(ignore_errors) {
-		var ret = {};
-		var errors = [];
-		for (var key in this.fields_dict) {
-			var f = this.fields_dict[key];
+	get_values(ignore_errors, check_invalid) {
+		let ret = {};
+		let errors = [];
+		let invalid = [];
+
+		for (let key in this.fields_dict) {
+			let f = this.fields_dict[key];
 			if (f.get_value) {
-				var v = f.get_value();
+				let v = f.get_value();
 				if (f.df.reqd && is_null(typeof v === "string" ? strip_html(v) : v))
 					errors.push(__(f.df.label));
 
@@ -104,7 +107,12 @@ dontmanage.ui.FieldGroup = class FieldGroup extends dontmanage.ui.form.Layout {
 			if (this.is_dialog && f.df.reqd && !f.value) {
 				f.refresh_input();
 			}
+
+			if (f.df.invalid) {
+				invalid.push(__(f.df.label));
+			}
 		}
+
 		if (errors.length && !ignore_errors) {
 			dontmanage.msgprint({
 				title: __("Missing Values Required"),
@@ -117,17 +125,30 @@ dontmanage.ui.FieldGroup = class FieldGroup extends dontmanage.ui.form.Layout {
 			});
 			return null;
 		}
+
+		if (invalid.length && check_invalid) {
+			dontmanage.msgprint({
+				title: __("Inavlid Values"),
+				message:
+					__("Following fields have invalid values:") +
+					"<br><br><ul><li>" +
+					invalid.join("<li>") +
+					"</ul>",
+				indicator: "orange",
+			});
+			return null;
+		}
 		return ret;
 	}
 
 	get_value(key) {
-		var f = this.fields_dict[key];
+		let f = this.fields_dict[key];
 		return f && (f.get_value ? f.get_value() : null);
 	}
 
 	set_value(key, val) {
 		return new Promise((resolve) => {
-			var f = this.fields_dict[key];
+			let f = this.fields_dict[key];
 			if (f) {
 				f.set_value(val).then(() => {
 					f.set_input?.(val);
@@ -150,7 +171,7 @@ dontmanage.ui.FieldGroup = class FieldGroup extends dontmanage.ui.form.Layout {
 
 	set_values(dict) {
 		let promises = [];
-		for (var key in dict) {
+		for (let key in dict) {
 			if (this.fields_dict[key]) {
 				promises.push(this.set_value(key, dict[key]));
 			}
@@ -160,8 +181,8 @@ dontmanage.ui.FieldGroup = class FieldGroup extends dontmanage.ui.form.Layout {
 	}
 
 	clear() {
-		for (var key in this.fields_dict) {
-			var f = this.fields_dict[key];
+		for (let key in this.fields_dict) {
+			let f = this.fields_dict[key];
 			if (f && f.set_input) {
 				f.set_input(f.df["default"] || "");
 			}

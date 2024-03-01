@@ -28,6 +28,7 @@ class WebsiteAnalytics:
 
 		self.filters.to_date = dontmanage.utils.add_days(self.filters.to_date, 1)
 		self.query_filters = {"creation": ["between", [self.filters.from_date, self.filters.to_date]]}
+		self.group_by = self.filters.group_by
 
 	def run(self):
 		columns = self.get_columns()
@@ -38,8 +39,16 @@ class WebsiteAnalytics:
 		return columns, data[:250], None, chart, summary
 
 	def get_columns(self):
+		meta = dontmanage.get_meta("Web Page View")
+		group_by = meta.get_field(self.group_by)
 		return [
-			{"fieldname": "path", "label": "Page", "fieldtype": "Data", "width": 300},
+			{
+				"fieldname": group_by.fieldname,
+				"label": group_by.label,
+				"fieldtype": "Data",
+				"width": 500,
+				"align": "left",
+			},
 			{"fieldname": "count", "label": "Page Views", "fieldtype": "Int", "width": 150},
 			{"fieldname": "unique_count", "label": "Unique Visitors", "fieldtype": "Int", "width": 150},
 		]
@@ -52,12 +61,12 @@ class WebsiteAnalytics:
 
 		return (
 			dontmanage.qb.from_(WebPageView)
-			.select("path", count_all, count_is_unique)
+			.select(self.group_by, count_all, count_is_unique)
 			.where(
 				Coalesce(WebPageView.creation, "0001-01-01")[self.filters.from_date : self.filters.to_date]
 			)
-			.groupby(WebPageView.path)
-			.orderby("count", Order=dontmanage.qb.desc)
+			.groupby(self.group_by)
+			.orderby("count", order=dontmanage.qb.desc)
 		).run()
 
 	def _get_query_for_mariadb(self):
@@ -71,18 +80,16 @@ class WebsiteAnalytics:
 		elif filters_range == "Monthly":
 			date_format = "%Y-%m-01"
 
-		query = """
+		query = f"""
 				SELECT
-					DATE_FORMAT({0}, %s) as date,
+					DATE_FORMAT({field}, %s) as date,
 					COUNT(*) as count,
 					COUNT(CASE WHEN is_unique = 1 THEN 1 END) as unique_count
 				FROM `tabWeb Page View`
 				WHERE creation BETWEEN %s AND %s
-				GROUP BY DATE_FORMAT({0}, %s)
+				GROUP BY DATE_FORMAT({field}, %s)
 				ORDER BY creation
-			""".format(
-			field
-		)
+			"""
 
 		values = (date_format, self.filters.from_date, self.filters.to_date, date_format)
 
@@ -99,18 +106,16 @@ class WebsiteAnalytics:
 		elif filters_range == "Monthly":
 			granularity = "day"
 
-		query = """
+		query = f"""
 				SELECT
-					DATE_TRUNC(%s, {0}) as date,
+					DATE_TRUNC(%s, {field}) as date,
 					COUNT(*) as count,
 					COUNT(CASE WHEN CAST(is_unique as Integer) = 1 THEN 1 END) as unique_count
 				FROM "tabWeb Page View"
-				WHERE  coalesce("tabWeb Page View".{0}, '0001-01-01') BETWEEN %s AND %s
-				GROUP BY date_trunc(%s, {0})
+				WHERE  coalesce("tabWeb Page View".{field}, '0001-01-01') BETWEEN %s AND %s
+				GROUP BY date_trunc(%s, {field})
 				ORDER BY date
-			""".format(
-			field
-		)
+			"""
 
 		values = (granularity, self.filters.from_date, self.filters.to_date, granularity)
 
@@ -177,7 +182,7 @@ class WebsiteAnalytics:
 			unique_count += data.get("unique_count")
 			total_count += data.get("count")
 
-		report_summary = [
+		return [
 			{
 				"value": total_count,
 				"label": "Total Page Views",
@@ -189,4 +194,3 @@ class WebsiteAnalytics:
 				"datatype": "Int",
 			},
 		]
-		return report_summary

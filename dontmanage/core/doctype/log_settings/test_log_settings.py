@@ -62,7 +62,6 @@ class TestLogSettings(DontManageTestCase):
 			"Activity Log",
 			"Email Queue",
 			"Route History",
-			"Error Snapshot",
 			"Scheduled Job Log",
 		]
 

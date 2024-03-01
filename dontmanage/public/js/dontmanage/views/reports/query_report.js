@@ -1,6 +1,9 @@
 // Copyright (c) 2018, DontManage and Contributors
 // MIT License. See license.txt
-import DataTable from "frappe-datatable";
+import DataTable from "dontmanage-datatable";
+
+// Expose DataTable globally to allow customizations.
+window.DataTable = DataTable;
 
 dontmanage.provide("dontmanage.widget.utils");
 dontmanage.provide("dontmanage.views");
@@ -54,6 +57,7 @@ dontmanage.views.QueryReport = class QueryReport extends dontmanage.views.BaseLi
 		// throttle refresh for 300ms
 		this.refresh = dontmanage.utils.throttle(this.refresh, 300);
 
+		this.ignore_prepared_report = false;
 		this.menu_items = [];
 	}
 
@@ -85,10 +89,15 @@ dontmanage.views.QueryReport = class QueryReport extends dontmanage.views.BaseLi
 
 	set_default_secondary_action() {
 		this.refresh_button && this.refresh_button.remove();
-		this.refresh_button = this.page.add_action_icon("refresh", () => {
-			this.setup_progress_bar();
-			this.refresh();
-		});
+		this.refresh_button = this.page.add_action_icon(
+			"es-line-reload",
+			() => {
+				this.setup_progress_bar();
+				this.refresh();
+			},
+			"",
+			__("Reload Report")
+		);
 	}
 
 	get_no_result_message() {
@@ -172,25 +181,36 @@ dontmanage.views.QueryReport = class QueryReport extends dontmanage.views.BaseLi
 	}
 
 	add_card_button_to_toolbar() {
-		this.page.add_inner_button(__("Create Card"), () => {
-			this.add_card_to_dashboard();
-		});
+		if (!dontmanage.model.can_create("Number Card")) return;
+		this.page.add_inner_button(
+			__("Create Card"),
+			() => {
+				this.add_card_to_dashboard();
+			},
+			__("Actions")
+		);
 	}
 
 	add_chart_buttons_to_toolbar(show) {
+		if (!dontmanage.model.can_create("Dashboard Chart")) return;
 		if (show) {
 			this.create_chart_button && this.create_chart_button.remove();
-			this.create_chart_button = this.page.add_button(__("Set Chart"), () => {
-				this.open_create_chart_dialog();
-			});
+			this.create_chart_button = this.page.add_inner_button(
+				__("Set Chart"),
+				() => {
+					this.open_create_chart_dialog();
+				},
+				__("Actions")
+			);
 
 			if (this.chart_fields || this.chart_options) {
 				this.add_to_dashboard_button && this.add_to_dashboard_button.remove();
-				this.add_to_dashboard_button = this.page.add_button(
+				this.add_to_dashboard_button = this.page.add_inner_button(
 					__("Add Chart to Dashboard"),
 					() => {
 						this.add_chart_to_dashboard();
-					}
+					},
+					__("Actions")
 				);
 			}
 		} else {
@@ -359,7 +379,7 @@ dontmanage.views.QueryReport = class QueryReport extends dontmanage.views.BaseLi
 		dontmanage.xcall(method, { args: args }).then(() => {
 			let message;
 			if (dashboard_name) {
-				let dashboard_route_html = `<a href="#dashboard-view/${dashboard_name}">${dashboard_name}</a>`;
+				let dashboard_route_html = `<a href="/app/dashboard-view/${dashboard_name}">${dashboard_name}</a>`;
 				message = __("New {0} {1} added to Dashboard {2}", [
 					__(doctype),
 					name,
@@ -408,7 +428,9 @@ dontmanage.views.QueryReport = class QueryReport extends dontmanage.views.BaseLi
 					.then((settings) => {
 						dontmanage.dom.eval(settings.script || "");
 						dontmanage.after_ajax(() => {
-							this.report_settings = this.get_local_report_settings();
+							this.report_settings = this.get_local_report_settings(
+								settings.custom_report_name
+							);
 							this.report_settings.html_format = settings.html_format;
 							this.report_settings.execution_time = settings.execution_time || 0;
 							dontmanage.query_reports[this.report_name] = this.report_settings;
@@ -426,10 +448,12 @@ dontmanage.views.QueryReport = class QueryReport extends dontmanage.views.BaseLi
 		});
 	}
 
-	get_local_report_settings() {
+	get_local_report_settings(custom_report_name) {
 		let report_script_name =
 			this.report_doc.report_type === "Custom Report"
-				? this.report_doc.reference_report
+				? custom_report_name
+					? custom_report_name
+					: this.report_doc.reference_report
 				: this.report_name;
 		return dontmanage.query_reports[report_script_name] || {};
 	}
@@ -539,7 +563,7 @@ dontmanage.views.QueryReport = class QueryReport extends dontmanage.views.BaseLi
 						if (this.prepared_report) {
 							this.reset_report_view();
 						} else if (!this._no_refresh) {
-							this.refresh();
+							this.refresh(true);
 						}
 					}
 				};
@@ -587,6 +611,8 @@ dontmanage.views.QueryReport = class QueryReport extends dontmanage.views.BaseLi
 				dontmanage.route_options = null;
 			});
 
+			this.ignore_prepared_report = route_options["ignore_prepared_report"] || false;
+
 			return dontmanage.run_serially(promises);
 		}
 	}
@@ -595,10 +621,25 @@ dontmanage.views.QueryReport = class QueryReport extends dontmanage.views.BaseLi
 		this.page.clear_fields();
 	}
 
-	refresh() {
+	refresh(have_filters_changed) {
 		this.toggle_message(true);
 		this.toggle_report(false);
 		let filters = this.get_filter_values(true);
+
+		// for custom reports,
+		// are_default_filters is true if the filters haven't been modified and for all filters,
+		// the filter value is the default value or there's no default value for the filter and the current value is empty.
+		// are_default_filters is false otherwise.
+
+		let are_default_filters = this.filters
+			.map((filter) => {
+				return (
+					!have_filters_changed &&
+					(filter.default === filter.value || (!filter.default && !filter.value))
+				);
+			})
+			.every((res) => res === true);
+
 		this.show_loading_screen();
 
 		// only one refresh at a time
@@ -619,8 +660,10 @@ dontmanage.views.QueryReport = class QueryReport extends dontmanage.views.BaseLi
 				args: {
 					report_name: this.report_name,
 					filters: filters,
+					ignore_prepared_report: this.ignore_prepared_report,
 					is_tree: this.report_settings.tree,
 					parent_field: this.report_settings.parent_field,
+					are_default_filters: are_default_filters,
 				},
 				callback: resolve,
 				always: () => this.page.btn_secondary.prop("disabled", false),
@@ -632,6 +675,11 @@ dontmanage.views.QueryReport = class QueryReport extends dontmanage.views.BaseLi
 				clearInterval(this.interval);
 
 				this.execution_time = data.execution_time || 0.1;
+
+				if (data.custom_filters) {
+					this.set_filters(data.custom_filters);
+					this.previous_filters = data.custom_filters;
+				}
 
 				if (data.prepared_report) {
 					this.prepared_report = true;
@@ -708,8 +756,7 @@ dontmanage.views.QueryReport = class QueryReport extends dontmanage.views.BaseLi
 
 	get_query_params() {
 		const query_string = dontmanage.utils.get_query_string(dontmanage.get_route_str());
-		const query_params = dontmanage.utils.get_query_params(query_string);
-		return query_params;
+		return dontmanage.utils.get_query_params(query_string);
 	}
 
 	add_prepared_report_buttons(doc) {
@@ -724,9 +771,15 @@ dontmanage.views.QueryReport = class QueryReport extends dontmanage.views.BaseLi
 				);
 			});
 
-			const part1 = __("This report was generated {0}.", [
-				dontmanage.datetime.comment_when(doc.report_end_time),
-			]);
+			let pretty_diff = dontmanage.datetime.comment_when(doc.report_end_time);
+			const days_old = dontmanage.datetime.get_day_diff(
+				dontmanage.datetime.now_datetime(),
+				doc.report_end_time
+			);
+			if (days_old > 1) {
+				pretty_diff = `<span style="color:var(--red-600)">${pretty_diff}</span>`;
+			}
+			const part1 = __("This report was generated {0}.", [pretty_diff]);
 			const part2 = __("To get the updated report, click on {0}.", [__("Rebuild")]);
 			const part3 = __("See all past reports.");
 
@@ -866,8 +919,7 @@ dontmanage.views.QueryReport = class QueryReport extends dontmanage.views.BaseLi
 			let filters = this.get_filter_values(true);
 			return new Promise((resolve) =>
 				dontmanage.call({
-					method: "dontmanage.desk.query_report.background_enqueue_run",
-					type: "GET",
+					method: "dontmanage.core.doctype.prepared_report.prepared_report.make_prepared_report",
 					args: {
 						report_name: this.report_name,
 						filters: filters,
@@ -934,7 +986,7 @@ dontmanage.views.QueryReport = class QueryReport extends dontmanage.views.BaseLi
 			if (this.report_settings.get_datatable_options) {
 				datatable_options = this.report_settings.get_datatable_options(datatable_options);
 			}
-			this.datatable = new DataTable(this.$report[0], datatable_options);
+			this.datatable = new window.DataTable(this.$report[0], datatable_options);
 		}
 
 		if (typeof this.report_settings.initial_depth == "number") {
@@ -1174,7 +1226,7 @@ dontmanage.views.QueryReport = class QueryReport extends dontmanage.views.BaseLi
 					if (column.colIndex === index && !value) {
 						value = "Total";
 						column = { fieldtype: "Data" }; // avoid type issues for value if Date column
-					} else if (in_list(["Currency", "Float"], column.fieldtype)) {
+					} else if (["Currency", "Float"].includes(column.fieldtype)) {
 						// proxy for currency and float
 						data = this.data[0];
 					}
@@ -1201,18 +1253,21 @@ dontmanage.views.QueryReport = class QueryReport extends dontmanage.views.BaseLi
 
 			return Object.assign(column, {
 				id: column.fieldname,
-				name: __(column.label, null, `Column of report '${this.report_name}'`), // context has to match context in   get_messages_from_report in translate.py
+				// The column label should have already been translated in the
+				// backend. Translating it again would cause unexpected behaviour.
+				name: column.label,
 				width: parseInt(column.width) || null,
 				editable: false,
 				compareValue: compareFn,
-				format: (value, row, column, data) => {
+				format: (value, row, column, data, filter) => {
 					if (this.report_settings.formatter) {
 						return this.report_settings.formatter(
 							value,
 							row,
 							column,
 							data,
-							format_cell
+							format_cell,
+							filter
 						);
 					}
 					return format_cell(value, row, column, data);
@@ -1258,7 +1313,7 @@ dontmanage.views.QueryReport = class QueryReport extends dontmanage.views.BaseLi
 
 		raise && this.toggle_message(false);
 
-		const filters = this.filters
+		return this.filters
 			.filter((f) => f.get_value())
 			.map((f) => {
 				var v = f.get_value();
@@ -1276,7 +1331,6 @@ dontmanage.views.QueryReport = class QueryReport extends dontmanage.views.BaseLi
 				Object.assign(acc, f);
 				return acc;
 			}, {});
-		return filters;
 	}
 
 	get_filter(fieldname) {
@@ -1345,6 +1399,7 @@ dontmanage.views.QueryReport = class QueryReport extends dontmanage.views.BaseLi
 			columns: this.get_columns_for_print(print_settings, custom_format),
 			original_data: this.data,
 			report: this,
+			can_use_smaller_font: this.report_doc.is_standard === "Yes" && custom_format ? 0 : 1,
 		});
 	}
 
@@ -1381,6 +1436,7 @@ dontmanage.views.QueryReport = class QueryReport extends dontmanage.views.BaseLi
 			columns: columns,
 			lang: dontmanage.boot.lang,
 			layout_direction: dontmanage.utils.is_rtl() ? "rtl" : "ltr",
+			can_use_smaller_font: this.report_doc.is_standard === "Yes" && custom_format ? 0 : 1,
 		});
 
 		let filter_values = [],
@@ -1390,7 +1446,12 @@ dontmanage.views.QueryReport = class QueryReport extends dontmanage.views.BaseLi
 			if (name_len > 200) break;
 			filter_values.push(applied_filters[key]);
 		}
-		print_settings.report_name = `${__(this.report_name)}_${filter_values.join("_")}.pdf`;
+
+		if (filter_values.length) {
+			print_settings.report_name = `${__(this.report_name)}_${filter_values.join("_")}.pdf`;
+		} else {
+			print_settings.report_name = `${__(this.report_name)}.pdf`;
+		}
 		dontmanage.render_pdf(html, print_settings);
 	}
 
@@ -1398,9 +1459,12 @@ dontmanage.views.QueryReport = class QueryReport extends dontmanage.views.BaseLi
 		const applied_filters = this.get_filter_values();
 		return Object.keys(applied_filters)
 			.map((fieldname) => {
-				const label = dontmanage.query_report.get_filter(fieldname).df.label;
+				const docfield = dontmanage.query_report.get_filter(fieldname).df;
 				const value = applied_filters[fieldname];
-				return `<h6>${__(label)}: ${value}</h6>`;
+				return `<h6>${__(docfield.label, null, docfield.parent)}: ${dontmanage.format(
+					value,
+					docfield
+				)}</h6>`;
 			})
 			.join("");
 	}
@@ -1412,70 +1476,79 @@ dontmanage.views.QueryReport = class QueryReport extends dontmanage.views.BaseLi
 			return;
 		}
 
-		let export_dialog_fields = [
-			{
-				label: __("Select File Format"),
-				fieldname: "file_format",
-				fieldtype: "Select",
-				options: ["Excel", "CSV"],
-				default: "Excel",
-				reqd: 1,
-			},
-		];
+		let extra_fields = [];
 
 		if (this.tree_report) {
-			export_dialog_fields.push({
+			extra_fields.push({
 				label: __("Include indentation"),
 				fieldname: "include_indentation",
 				fieldtype: "Check",
 			});
 		}
 
-		this.export_dialog = dontmanage.prompt(
-			export_dialog_fields,
-			({ file_format, include_indentation }) => {
+		if (this.filters.length > 0) {
+			extra_fields.push({
+				label: __("Include filters"),
+				fieldname: "include_filters",
+				fieldtype: "Check",
+			});
+		}
+
+		this.export_dialog = dontmanage.report_utils.get_export_dialog(
+			__(this.report_name),
+			extra_fields,
+			({
+				file_format,
+				include_indentation,
+				include_filters,
+				csv_delimiter,
+				csv_quoting,
+			}) => {
 				this.make_access_log("Export", file_format);
-				if (file_format === "CSV") {
-					const column_row = this.columns.reduce((acc, col) => {
-						if (!col.hidden) {
-							acc.push(__(col.label));
-						}
-						return acc;
-					}, []);
-					const data = this.get_data_for_csv(include_indentation);
-					const out = [column_row].concat(data);
 
-					dontmanage.tools.downloadify(out, null, this.report_name);
-				} else {
-					let filters = this.get_filter_values(true);
-					if (dontmanage.urllib.get_dict("prepared_report_name")) {
-						filters = Object.assign(
-							dontmanage.urllib.get_dict("prepared_report_name"),
-							filters
-						);
-					}
-
-					const visible_idx = this.datatable.bodyRenderer.visibleRowIndices;
-					if (visible_idx.length + 1 === this.data.length) {
-						visible_idx.push(visible_idx.length);
-					}
-
-					const args = {
-						cmd: "dontmanage.desk.query_report.export_query",
-						report_name: this.report_name,
-						custom_columns: this.custom_columns.length ? this.custom_columns : [],
-						file_format_type: file_format,
-						filters: filters,
-						visible_idx,
-						include_indentation,
-					};
-
-					open_url_post(dontmanage.request.url, args);
+				let filters = this.get_filter_values(true);
+				if (dontmanage.urllib.get_dict("prepared_report_name")) {
+					filters = Object.assign(
+						dontmanage.urllib.get_dict("prepared_report_name"),
+						filters
+					);
 				}
-			},
-			__("Export Report: {0}", [this.report_name]),
-			__("Download")
+				let boolean_labels = { 1: __("Yes"), 0: __("No") };
+				let applied_filters = Object.fromEntries(
+					Object.entries(filters).map(([key, value]) => [
+						dontmanage.query_report.get_filter(key).df.label,
+						dontmanage.query_report.get_filter(key).df.fieldtype == "Check"
+							? boolean_labels[value]
+							: value,
+					])
+				);
+
+				const visible_idx = this.datatable.bodyRenderer.visibleRowIndices;
+				if (visible_idx.length + 1 === this.data.length) {
+					visible_idx.push(visible_idx.length);
+				}
+
+				const args = {
+					cmd: "dontmanage.desk.query_report.export_query",
+					report_name: this.report_name,
+					custom_columns: this.custom_columns.length ? this.custom_columns : [],
+					file_format_type: file_format,
+					filters: filters,
+					applied_filters: applied_filters,
+					visible_idx,
+					csv_delimiter,
+					csv_quoting,
+					include_indentation,
+					include_filters,
+				};
+
+				open_url_post(dontmanage.request.url, args);
+
+				this.export_dialog.hide();
+			}
 		);
+
+		this.export_dialog.show();
 	}
 
 	get_data_for_csv(include_indentation) {
@@ -1490,9 +1563,9 @@ dontmanage.views.QueryReport = class QueryReport extends dontmanage.views.BaseLi
 					cell.content = dontmanage.utils.get_formatted_duration(cell.content);
 				}
 				if (include_indentation && i === 0) {
-					cell.content = "   ".repeat(row.meta.indent) + (cell.content || "");
+					cell.content = "   ".repeat(row.meta.indent) + (cell.content ?? "");
 				}
-				return cell.content || "";
+				return cell.content ?? "";
 			});
 		});
 	}
@@ -1510,7 +1583,7 @@ dontmanage.views.QueryReport = class QueryReport extends dontmanage.views.BaseLi
 			})
 			.filter(Boolean);
 
-		if (this.raw_data.add_total_row) {
+		if (this.raw_data.add_total_row && !this.report_settings.tree) {
 			let totalRow = this.datatable.bodyRenderer.getTotalRow().reduce((row, cell) => {
 				row[cell.column.id] = cell.content;
 				row.is_total_row = true;
@@ -1650,8 +1723,13 @@ dontmanage.views.QueryReport = class QueryReport extends dontmanage.views.BaseLi
 							const insert_after_index = this.columns.findIndex(
 								(column) => column.label === values.insert_after
 							);
+
 							custom_columns.push({
-								fieldname: df.fieldname,
+								fieldname: this.columns
+									.map((column) => column.fieldname)
+									.includes(df.fieldname)
+									? df.fieldname + "-" + dontmanage.scrub(values.doctype)
+									: df.fieldname,
 								fieldtype: df.fieldtype,
 								label: df.label,
 								insert_after_index: insert_after_index,
@@ -1667,16 +1745,19 @@ dontmanage.views.QueryReport = class QueryReport extends dontmanage.views.BaseLi
 								args: {
 									field: values.field,
 									doctype: values.doctype,
+									names: Array.from(
+										this.doctype_field_map[values.doctype].names
+									),
 								},
 								callback: (r) => {
 									const custom_data = r.message;
-									const link_field = this.doctype_field_map[values.doctype];
-
+									const link_field =
+										this.doctype_field_map[values.doctype].fieldname;
 									this.add_custom_column(
 										custom_columns,
 										custom_data,
 										link_field,
-										values.field,
+										values,
 										insert_after_index
 									);
 									d.hide();
@@ -1697,7 +1778,7 @@ dontmanage.views.QueryReport = class QueryReport extends dontmanage.views.BaseLi
 						doctype: "Report",
 						name: this.report_name,
 					}),
-				condition: () => dontmanage.model.can_set_user_permissions("Report"),
+				condition: () => dontmanage.user.has_role("System Manager"),
 				standard: true,
 			},
 		];
@@ -1725,6 +1806,7 @@ dontmanage.views.QueryReport = class QueryReport extends dontmanage.views.BaseLi
 									reference_report: this.report_name,
 									report_name: values.report_name,
 									columns: this.get_visible_columns(),
+									filters: this.get_filter_values(),
 								},
 								callback: function (r) {
 									this.show_save = false;
@@ -1756,13 +1838,25 @@ dontmanage.views.QueryReport = class QueryReport extends dontmanage.views.BaseLi
 		}
 	}
 
-	add_custom_column(custom_column, custom_data, link_field, column_field, insert_after_index) {
+	add_custom_column(
+		custom_column,
+		custom_data,
+		link_field,
+		new_column_data,
+		insert_after_index
+	) {
 		const column = this.prepare_columns(custom_column);
+		const column_field = new_column_data.field;
 
 		this.columns.splice(insert_after_index + 1, 0, column[0]);
 
 		this.data.forEach((row) => {
-			row[column_field] = custom_data[row[link_field]];
+			if (column[0].fieldname.includes("-")) {
+				row[column_field + "-" + dontmanage.scrub(new_column_data.doctype)] =
+					custom_data[row[link_field]];
+			} else {
+				row[column_field] = custom_data[row[link_field]];
+			}
 		});
 
 		this.render_datatable();
@@ -1807,7 +1901,13 @@ dontmanage.views.QueryReport = class QueryReport extends dontmanage.views.BaseLi
 		);
 
 		doctypes.forEach((doc) => {
-			this.doctype_field_map[doc.doctype] = doc.fieldname;
+			this.doctype_field_map[doc.doctype] = { fieldname: doc.fieldname, names: new Set() };
+		});
+
+		this.data.forEach((row) => {
+			doctypes.forEach((doc) => {
+				this.doctype_field_map[doc.doctype].names.add(row[doc.fieldname]);
+			});
 		});
 
 		return doctypes;
@@ -1946,12 +2046,3 @@ dontmanage.views.QueryReport = class QueryReport extends dontmanage.views.BaseLi
 		return this.get_filter_values;
 	}
 };
-
-Object.defineProperty(dontmanage, "query_report_filters_by_name", {
-	get() {
-		console.warn(
-			"[Query Report] dontmanage.query_report_filters_by_name is deprecated. Please use the new api: dontmanage.query_report.get_filter_value(fieldname) and dontmanage.query_report.set_filter_value(fieldname, value)"
-		);
-		return null;
-	},
-});

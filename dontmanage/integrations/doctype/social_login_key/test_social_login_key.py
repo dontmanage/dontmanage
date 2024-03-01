@@ -7,13 +7,22 @@ from rauth import OAuth2Service
 import dontmanage
 from dontmanage.auth import CookieManager, LoginManager
 from dontmanage.integrations.doctype.social_login_key.social_login_key import BaseUrlNotSetError
-from dontmanage.tests.utils import DontManageTestCase
+from dontmanage.tests.utils import DontManageTestCase, change_settings
 from dontmanage.utils import set_request
 from dontmanage.utils.oauth import login_via_oauth2
 
+TEST_GITHUB_USER = "githublogin@example.com"
+
 
 class TestSocialLoginKey(DontManageTestCase):
+	def setUp(self) -> None:
+		dontmanage.set_user("Administrator")
+		dontmanage.delete_doc("User", TEST_GITHUB_USER, force=True)
+		super().setUp()
+		dontmanage.set_user("Guest")
+
 	def test_adding_dontmanage_social_login_provider(self):
+		dontmanage.set_user("Administrator")
 		provider_name = "DontManage"
 		social_login_key = make_social_login_key(social_login_provider=provider_name)
 		social_login_key.get_social_login_provider(provider_name, initialize=True)
@@ -40,11 +49,35 @@ class TestSocialLoginKey(DontManageTestCase):
 	def test_normal_signup_and_github_login(self):
 		github_social_login_setup()
 
-		if not dontmanage.db.exists("User", "githublogin@example.com"):
-			user = dontmanage.get_doc(
-				{"doctype": "User", "email": "githublogin@example.com", "first_name": "GitHub Login"}
-			)
-			user.save(ignore_permissions=True)
+		if not dontmanage.db.exists("User", TEST_GITHUB_USER):
+			user = dontmanage.new_doc("User", email=TEST_GITHUB_USER, first_name="GitHub Login")
+			user.insert(ignore_permissions=True)
+
+		mock_session = MagicMock()
+		mock_session.get.side_effect = github_response_for_login
+
+		with patch.object(OAuth2Service, "get_auth_session", return_value=mock_session):
+			login_via_oauth2("github", "iwriu", {"token": "ewrwerwer"})
+		self.assertEqual(dontmanage.session.user, TEST_GITHUB_USER)
+
+	def test_force_disabled_signups(self):
+		key = github_social_login_setup()
+		key.sign_ups = "Deny"
+		key.save(ignore_permissions=True)
+
+		mock_session = MagicMock()
+		mock_session.get.side_effect = github_response_for_login
+
+		with patch.object(OAuth2Service, "get_auth_session", return_value=mock_session):
+			login_via_oauth2("github", "iwriu", {"token": "ewrwerwer"})
+		self.assertEqual(dontmanage.session.user, "Guest")
+
+	@change_settings("Website Settings", disable_signup=1)
+	def test_force_enabled_signups(self):
+		"""Social login key can override website settings for disabled signups."""
+		key = github_social_login_setup()
+		key.sign_ups = "Allow"
+		key.save(ignore_permissions=True)
 
 		mock_session = MagicMock()
 		mock_session.get.side_effect = github_response_for_login
@@ -52,13 +85,14 @@ class TestSocialLoginKey(DontManageTestCase):
 		with patch.object(OAuth2Service, "get_auth_session", return_value=mock_session):
 			login_via_oauth2("github", "iwriu", {"token": "ewrwerwer"})
 
+		self.assertEqual(dontmanage.session.user, TEST_GITHUB_USER)
+
 
 def make_social_login_key(**kwargs):
 	kwargs["doctype"] = "Social Login Key"
-	if not "provider_name" in kwargs:
+	if "provider_name" not in kwargs:
 		kwargs["provider_name"] = "Test OAuth2 Provider"
-	doc = dontmanage.get_doc(kwargs)
-	return doc
+	return dontmanage.get_doc(kwargs)
 
 
 def create_or_update_social_login_key():
@@ -84,7 +118,6 @@ def create_github_social_login_key():
 		social_login_key = make_social_login_key(social_login_provider=provider_name)
 		social_login_key.get_social_login_provider(provider_name, initialize=True)
 
-		# Dummy client_id and client_secret
 		social_login_key.client_id = "h6htd6q"
 		social_login_key.client_secret = "keoererk988ekkhf8w9e8ewrjhhkjer9889"
 		social_login_key.insert(ignore_permissions=True)
@@ -126,7 +159,7 @@ def github_response_for_login(url, *args, **kwargs):
 			"first_name": "Github Login",
 		}
 	else:
-		return_value = [{"email": "githublogin@example.com", "primary": True, "verified": True}]
+		return_value = [{"email": TEST_GITHUB_USER, "primary": True, "verified": True}]
 
 	return MagicMock(status_code=200, json=MagicMock(return_value=return_value))
 
@@ -136,4 +169,4 @@ def github_social_login_setup():
 	dontmanage.local.cookie_manager = CookieManager()
 	dontmanage.local.login_manager = LoginManager()
 
-	create_github_social_login_key()
+	return create_github_social_login_key()

@@ -4,59 +4,39 @@
 import dontmanage
 
 
+def get_all_webhooks():
+	# query webhooks
+	webhooks_list = dontmanage.get_all(
+		"Webhook",
+		fields=["name", "condition", "webhook_docevent", "webhook_doctype", "background_jobs_queue"],
+		filters={"enabled": True},
+	)
+
+	# make webhooks map
+	webhooks = {}
+	for w in webhooks_list:
+		webhooks.setdefault(w.webhook_doctype, []).append(w)
+
+	return webhooks
+
+
 def run_webhooks(doc, method):
 	"""Run webhooks for this method"""
-	if (
-		dontmanage.flags.in_import
-		or dontmanage.flags.in_patch
-		or dontmanage.flags.in_install
-		or dontmanage.flags.in_migrate
-	):
+
+	dontmanage_flags = dontmanage.local.flags
+
+	if dontmanage_flags.in_import or dontmanage_flags.in_patch or dontmanage_flags.in_install or dontmanage_flags.in_migrate:
 		return
 
-	if dontmanage.flags.webhooks_executed is None:
-		dontmanage.flags.webhooks_executed = {}
-
-	# TODO: remove this hazardous unnecessary cache in flags
-	if dontmanage.flags.webhooks is None:
-		# load webhooks from cache
-		webhooks = dontmanage.cache().get_value("webhooks")
-		if webhooks is None:
-			# query webhooks
-			webhooks_list = dontmanage.get_all(
-				"Webhook",
-				fields=["name", "`condition`", "webhook_docevent", "webhook_doctype"],
-				filters={"enabled": True},
-			)
-
-			# make webhooks map for cache
-			webhooks = {}
-			for w in webhooks_list:
-				webhooks.setdefault(w.webhook_doctype, []).append(w)
-			dontmanage.cache().set_value("webhooks", webhooks)
-
-		dontmanage.flags.webhooks = webhooks
+	# load all webhooks from cache / DB
+	webhooks = dontmanage.cache.get_value("webhooks", get_all_webhooks)
 
 	# get webhooks for this doctype
-	webhooks_for_doc = dontmanage.flags.webhooks.get(doc.doctype, None)
+	webhooks_for_doc = webhooks.get(doc.doctype, None)
 
 	if not webhooks_for_doc:
 		# no webhooks, quit
 		return
-
-	def _webhook_request(webhook):
-		if webhook.name not in dontmanage.flags.webhooks_executed.get(doc.name, []):
-			dontmanage.enqueue(
-				"dontmanage.integrations.doctype.webhook.webhook.enqueue_webhook",
-				enqueue_after_commit=True,
-				doc=doc,
-				webhook=webhook,
-			)
-
-			# keep list of webhooks executed for this doc in this request
-			# so that we don't run the same webhook for the same document multiple times
-			# in one request
-			dontmanage.flags.webhooks_executed.setdefault(doc.name, []).append(webhook.name)
 
 	event_list = ["on_update", "after_insert", "on_submit", "on_cancel", "on_trash"]
 
@@ -76,4 +56,53 @@ def run_webhooks(doc, method):
 			trigger_webhook = True
 
 		if trigger_webhook and event and webhook.webhook_docevent == event:
-			_webhook_request(webhook)
+			_add_webhook_to_queue(webhook, doc)
+
+
+def _add_webhook_to_queue(webhook, doc):
+	# Maintain a queue and flush on commit
+	if not getattr(dontmanage.local, "_webhook_queue", None):
+		dontmanage.local._webhook_queue = []
+		dontmanage.db.after_commit.add(flush_webhook_execution_queue)
+
+	dontmanage.local._webhook_queue.append(dontmanage._dict(doc=doc, webhook=webhook))
+
+
+def flush_webhook_execution_queue():
+	"""Enqueue all pending webhook executions.
+
+	Each webhook can trigger multiple times on same document or even different instance of same
+	document. We assume that last enqueued version of document is the final document for this DB
+	transaction.
+	"""
+	if not getattr(dontmanage.local, "_webhook_queue", None):
+		return
+
+	uniq_hooks = set()
+	unique_last_instances = []
+
+	# reverse
+	dontmanage.local._webhook_queue.reverse()
+
+	# deduplicate on (doc.name, webhook.name)
+	# 'doc' holds the last instance values
+	for execution in dontmanage.local._webhook_queue:
+		key = (execution.webhook.get("name"), execution.doc.get("name"))
+		if key not in uniq_hooks:
+			uniq_hooks.add(key)
+			unique_last_instances.append(execution)
+
+	# Clear original queue so next enqueue computation happens correctly.
+	del dontmanage.local._webhook_queue
+
+	# reverse again, to get back the original order on which to execute webhooks
+	unique_last_instances.reverse()
+
+	for instance in unique_last_instances:
+		dontmanage.enqueue(
+			"dontmanage.integrations.doctype.webhook.webhook.enqueue_webhook",
+			doc=instance.doc,
+			webhook=instance.webhook,
+			now=dontmanage.flags.in_test,
+			queue=instance.webhook.background_jobs_queue or "default",
+		)

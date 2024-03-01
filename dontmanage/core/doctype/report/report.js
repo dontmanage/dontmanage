@@ -8,26 +8,28 @@ dontmanage.ui.form.on("Report", {
 		}
 
 		let doc = frm.doc;
-		frm.add_custom_button(
-			__("Show Report"),
-			function () {
-				switch (doc.report_type) {
-					case "Report Builder":
-						dontmanage.set_route("List", doc.ref_doctype, "Report", doc.name);
-						break;
-					case "Query Report":
-						dontmanage.set_route("query-report", doc.name);
-						break;
-					case "Script Report":
-						dontmanage.set_route("query-report", doc.name);
-						break;
-					case "Custom Report":
-						dontmanage.set_route("query-report", doc.name);
-						break;
-				}
-			},
-			"fa fa-table"
-		);
+		if (!doc.__islocal) {
+			frm.add_custom_button(
+				__("Show Report"),
+				function () {
+					switch (doc.report_type) {
+						case "Report Builder":
+							dontmanage.set_route("List", doc.ref_doctype, "Report", doc.name);
+							break;
+						case "Query Report":
+							dontmanage.set_route("query-report", doc.name);
+							break;
+						case "Script Report":
+							dontmanage.set_route("query-report", doc.name);
+							break;
+						case "Custom Report":
+							dontmanage.set_route("query-report", doc.name);
+							break;
+					}
+				},
+				"fa fa-table"
+			);
+		}
 
 		if (doc.is_standard === "Yes" && frm.perm[0].write) {
 			frm.add_custom_button(

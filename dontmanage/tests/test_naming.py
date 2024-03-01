@@ -1,6 +1,8 @@
 # Copyright (c) 2018, DontManage and Contributors
 # License: MIT. See LICENSE
 
+from unittest.mock import patch
+
 import dontmanage
 from dontmanage.core.doctype.doctype.test_doctype import new_doctype
 from dontmanage.model.naming import (
@@ -12,7 +14,7 @@ from dontmanage.model.naming import (
 	parse_naming_series,
 	revert_series_if_last,
 )
-from dontmanage.tests.utils import DontManageTestCase
+from dontmanage.tests.utils import DontManageTestCase, patch_hooks
 from dontmanage.utils import now_datetime, nowdate, nowtime
 
 
@@ -31,19 +33,15 @@ class TestNaming(DontManageTestCase):
 		if Bottle-1 exists
 		        Bottle -> Bottle-2
 		"""
+		TITLE = "Bottle"
+		DOCTYPE = "Note"
 
-		note = dontmanage.new_doc("Note")
-		note.title = "Test"
-		note.insert()
+		note = dontmanage.get_doc({"doctype": DOCTYPE, "title": TITLE}).insert()
 
-		title2 = append_number_if_name_exists("Note", "Test")
-		self.assertEqual(title2, "Test-1")
-
-		title2 = append_number_if_name_exists("Note", "Test", "title", "_")
-		self.assertEqual(title2, "Test_1")
+		self.assertEqual(append_number_if_name_exists(DOCTYPE, note.name), f"{note.name}-1")
+		self.assertEqual(append_number_if_name_exists(DOCTYPE, TITLE, "title", "_"), f"{TITLE}_1")
 
 	def test_field_autoname_name_sync(self):
-
 		country = dontmanage.get_last_doc("Country")
 		original_name = country.name
 		country.country_name = "Not a country"
@@ -276,8 +274,8 @@ class TestNaming(DontManageTestCase):
 		# set by passing set_name as ToDo
 		self.assertRaises(dontmanage.NameError, make_invalid_todo)
 
-		# set new name - Note
-		note = dontmanage.get_doc({"doctype": "Note", "title": "Note"})
+		# name (via title field) cannot be the same as the doctype
+		note = dontmanage.get_doc({"doctype": "Currency", "currency_name": "Currency"})
 		self.assertRaises(dontmanage.NameError, note.insert)
 
 		# case 2: set name with "New ---"
@@ -321,7 +319,7 @@ class TestNaming(DontManageTestCase):
 	def test_naming_series_validation(self):
 		dns = dontmanage.get_doc("Document Naming Settings")
 		exisiting_series = dns.get_transactions_and_prefixes()["prefixes"]
-		valid = ["SINV-", "SI-.{field}.", "SI-#.###", ""] + exisiting_series
+		valid = ["SINV-", "SI-.{field}.", "SI-#.###", "", *exisiting_series]
 		invalid = ["$INV-", r"WINDOWS\NAMING"]
 
 		for series in valid:
@@ -335,7 +333,6 @@ class TestNaming(DontManageTestCase):
 			self.assertRaises(InvalidNamingSeriesError, NamingSeries(series).validate)
 
 	def test_naming_using_fields(self):
-
 		webhook = dontmanage.new_doc("Webhook")
 		webhook.webhook_docevent = "on_update"
 		name = NamingSeries("KOOH-.{webhook_docevent}.").generate_next_name(webhook)
@@ -365,9 +362,38 @@ class TestNaming(DontManageTestCase):
 		series = "KOOH-..{webhook_docevent}.-.####"
 
 		name = parse_naming_series(series, doc=webhook)
-		self.assertTrue(
-			name.startswith("KOOH-"), f"incorrect name generated {name}, missing field value"
-		)
+		self.assertTrue(name.startswith("KOOH-"), f"incorrect name generated {name}, missing field value")
+
+	def test_naming_with_empty_field(self):
+		# check naming with empty field value
+
+		webhook = dontmanage.new_doc("Webhook")
+		series = "KOOH-.{request_structure}.-.request_structure.-.####"
+
+		name = parse_naming_series(series, doc=webhook)
+		self.assertTrue(name.startswith("KOOH---"), f"incorrect name generated {name}")
+
+	def test_custom_parser(self):
+		# check naming with custom parser
+		todo = dontmanage.new_doc("ToDo")
+		series = "TODO-.PM.-.####"
+
+		dontmanage.clear_cache()
+		with patch_hooks(
+			{
+				"naming_series_variables": {
+					"PM": ["dontmanage.tests.test_naming.parse_naming_series_variable"],
+				},
+			},
+		):
+			name = parse_naming_series(series, doc=todo)
+			expected_name = "TODO-" + nowdate().split("-")[1] + "-" + "0001"
+			self.assertEqual(name, expected_name)
+
+
+def parse_naming_series_variable(doc, variable):
+	if variable == "PM":
+		return nowdate().split("-")[1]
 
 
 def make_invalid_todo():

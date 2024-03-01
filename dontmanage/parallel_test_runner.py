@@ -10,7 +10,7 @@ import requests
 
 import dontmanage
 
-from .test_runner import SLOW_TEST_THRESHOLD, make_test_records, set_test_email_config
+from .test_runner import SLOW_TEST_THRESHOLD, make_test_records
 
 click_ctx = click.get_current_context(True)
 if click_ctx:
@@ -38,11 +38,10 @@ class ParallelTestRunner:
 		dontmanage.flags.in_test = True
 		dontmanage.clear_cache()
 		dontmanage.utils.scheduler.disable_scheduler()
-		set_test_email_config()
 		self.before_test_setup()
 
 	def before_test_setup(self):
-		start_time = time.time()
+		start_time = time.monotonic()
 		for fn in dontmanage.get_hooks("before_tests", app_name=self.app):
 			dontmanage.get_attr(fn)()
 
@@ -52,7 +51,7 @@ class ParallelTestRunner:
 			for doctype in test_module.global_test_dependencies:
 				make_test_records(doctype, commit=True)
 
-		elapsed = time.time() - start_time
+		elapsed = time.monotonic() - start_time
 		elapsed = click.style(f" ({elapsed:.03}s)", fg="red")
 		click.echo(f"Before Test {elapsed}")
 
@@ -97,7 +96,7 @@ class ParallelTestRunner:
 					make_test_records(doctype, commit=True)
 
 	def get_module(self, path, filename):
-		app_path = dontmanage.get_pymodule_path(self.app)
+		app_path = dontmanage.get_app_path(self.app)
 		relative_path = os.path.relpath(path, app_path)
 		if relative_path == ".":
 			module_name = self.app
@@ -144,7 +143,7 @@ def split_by_weight(work, weights, chunk_count):
 	chunk_no = 0
 	chunk_weight = 0
 
-	for task, weight in zip(work, weights):
+	for task, weight in zip(work, weights, strict=False):
 		if chunk_weight > expected_weight:
 			chunk_weight = 0
 			chunk_no += 1
@@ -162,7 +161,7 @@ def split_by_weight(work, weights, chunk_count):
 class ParallelTestResult(unittest.TextTestResult):
 	def startTest(self, test):
 		self.tb_locals = True
-		self._started_at = time.time()
+		self._started_at = time.monotonic()
 		super(unittest.TextTestResult, self).startTest(test)
 		test_class = unittest.util.strclass(test.__class__)
 		if not hasattr(self, "current_test_class") or self.current_test_class != test_class:
@@ -174,7 +173,7 @@ class ParallelTestResult(unittest.TextTestResult):
 
 	def addSuccess(self, test):
 		super(unittest.TextTestResult, self).addSuccess(test)
-		elapsed = time.time() - self._started_at
+		elapsed = time.monotonic() - self._started_at
 		threshold_passed = elapsed >= SLOW_TEST_THRESHOLD
 		elapsed = click.style(f" ({elapsed:.03}s)", fg="red") if threshold_passed else ""
 		click.echo(f"  {click.style(' ✔ ', fg='green')} {self.getTestMethodName(test)}{elapsed}")
@@ -217,7 +216,7 @@ class ParallelTestResult(unittest.TextTestResult):
 
 def get_all_tests(app):
 	test_file_list = []
-	for path, folders, files in os.walk(dontmanage.get_pymodule_path(app)):
+	for path, folders, files in os.walk(dontmanage.get_app_path(app)):
 		for dontwalk in ("locals", ".git", "public", "__pycache__"):
 			if dontwalk in folders:
 				folders.remove(dontwalk)
@@ -230,10 +229,11 @@ def get_all_tests(app):
 			# in /doctype/doctype/boilerplate/
 			continue
 
-		for filename in files:
-			if filename.startswith("test_") and filename.endswith(".py") and filename != "test_runner.py":
-				test_file_list.append([path, filename])
-
+		test_file_list.extend(
+			[path, filename]
+			for filename in files
+			if filename.startswith("test_") and filename.endswith(".py") and filename != "test_runner.py"
+		)
 	return test_file_list
 
 
@@ -274,9 +274,7 @@ class ParallelTestWithOrchestrator(ParallelTestRunner):
 
 	def register_instance(self):
 		test_spec_list = get_all_tests(self.app)
-		response_data = self.call_orchestrator(
-			"register-instance", data={"test_spec_list": test_spec_list}
-		)
+		response_data = self.call_orchestrator("register-instance", data={"test_spec_list": test_spec_list})
 		self.is_master = response_data.get("is_master")
 
 	def get_next_test(self):

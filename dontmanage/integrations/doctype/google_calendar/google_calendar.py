@@ -65,6 +65,25 @@ framework_days = {
 
 
 class GoogleCalendar(Document):
+	# begin: auto-generated types
+	# This code is auto-generated. Do not modify anything in this block.
+
+	from typing import TYPE_CHECKING
+
+	if TYPE_CHECKING:
+		from dontmanage.types import DF
+
+		authorization_code: DF.Password | None
+		calendar_name: DF.Data
+		enable: DF.Check
+		google_calendar_id: DF.Data | None
+		next_sync_token: DF.Password | None
+		pull_from_google_calendar: DF.Check
+		push_to_google_calendar: DF.Check
+		refresh_token: DF.Password | None
+		user: DF.Link
+
+	# end: auto-generated types
 	def validate(self):
 		google_settings = dontmanage.get_single("Google Settings")
 		if not google_settings.enable:
@@ -111,6 +130,7 @@ def authorize_access(g_calendar, reauthorize=None):
 	"""
 	google_settings = dontmanage.get_doc("Google Settings")
 	google_calendar = dontmanage.get_doc("Google Calendar", g_calendar)
+	google_calendar.check_permission("write")
 
 	redirect_uri = (
 		get_request_site_address(True)
@@ -118,7 +138,7 @@ def authorize_access(g_calendar, reauthorize=None):
 	)
 
 	if not google_calendar.authorization_code or reauthorize:
-		dontmanage.cache().hset("google_calendar", "google_calendar", google_calendar.name)
+		dontmanage.cache.hset("google_calendar", "google_calendar", google_calendar.name)
 		return get_authentication_url(client_id=google_settings.client_id, redirect_uri=redirect_uri)
 	else:
 		try:
@@ -162,7 +182,7 @@ def google_callback(code=None):
 	"""
 	Authorization code is sent to callback as per the API configuration
 	"""
-	google_calendar = dontmanage.cache().hget("google_calendar", "google_calendar")
+	google_calendar = dontmanage.cache.hget("google_calendar", "google_calendar")
 	dontmanage.db.set_value("Google Calendar", google_calendar, "authorization_code", code)
 	dontmanage.db.commit()
 
@@ -195,7 +215,7 @@ def get_google_calendar_object(g_calendar):
 		"token_uri": GoogleOAuth.OAUTH_URL,
 		"client_id": google_settings.client_id,
 		"client_secret": google_settings.get_password(fieldname="client_secret", raise_exception=False),
-		"scopes": "https://www.googleapis.com/auth/calendar/v3",
+		"scopes": [SCOPES],
 	}
 
 	credentials = google.oauth2.credentials.Credentials(**credentials_dict)
@@ -280,9 +300,7 @@ def sync_events_from_google_calendar(g_calendar, method=None):
 			else:
 				dontmanage.throw(msg)
 
-		for event in events.get("items", []):
-			results.append(event)
-
+		results.extend(event for event in events.get("items", []))
 		if not events.get("nextPageToken"):
 			if events.get("nextSyncToken"):
 				account.next_sync_token = events.get("nextSyncToken")
@@ -361,9 +379,7 @@ def insert_event_to_calendar(account, event, recurrence=None):
 		"pulled_from_google_calendar": 1,
 	}
 	calendar_event.update(
-		google_calendar_to_repeat_on(
-			recurrence=recurrence, start=event.get("start"), end=event.get("end")
-		)
+		google_calendar_to_repeat_on(recurrence=recurrence, start=event.get("start"), end=event.get("end"))
 	)
 	dontmanage.get_doc(calendar_event).insert(ignore_permissions=True)
 
@@ -377,9 +393,7 @@ def update_event_in_calendar(account, event, recurrence=None):
 	calendar_event.description = event.get("description")
 	calendar_event.google_meet_link = event.get("hangoutLink")
 	calendar_event.update(
-		google_calendar_to_repeat_on(
-			recurrence=recurrence, start=event.get("start"), end=event.get("end")
-		)
+		google_calendar_to_repeat_on(recurrence=recurrence, start=event.get("start"), end=event.get("end"))
 	)
 	calendar_event.save(ignore_permissions=True)
 
@@ -389,9 +403,9 @@ def insert_event_in_google_calendar(doc, method=None):
 	Insert Events in Google Calendar if sync_with_google_calendar is checked.
 	"""
 	if (
-		not dontmanage.db.exists("Google Calendar", {"name": doc.google_calendar})
+		not doc.sync_with_google_calendar
 		or doc.pulled_from_google_calendar
-		or not doc.sync_with_google_calendar
+		or not dontmanage.db.exists("Google Calendar", {"name": doc.google_calendar})
 	):
 		return
 
@@ -453,9 +467,9 @@ def update_event_in_google_calendar(doc, method=None):
 	# Workaround to avoid triggering updation when Event is being inserted since
 	# creation and modified are same when inserting doc
 	if (
-		not dontmanage.db.exists("Google Calendar", {"name": doc.google_calendar})
+		not doc.sync_with_google_calendar
 		or doc.modified == doc.creation
-		or not doc.sync_with_google_calendar
+		or not dontmanage.db.exists("Google Calendar", {"name": doc.google_calendar})
 	):
 		return
 
@@ -480,7 +494,7 @@ def update_event_in_google_calendar(doc, method=None):
 		event["description"] = doc.description
 		event["recurrence"] = repeat_on_to_google_calendar_recurrence_rule(doc)
 		event["status"] = (
-			"cancelled" if doc.event_type == "Cancelled" or doc.status == "Closed" else event.get("status")
+			"cancelled" if doc.status == "Cancelled" or doc.status == "Closed" else event.get("status")
 		)
 		event.update(
 			format_date_according_to_google_calendar(
@@ -763,9 +777,7 @@ def get_attendees(doc):
 		if participant.get("email"):
 			attendees.append({"email": participant.email})
 		else:
-			email_not_found.append(
-				{"dt": participant.reference_doctype, "dn": participant.reference_docname}
-			)
+			email_not_found.append({"dt": participant.reference_doctype, "dn": participant.reference_docname})
 
 	if email_not_found:
 		dontmanage.msgprint(

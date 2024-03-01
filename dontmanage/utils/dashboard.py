@@ -25,7 +25,7 @@ def cache_source(function):
 		if int(kwargs.get("refresh") or 0):
 			results = generate_and_cache_results(kwargs, function, cache_key, chart)
 		else:
-			cached_results = dontmanage.cache().get_value(cache_key)
+			cached_results = dontmanage.cache.get_value(cache_key)
 			if cached_results:
 				results = dontmanage.parse_json(dontmanage.safe_decode(cached_results))
 			else:
@@ -72,7 +72,6 @@ def generate_and_cache_results(args, function, cache_key, chart):
 
 
 def get_dashboards_with_link(docname, doctype):
-	dashboards = []
 	links = []
 
 	if doctype == "Dashboard Chart":
@@ -80,8 +79,7 @@ def get_dashboards_with_link(docname, doctype):
 	elif doctype == "Number Card":
 		links = dontmanage.get_all("Number Card Link", fields=["parent"], filters={"card": docname})
 
-	dashboards = [link.parent for link in links]
-	return dashboards
+	return [link.parent for link in links]
 
 
 def sync_dashboards(app=None):
@@ -112,4 +110,4 @@ def make_records(path, filters=None):
 			if os.path.isdir(join(path, fname)):
 				if fname == "__pycache__":
 					continue
-				import_file_by_path("{path}/{fname}/{fname}.json".format(path=path, fname=fname))
+				import_file_by_path(f"{path}/{fname}/{fname}.json")

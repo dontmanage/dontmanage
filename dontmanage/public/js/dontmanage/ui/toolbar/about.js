@@ -5,26 +5,28 @@ dontmanage.ui.misc.about = function () {
 
 		$(d.body).html(
 			repl(
-				"<div>\
-		<p>" +
-					__("Open Source Applications for the Web") +
-					"</p>  \
-		<p><i class='fa fa-globe fa-fw'></i>\
-			Website: <a href='https://dontmanageframework.com' target='_blank'>https://dontmanageframework.com</a></p>\
-		<p><i class='fa fa-github fa-fw'></i>\
-			Source: <a href='https://github.com/dontmanage' target='_blank'>https://github.com/dontmanage</a></p>\
-		<p><i class='fa fa-linkedin fa-fw'></i>\
-			Linkedin: <a href='https://linkedin.com/company/dontmanage-tech' target='_blank'>https://linkedin.com/company/dontmanage-tech</a></p>\
-		<p><i class='fa fa-facebook fa-fw'></i>\
-			Facebook: <a href='https://facebook.com/dontmanageerp' target='_blank'>https://facebook.com/dontmanageerp</a></p>\
-		<p><i class='fa fa-twitter fa-fw'></i>\
-			Twitter: <a href='https://twitter.com/dontmanageerp' target='_blank'>https://twitter.com/dontmanageerp</a></p>\
-		<hr>\
-		<h4>Installed Apps</h4>\
-		<div id='about-app-versions'>Loading versions...</div>\
-		<hr>\
-		<p class='text-muted'>&copy; DontManage and contributors </p> \
-		</div>",
+				`<div>
+					<p>${__("Open Source Applications for the Web")}</p>
+					<p><i class='fa fa-globe fa-fw'></i>
+						${__("Website")}:
+						<a href='https://dontmanageframework.com' target='_blank'>https://dontmanageframework.com</a></p>
+					<p><i class='fa fa-github fa-fw'></i>
+						${__("Source")}:
+						<a href='https://github.com/dontmanage' target='_blank'>https://github.com/dontmanage</a></p>
+					<p><i class='fa fa-graduation-cap fa-fw'></i>
+						DontManage School: <a href='https://dontmanage.school' target='_blank'>https://dontmanage.school</a></p>
+					<p><i class='fa fa-linkedin fa-fw'></i>
+						Linkedin: <a href='https://linkedin.com/company/dontmanage-tech' target='_blank'>https://linkedin.com/company/dontmanage-tech</a></p>
+					<p><i class='fa fa-twitter fa-fw'></i>
+						Twitter: <a href='https://twitter.com/dontmanagetech' target='_blank'>https://twitter.com/dontmanagetech</a></p>
+					<p><i class='fa fa-youtube fa-fw'></i>
+						YouTube: <a href='https://www.youtube.com/@dontmanagetech' target='_blank'>https://www.youtube.com/@dontmanagetech</a></p>
+					<hr>
+					<h4>${__("Installed Apps")}</h4>
+					<div id='about-app-versions'>${__("Loading versions...")}</div>
+					<hr>
+					<p class='text-muted'>${__("&copy; DontManage and contributors")} </p>
+					</div>`,
 				dontmanage.app
 			)
 		);
@@ -48,14 +50,15 @@ dontmanage.ui.misc.about = function () {
 			var $wrap = $("#about-app-versions").empty();
 			$.each(Object.keys(versions).sort(), function (i, key) {
 				var v = versions[key];
+				let text;
 				if (v.branch) {
-					var text = $.format("<p><b>{0}:</b> v{1} ({2})<br></p>", [
+					text = $.format("<p><b>{0}:</b> v{1} ({2})<br></p>", [
 						v.title,
 						v.branch_version || v.version,
 						v.branch,
 					]);
 				} else {
-					var text = $.format("<p><b>{0}:</b> v{1}<br></p>", [v.title, v.version]);
+					text = $.format("<p><b>{0}:</b> v{1}<br></p>", [v.title, v.version]);
 				}
 				$(text).appendTo($wrap);
 			});

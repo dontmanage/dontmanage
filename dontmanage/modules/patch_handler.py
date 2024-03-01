@@ -53,7 +53,7 @@ class PatchType(Enum):
 
 def run_all(skip_failing: bool = False, patch_type: PatchType | None = None) -> None:
 	"""run all pending patches"""
-	executed = set(dontmanage.get_all("Patch Log", fields="patch", pluck="patch"))
+	executed = set(dontmanage.get_all("Patch Log", filters={"skipped": 0}, fields="patch", pluck="patch"))
 
 	dontmanage.flags.final_patches = []
 
@@ -65,8 +65,9 @@ def run_all(skip_failing: bool = False, patch_type: PatchType | None = None) -> 
 		except Exception:
 			if not skip_failing:
 				raise
-			else:
-				print("Failed to execute patch")
+
+			print("Failed to execute patch")
+			update_patch_log(patch, skipped=True)
 
 	patches = get_all_patches(patch_type=patch_type)
 
@@ -81,7 +82,6 @@ def run_all(skip_failing: bool = False, patch_type: PatchType | None = None) -> 
 
 
 def get_all_patches(patch_type: PatchType | None = None) -> list[str]:
-
 	if patch_type and not isinstance(patch_type, PatchType):
 		dontmanage.throw(f"Unsupported patch type specified: {patch_type}")
 
@@ -99,39 +99,41 @@ def get_patches_from_app(app: str, patch_type: PatchType | None = None) -> list[
 	        1. ini like file with section for different patch_type
 	        2. plain text file with each line representing a patch.
 	"""
-
-	patches_txt = dontmanage.get_pymodule_path(app, "patches.txt")
+	patches_file = dontmanage.get_app_path(app, "patches.txt")
 
 	try:
-		# Attempt to parse as ini file with pre/post patches
-		# allow_no_value: patches are not key value pairs
-		# delimiters = '\n' to avoid treating default `:` and `=` in execute as k:v delimiter
-		parser = configparser.ConfigParser(allow_no_value=True, delimiters="\n")
-		# preserve case
-		parser.optionxform = str
-		parser.read(patches_txt)
-
-		# empty file
-		if not parser.sections():
-			return []
-
-		if not patch_type:
-			return [patch for patch in parser[PatchType.pre_model_sync.value]] + [
-				patch for patch in parser[PatchType.post_model_sync.value]
-			]
-
-		if patch_type.value in parser.sections():
-			return [patch for patch in parser[patch_type.value]]
-		else:
-			dontmanage.throw(dontmanage._("Patch type {} not found in patches.txt").format(patch_type))
-
+		return parse_as_configfile(patches_file, patch_type)
 	except configparser.MissingSectionHeaderError:
 		# treat as old format with each line representing a single patch
 		# backward compatbility with old patches.txt format
 		if not patch_type or patch_type == PatchType.pre_model_sync:
-			return dontmanage.get_file_items(patches_txt)
+			return dontmanage.get_file_items(patches_file)
 
 	return []
+
+
+def parse_as_configfile(patches_file: str, patch_type: PatchType | None = None) -> list[str]:
+	# Attempt to parse as ini file with pre/post patches
+	# allow_no_value: patches are not key value pairs
+	# delimiters = '\n' to avoid treating default `:` and `=` in execute as k:v delimiter
+	parser = configparser.ConfigParser(allow_no_value=True, delimiters="\n")
+	# preserve case
+	parser.optionxform = str
+	parser.read(patches_file)
+
+	# empty file
+	if not parser.sections():
+		return []
+
+	if not patch_type:
+		return [patch for patch in parser[PatchType.pre_model_sync.value]] + [
+			patch for patch in parser[PatchType.post_model_sync.value]
+		]
+
+	if patch_type.value in parser.sections():
+		return [patch for patch in parser[patch_type.value]]
+	else:
+		dontmanage.throw(dontmanage._("Patch type {} not found in patches.txt").format(patch_type))
 
 
 def reload_doc(args):
@@ -173,7 +175,7 @@ def execute_patch(patchmodule: str, method=None, methodargs=None):
 		f"Executing {patchmodule or methodargs} in {dontmanage.local.site} ({dontmanage.db.cur_db_name}){docstring}"
 	)
 
-	start_time = time.time()
+	start_time = time.monotonic()
 	dontmanage.db.begin()
 	dontmanage.db.auto_commit_on_many_writes = 0
 	try:
@@ -197,16 +199,25 @@ def execute_patch(patchmodule: str, method=None, methodargs=None):
 
 	else:
 		dontmanage.db.commit()
-		end_time = time.time()
+		end_time = time.monotonic()
 		_patch_mode(False)
 		print(f"Success: Done in {round(end_time - start_time, 3)}s")
 
 	return True
 
 
-def update_patch_log(patchmodule):
+def update_patch_log(patchmodule, skipped=False):
 	"""update patch_file in patch log"""
-	dontmanage.get_doc({"doctype": "Patch Log", "patch": patchmodule}).insert(ignore_permissions=True)
+
+	patch = dontmanage.get_doc({"doctype": "Patch Log", "patch": patchmodule})
+
+	if skipped:
+		traceback = dontmanage.get_traceback(with_context=True)
+		patch.skipped = 1
+		patch.traceback = traceback
+		print(traceback, end="\n\n")
+
+	patch.insert(ignore_permissions=True)
 
 
 def executed(patchmodule):
@@ -214,17 +225,10 @@ def executed(patchmodule):
 	if patchmodule.startswith("finally:"):
 		# patches are saved without the finally: tag
 		patchmodule = patchmodule.replace("finally:", "")
-	return dontmanage.db.get_value("Patch Log", {"patch": patchmodule})
+	return dontmanage.db.get_value("Patch Log", {"patch": patchmodule, "skipped": 0})
 
 
 def _patch_mode(enable):
 	"""stop/start execution till patch is run"""
 	dontmanage.local.flags.in_patch = enable
 	dontmanage.db.commit()
-
-
-def check_session_stopped():
-	"""This function is deprecated. Use maintenance_mode in site config instead."""
-	if dontmanage.db.get_global("__session_status") == "stop":
-		dontmanage.msgprint(dontmanage.db.get_global("__session_status_message"))
-		raise dontmanage.SessionStopped("Session Stopped")

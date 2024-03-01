@@ -47,15 +47,12 @@ dontmanage.get_avatar = function (css_class, title, image_url = null, remove_col
 	if (!css_class) {
 		css_class = "avatar-small";
 	}
+	let el = document.createElement("div");
 
 	if (image_url) {
-		const image =
-			window.cordova && image_url.indexOf("http") === -1
-				? dontmanage.base_url + image_url
-				: image_url;
-		return `<span class="avatar ${css_class}" title="${title}" ${data_attributes}>
-				<span class="avatar-frame" style='background-image: url("${image}")'
-					title="${title}"></span>
+		el.innerHTML = `
+			<span class="avatar ${css_class}" ${data_attributes}>
+				<span class="avatar-frame" style='background-image: url("${image_url}")'</span>
 			</span>`;
 	} else {
 		let abbr = dontmanage.get_abbr(title);
@@ -69,13 +66,18 @@ dontmanage.get_avatar = function (css_class, title, image_url = null, remove_col
 			abbr = abbr.substr(0, 1);
 		}
 
-		return `<span class="avatar ${css_class}" title="${title}" ${data_attributes}>
+		el.innerHTML = `<span class="avatar ${css_class}" ${data_attributes}>
 			<div class="avatar-frame standard-image"
 				style="${style}">
 					${abbr}
 			</div>
 		</span>`;
 	}
+
+	el.querySelector(".avatar").setAttribute("title", title);
+	el.querySelector(".avatar-frame").setAttribute("title", title);
+
+	return el.innerHTML;
 };
 
 dontmanage.avatar_group = function (users, limit = 4, options = {}) {
@@ -154,6 +156,7 @@ dontmanage.palette = [
 ];
 
 dontmanage.get_palette = function (txt) {
+	if (!txt) return dontmanage.palette[8]; // breaks when undefined
 	var idx = cint((parseInt(md5(txt).substr(4, 2), 16) + 1) / 5.33);
 	return dontmanage.palette[idx % 8];
 };
@@ -216,7 +219,7 @@ window.lstrip = function lstrip(s, chars) {
 	if (!chars) chars = ["\n", "\t", " "];
 	// strip left
 	let first_char = s.substr(0, 1);
-	while (in_list(chars, first_char)) {
+	while (chars.includes(first_char)) {
 		s = s.substr(1);
 		first_char = s.substr(0, 1);
 	}
@@ -226,7 +229,7 @@ window.lstrip = function lstrip(s, chars) {
 window.rstrip = function (s, chars) {
 	if (!chars) chars = ["\n", "\t", " "];
 	let last_char = s.substr(s.length - 1);
-	while (in_list(chars, last_char)) {
+	while (chars.includes(last_char)) {
 		s = s.substr(0, s.length - 1);
 		last_char = s.substr(s.length - 1);
 	}
@@ -269,6 +272,10 @@ dontmanage.get_cookies = function getCookies() {
 
 dontmanage.is_mobile = function () {
 	return $(document).width() < 768;
+};
+
+dontmanage.is_large_screen = function () {
+	return $(document).height() > 1180;
 };
 
 dontmanage.utils.xss_sanitise = function (string, options) {
@@ -329,10 +336,39 @@ dontmanage.utils.sanitise_redirect = (url) => {
 		};
 	})();
 
+	/*
+	 * Strips out url containing the text `javascript` with or without any HTML Entities in it
+	 **/
 	const sanitise_javascript = (url) => {
-		// please do not ask how or why
-		const REGEX_SCRIPT =
-			/j[\s]*(&#x.{1,7})?a[\s]*(&#x.{1,7})?v[\s]*(&#x.{1,7})?a[\s]*(&#x.{1,7})?s[\s]*(&#x.{1,7})?c[\s]*(&#x.{1,7})?r[\s]*(&#x.{1,7})?i[\s]*(&#x.{1,7})?p[\s]*(&#x.{1,7})?t/gi;
+		/*
+		 * Written below split into parts, but actual is in one line regardless of whitespaces
+		 * /
+		 * 	j
+		 * 		\s*(&#x.{1,7})?
+		 * 	a
+		 * 		\s*(&#x.{1,7})?
+		 * 	v
+		 * 		\s*(&#x.{1,7})?
+		 * 	a
+		 * 		\s*(&#x.{1,7})?
+		 * 	s
+		 * 		\s*(&#x.{1,7})?
+		 * 	c
+		 * 		\s*(&#x.{1,7})?
+		 * 	r
+		 * 		\s*(&#x.{1,7})?
+		 * 	i
+		 * 		\s*(&#x.{1,7})?
+		 * 	p
+		 * 		\s*(&#x.{1,7})?
+		 * 	t
+		 * /gi
+		 * */
+		const REGEX_ESC_UNIT = /\s*(&#x.{1,7})?/;
+		const REGEX_SCRIPT = new RegExp(
+			Array.from("javascript").join(REGEX_ESC_UNIT.source),
+			"gi"
+		);
 
 		return url.replace(REGEX_SCRIPT, "");
 	};

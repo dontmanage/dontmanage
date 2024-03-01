@@ -10,9 +10,24 @@ from dontmanage.desk.form.load import get_attachments
 from dontmanage.model.document import Document
 from dontmanage.model.sync import get_doc_files
 from dontmanage.modules.import_file import import_doc, import_file_by_path
+from dontmanage.utils import get_files_path
 
 
 class PackageImport(Document):
+	# begin: auto-generated types
+	# This code is auto-generated. Do not modify anything in this block.
+
+	from typing import TYPE_CHECKING
+
+	if TYPE_CHECKING:
+		from dontmanage.types import DF
+
+		activate: DF.Check
+		attach_package: DF.Attach | None
+		force: DF.Check
+		log: DF.Code | None
+
+	# end: auto-generated types
 	def validate(self):
 		if self.activate:
 			self.import_package()
@@ -35,7 +50,7 @@ class PackageImport(Document):
 			[
 				"tar",
 				"xzf",
-				dontmanage.get_site_path(attachment.file_url.strip("/")),
+				get_files_path(attachment.file_name, is_private=attachment.is_private),
 				"-C",
 				dontmanage.get_site_path("packages"),
 			]

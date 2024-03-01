@@ -22,6 +22,26 @@ from dontmanage.utils.backups import new_backup
 
 
 class GoogleDrive(Document):
+	# begin: auto-generated types
+	# This code is auto-generated. Do not modify anything in this block.
+
+	from typing import TYPE_CHECKING
+
+	if TYPE_CHECKING:
+		from dontmanage.types import DF
+
+		authorization_code: DF.Data | None
+		backup_folder_id: DF.Data | None
+		backup_folder_name: DF.Data
+		email: DF.Data
+		enable: DF.Check
+		file_backup: DF.Check
+		frequency: DF.Literal["", "Daily", "Weekly"]
+		last_backup_on: DF.Datetime | None
+		refresh_token: DF.Data | None
+		send_email_for_successful_backup: DF.Check
+
+	# end: auto-generated types
 	def validate(self):
 		doc_before_save = self.get_doc_before_save()
 		if doc_before_save and doc_before_save.backup_folder_name != self.backup_folder_name:
@@ -47,9 +67,7 @@ def authorize_access(reauthorize=False, code=None):
 	Google Contact Name is set to flags to set_value after Authorization Code is obtained.
 	"""
 
-	oauth_code = (
-		dontmanage.db.get_single_value("Google Drive", "authorization_code") if not code else code
-	)
+	oauth_code = dontmanage.db.get_single_value("Google Drive", "authorization_code") if not code else code
 	oauth_obj = GoogleOAuth("drive")
 
 	if not oauth_code or reauthorize:
@@ -113,9 +131,7 @@ def check_for_folder_in_google_drive():
 			google_drive.files().list(q="mimeType='application/vnd.google-apps.folder'").execute()
 		)
 	except HttpError as e:
-		dontmanage.throw(
-			_("Google Drive - Could not find folder in Google Drive - Error Code {0}").format(e)
-		)
+		dontmanage.throw(_("Google Drive - Could not find folder in Google Drive - Error Code {0}").format(e))
 
 	for f in google_drive_folders.get("files"):
 		if f.get("name") == account.backup_folder_name:
@@ -153,7 +169,7 @@ def upload_system_backup_to_google_drive():
 	validate_file_size()
 
 	if dontmanage.flags.create_new_backup:
-		set_progress(1, "Backing up Data.")
+		set_progress(1, _("Backing up Data."))
 		backup = new_backup()
 		file_urls = []
 		file_urls.append(backup.backup_path_db)
@@ -179,12 +195,12 @@ def upload_system_backup_to_google_drive():
 			dontmanage.throw(_("Google Drive - Could not locate - {0}").format(e))
 
 		try:
-			set_progress(2, "Uploading backup to Google Drive.")
+			set_progress(2, _("Uploading backup to Google Drive."))
 			google_drive.files().create(body=file_metadata, media_body=media, fields="id").execute()
 		except HttpError as e:
 			send_email(False, "Google Drive", "Google Drive", "email", error_status=e)
 
-	set_progress(3, "Uploading successful.")
+	set_progress(3, _("Uploading successful."))
 	dontmanage.db.set_single_value("Google Drive", "last_backup_on", dontmanage.utils.now_datetime())
 	send_email(True, "Google Drive", "Google Drive", "email")
 	return _("Google Drive Backup Successful.")

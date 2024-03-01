@@ -3,6 +3,7 @@
 import getpass
 
 import dontmanage
+from dontmanage.geo.doctype.country.country import import_country_and_currency
 from dontmanage.utils.password import update_password
 
 
@@ -22,13 +23,10 @@ def after_install():
 	install_basic_docs()
 
 	from dontmanage.core.doctype.file.utils import make_home_folder
-
-	make_home_folder()
-
-	import_country_and_currency()
-
 	from dontmanage.core.doctype.language.language import sync_languages
 
+	make_home_folder()
+	import_country_and_currency()
 	sync_languages()
 
 	# save default print setting
@@ -190,53 +188,6 @@ def complete_setup_wizard():
 			"currency": "USD",
 		}
 	)
-
-
-def import_country_and_currency():
-	from dontmanage.geo.country_info import get_all
-	from dontmanage.utils import update_progress_bar
-
-	data = get_all()
-
-	for i, name in enumerate(data):
-		update_progress_bar("Updating country info", i, len(data))
-		country = dontmanage._dict(data[name])
-		add_country_and_currency(name, country)
-
-	print("")
-
-	# enable frequently used currencies
-	for currency in ("INR", "USD", "GBP", "EUR", "AED", "AUD", "JPY", "CNY", "CHF"):
-		dontmanage.db.set_value("Currency", currency, "enabled", 1)
-
-
-def add_country_and_currency(name, country):
-	if not dontmanage.db.exists("Country", name):
-		dontmanage.get_doc(
-			{
-				"doctype": "Country",
-				"country_name": name,
-				"code": country.code,
-				"date_format": country.date_format or "dd-mm-yyyy",
-				"time_format": country.time_format or "HH:mm:ss",
-				"time_zones": "\n".join(country.timezones or []),
-				"docstatus": 0,
-			}
-		).db_insert()
-
-	if country.currency and not dontmanage.db.exists("Currency", country.currency):
-		dontmanage.get_doc(
-			{
-				"doctype": "Currency",
-				"currency_name": country.currency,
-				"fraction": country.currency_fraction,
-				"symbol": country.currency_symbol,
-				"fraction_units": country.currency_fraction_units,
-				"smallest_currency_fraction_value": country.smallest_currency_fraction_value,
-				"number_format": country.number_format,
-				"docstatus": 0,
-			}
-		).db_insert()
 
 
 def add_standard_navbar_items():

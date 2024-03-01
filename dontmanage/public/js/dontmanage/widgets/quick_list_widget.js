@@ -48,7 +48,7 @@ export default class QuickListWidget extends Widget {
 	setup_refresh_list_button() {
 		this.refresh_list = $(
 			`<div class="refresh-list btn btn-xs pull-right" title="${__("Refresh List")}">
-				${dontmanage.utils.icon("refresh", "sm")}
+				${dontmanage.utils.icon("es-line-reload", "sm")}
 			</div>`
 		);
 
@@ -76,7 +76,7 @@ export default class QuickListWidget extends Widget {
 			delete this.filter_group;
 		}
 
-		this.filters = dontmanage.utils.get_filter_from_json(this.quick_list_filter, doctype);
+		this.filters = dontmanage.utils.process_filter_expression(this.quick_list_filter);
 
 		this.filter_group = new dontmanage.ui.FilterGroup({
 			parent: this.dialog.get_field("filter_area").$wrapper,
@@ -104,7 +104,7 @@ export default class QuickListWidget extends Widget {
 			primary_action: function () {
 				let old_filter = me.quick_list_filter;
 				let filters = me.filter_group.get_filters();
-				me.quick_list_filter = dontmanage.utils.get_filter_as_json(filters);
+				me.quick_list_filter = JSON.stringify(filters);
 
 				this.hide();
 
@@ -114,7 +114,7 @@ export default class QuickListWidget extends Widget {
 					me.set_body();
 				}
 			},
-			primary_action_label: __("Set"),
+			primary_action_label: __("Save"),
 		});
 
 		this.dialog.show();
@@ -203,7 +203,7 @@ export default class QuickListWidget extends Widget {
 
 			fields.push("modified");
 
-			let quick_list_filter = dontmanage.utils.get_filter_from_json(this.quick_list_filter);
+			let quick_list_filter = dontmanage.utils.process_filter_expression(this.quick_list_filter);
 
 			let args = {
 				method: "dontmanage.desk.reportview.get",
@@ -241,7 +241,6 @@ export default class QuickListWidget extends Widget {
 		this.footer.empty();
 
 		let filters = dontmanage.utils.get_filter_from_json(this.quick_list_filter);
-
 		let route = dontmanage.utils.generate_route({ type: "doctype", name: this.document_type });
 		this.see_all_button = $(`
 			<div class="see-all btn btn-xs">${__("View List")}</div>

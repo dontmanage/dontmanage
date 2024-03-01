@@ -1,36 +1,46 @@
-# Copyright (c) 2015, DontManage and Contributors
+# Copyright (c) 2022, DontManage and Contributors
 # License: MIT. See LICENSE
 """
 	Utilities for using modules
 """
 import json
 import os
+from textwrap import dedent, indent
+from typing import TYPE_CHECKING, Union
 
 import dontmanage
-import dontmanage.utils
-from dontmanage import _
-from dontmanage.utils import cint
+from dontmanage import _, get_module_path, scrub
+from dontmanage.utils import cint, cstr, now_datetime
+
+if TYPE_CHECKING:
+	from types import ModuleType
+
+	from dontmanage.model.document import Document
 
 
-def export_module_json(doc, is_standard, module):
+doctype_python_modules = {}
+
+
+def export_module_json(doc: "Document", is_standard: bool, module: str) -> str | None:
 	"""Make a folder for the given doc and add its json file (make it a standard
-	object that will be synced)"""
-	if not dontmanage.flags.in_import and getattr(dontmanage.get_conf(), "developer_mode", 0) and is_standard:
+	object that will be synced)
+
+	Returns the absolute file_path without the extension.
+	Eg: For exporting a Print Format "_Test Print Format 1", the return value will be
+	`/home/gavin/dontmanage-bench/apps/dontmanage/dontmanage/core/print_format/_test_print_format_1/_test_print_format_1`
+	"""
+	if not dontmanage.flags.in_import and is_standard and dontmanage.conf.developer_mode:
 		from dontmanage.modules.export_file import export_to_files
 
 		# json
-		export_to_files(
-			record_list=[[doc.doctype, doc.name]], record_module=module, create_init=is_standard
-		)
+		export_to_files(record_list=[[doc.doctype, doc.name]], record_module=module, create_init=is_standard)
 
-		path = os.path.join(
+		return os.path.join(
 			dontmanage.get_module_path(module), scrub(doc.doctype), scrub(doc.name), scrub(doc.name)
 		)
 
-		return path
 
-
-def get_doc_module(module, doctype, name):
+def get_doc_module(module: str, doctype: str, name: str) -> "ModuleType":
 	"""Get custom module for given document"""
 	module_name = "{app}.{module}.{doctype}.{name}.{name}".format(
 		app=dontmanage.local.module_app[scrub(module)],
@@ -42,38 +52,29 @@ def get_doc_module(module, doctype, name):
 
 
 @dontmanage.whitelist()
-def export_customizations(module, doctype, sync_on_migrate=0, with_permissions=0):
+def export_customizations(
+	module: str, doctype: str, sync_on_migrate: bool = False, with_permissions: bool = False
+):
 	"""Export Custom Field and Property Setter for the current document to the app folder.
 	This will be synced with bench migrate"""
 
 	sync_on_migrate = cint(sync_on_migrate)
 	with_permissions = cint(with_permissions)
 
-	if not dontmanage.get_conf().developer_mode:
-		raise Exception("Not developer mode")
+	if not dontmanage.conf.developer_mode:
+		dontmanage.throw(_("Only allowed to export customizations in developer mode"))
 
 	custom = {
-		"custom_fields": [],
-		"property_setters": [],
+		"custom_fields": dontmanage.get_all("Custom Field", fields="*", filters={"dt": doctype}),
+		"property_setters": dontmanage.get_all("Property Setter", fields="*", filters={"doc_type": doctype}),
 		"custom_perms": [],
-		"links": [],
+		"links": dontmanage.get_all("DocType Link", fields="*", filters={"parent": doctype}),
 		"doctype": doctype,
 		"sync_on_migrate": sync_on_migrate,
 	}
 
-	def add(_doctype):
-		custom["custom_fields"] += dontmanage.get_all("Custom Field", fields="*", filters={"dt": _doctype})
-		custom["property_setters"] += dontmanage.get_all(
-			"Property Setter", fields="*", filters={"doc_type": _doctype}
-		)
-		custom["links"] += dontmanage.get_all("DocType Link", fields="*", filters={"parent": _doctype})
-
-	add(doctype)
-
 	if with_permissions:
-		custom["custom_perms"] = dontmanage.get_all(
-			"Custom DocPerm", fields="*", filters={"parent": doctype}
-		)
+		custom["custom_perms"] = dontmanage.get_all("Custom DocPerm", fields="*", filters={"parent": doctype})
 
 	# also update the custom fields and property setters for all child tables
 	for d in dontmanage.get_meta(doctype).get_table_fields():
@@ -89,6 +90,7 @@ def export_customizations(module, doctype, sync_on_migrate=0, with_permissions=0
 			f.write(dontmanage.as_json(custom))
 
 		dontmanage.msgprint(_("Customizations for <b>{0}</b> exported to:<br>{1}").format(doctype, path))
+		return path
 
 
 def sync_customizations(app=None):
@@ -108,10 +110,10 @@ def sync_customizations(app=None):
 						with open(os.path.join(folder, fname)) as f:
 							data = json.loads(f.read())
 						if data.get("sync_on_migrate"):
-							sync_customizations_for_doctype(data, folder)
+							sync_customizations_for_doctype(data, folder, fname)
 
 
-def sync_customizations_for_doctype(data, folder):
+def sync_customizations_for_doctype(data: dict, folder: str, filename: str = ""):
 	"""Sync doctype customzations for a particular data set"""
 	from dontmanage.core.doctype.doctype.doctype import validate_fields_for_doctype
 
@@ -149,10 +151,13 @@ def sync_customizations_for_doctype(data, folder):
 
 		for doc_type in doctypes:
 			# only sync the parent doctype and child doctype if there isn't any other child table json file
-			if doc_type == doctype or not os.path.exists(
-				os.path.join(folder, dontmanage.scrub(doc_type) + ".json")
-			):
+			if doc_type == doctype or not os.path.exists(os.path.join(folder, scrub(doc_type) + ".json")):
 				sync_single_doctype(doc_type)
+
+	if not dontmanage.db.exists("DocType", doctype):
+		print(_("DocType {0} does not exist.").format(doctype))
+		print(_("Skipping fixture syncing for doctype {0} from file {1}").format(doctype, filename))
+		return
 
 	if data["custom_fields"]:
 		sync("custom_fields", "Custom Field", "dt")
@@ -161,36 +166,34 @@ def sync_customizations_for_doctype(data, folder):
 	if data["property_setters"]:
 		sync("property_setters", "Property Setter", "doc_type")
 
+	print(f"Updating customizations for {doctype}")
 	if data.get("custom_perms"):
 		sync("custom_perms", "Custom DocPerm", "parent")
 
-	print(f"Updating customizations for {doctype}")
 	validate_fields_for_doctype(doctype)
 
 	if update_schema and not dontmanage.db.get_value("DocType", doctype, "issingle"):
 		dontmanage.db.updatedb(doctype)
 
 
-def scrub(txt):
-	return dontmanage.scrub(txt)
-
-
-def scrub_dt_dn(dt, dn):
+def scrub_dt_dn(dt: str, dn: str) -> tuple[str, str]:
 	"""Returns in lowercase and code friendly names of doctype and name for certain types"""
 	return scrub(dt), scrub(dn)
 
 
-def get_module_path(module):
-	"""Returns path of the given module"""
-	return dontmanage.get_module_path(module)
+def get_doc_path(module: str, doctype: str, name: str) -> str:
+	"""Returns path of a doc in a module"""
+	return os.path.join(get_module_path(module), *scrub_dt_dn(doctype, name))
 
 
-def get_doc_path(module, doctype, name):
-	dt, dn = scrub_dt_dn(doctype, name)
-	return os.path.join(get_module_path(module), dt, dn)
-
-
-def reload_doc(module, dt=None, dn=None, force=False, reset_permissions=False):
+def reload_doc(
+	module: str,
+	dt: str | None = None,
+	dn: str | None = None,
+	force: bool = False,
+	reset_permissions: bool = False,
+):
+	"""Reload Document from model (`[module]/<doctype>/[name]/[name].json`) files"""
 	from dontmanage.modules.import_file import import_files
 
 	return import_files(module, dt, dn, force=force, reset_permissions=reset_permissions)
@@ -200,20 +203,17 @@ def export_doc(doctype, name, module=None):
 	"""Write a doc to standard path."""
 	from dontmanage.modules.export_file import write_document_file
 
-	print(doctype, name)
-
-	if not module:
-		module = dontmanage.db.get_value("DocType", name, "module")
+	print(f"Exporting Document {doctype} {name}")
+	module = module or dontmanage.db.get_value("DocType", name, "module")
 	write_document_file(dontmanage.get_doc(doctype, name), module)
 
 
-def get_doctype_module(doctype) -> str:
+def get_doctype_module(doctype: str) -> str:
 	"""Returns **Module Def** name of given doctype."""
-
-	def make_modules_dict():
-		return dict(dontmanage.db.sql("select name, module from tabDocType"))
-
-	doctype_module_map = dontmanage.cache().get_value("doctype_modules", make_modules_dict)
+	doctype_module_map = dontmanage.cache.get_value(
+		"doctype_modules",
+		generator=lambda: dict(dontmanage.qb.from_("DocType").select("name", "module").run()),
+	)
 
 	if module_name := doctype_module_map.get(doctype):
 		return module_name
@@ -221,39 +221,33 @@ def get_doctype_module(doctype) -> str:
 		dontmanage.throw(_("DocType {} not found").format(doctype), exc=dontmanage.DoesNotExistError)
 
 
-doctype_python_modules = {}
-
-
 def load_doctype_module(doctype, module=None, prefix="", suffix=""):
-	"""Returns the module object for given doctype."""
-	if not module:
-		module = get_doctype_module(doctype)
+	"""Returns the module object for given doctype.
 
+	Note: This will return the standard defined module object for the doctype irrespective
+	of the `override_doctype_class` hook.
+	"""
+	module = module or get_doctype_module(doctype)
 	app = get_module_app(module)
-
 	key = (app, doctype, prefix, suffix)
-
 	module_name = get_module_name(doctype, module, prefix, suffix)
 
-	try:
-		if key not in doctype_python_modules:
+	if key not in doctype_python_modules:
+		try:
 			doctype_python_modules[key] = dontmanage.get_module(module_name)
-	except ImportError as e:
-		msg = f"Module import failed for {doctype}, the DocType you're trying to open might be deleted."
-		msg += f"<br> Error: {e}"
-		raise ImportError(msg) from e
+		except ImportError as e:
+			msg = f"Module import failed for {doctype}, the DocType you're trying to open might be deleted."
+			msg += f"<br> Error: {e}"
+			raise ImportError(msg) from e
 
 	return doctype_python_modules[key]
 
 
-def get_module_name(doctype, module, prefix="", suffix="", app=None):
-	return "{app}.{module}.doctype.{doctype}.{prefix}{doctype}{suffix}".format(
-		app=scrub(app or get_module_app(module)),
-		module=scrub(module),
-		doctype=scrub(doctype),
-		prefix=prefix,
-		suffix=suffix,
-	)
+def get_module_name(doctype: str, module: str, prefix: str = "", suffix: str = "", app: str | None = None):
+	app = scrub(app or get_module_app(module))
+	module = scrub(module)
+	doctype = scrub(doctype)
+	return f"{app}.{module}.doctype.{doctype}.{prefix}{doctype}{suffix}"
 
 
 def get_module_app(module: str) -> str:
@@ -266,72 +260,76 @@ def get_module_app(module: str) -> str:
 def get_app_publisher(module: str) -> str:
 	app = get_module_app(module)
 	if not app:
-		dontmanage.throw(_("App not found"))
-	app_publisher = dontmanage.get_hooks(hook="app_publisher", app_name=app)[0]
-	return app_publisher
+		dontmanage.throw(_("App not found for module: {0}").format(module))
+	return dontmanage.get_hooks(hook="app_publisher", app_name=app)[0]
 
 
-def make_boilerplate(template, doc, opts=None):
+def make_boilerplate(
+	template: str, doc: Union["Document", "dontmanage._dict"], opts: Union[dict, "dontmanage._dict"] = None
+):
 	target_path = get_doc_path(doc.module, doc.doctype, doc.name)
 	template_name = template.replace("controller", scrub(doc.name))
 	if template_name.endswith("._py"):
 		template_name = template_name[:-4] + ".py"
 	target_file_path = os.path.join(target_path, template_name)
+	template_file_path = os.path.join(
+		get_module_path("core"), "doctype", scrub(doc.doctype), "boilerplate", template
+	)
 
-	if not doc:
-		doc = {}
+	if os.path.exists(target_file_path):
+		print(f"{target_file_path} already exists, skipping...")
+		return
 
+	doc = doc or dontmanage._dict()
+	opts = opts or dontmanage._dict()
 	app_publisher = get_app_publisher(doc.module)
+	base_class = "Document"
+	base_class_import = "from dontmanage.model.document import Document"
+	controller_body = "pass"
 
-	if not os.path.exists(target_file_path):
-		if not opts:
-			opts = {}
+	if doc.get("is_tree"):
+		base_class = "NestedSet"
+		base_class_import = "from dontmanage.utils.nestedset import NestedSet"
 
-		base_class = "Document"
-		base_class_import = "from dontmanage.model.document import Document"
-		if doc.get("is_tree"):
-			base_class = "NestedSet"
-			base_class_import = "from dontmanage.utils.nestedset import NestedSet"
+	if doc.get("is_virtual"):
+		controller_body = indent(
+			dedent(
+				"""
+			def db_insert(self, *args, **kwargs):
+				pass
 
-		custom_controller = "pass"
-		if doc.get("is_virtual"):
-			custom_controller = """
-	def db_insert(self, *args, **kwargs):
-		pass
+			def load_from_db(self):
+				pass
 
-	def load_from_db(self):
-		pass
+			def db_update(self):
+				pass
 
-	def db_update(self, *args, **kwargs):
-		pass
+			@staticmethod
+			def get_list(args):
+				pass
 
-	@staticmethod
-	def get_list(args):
-		pass
+			@staticmethod
+			def get_count(args):
+				pass
 
-	@staticmethod
-	def get_count(args):
-		pass
+			@staticmethod
+			def get_stats(args):
+				pass
+			"""
+			),
+			"\t",
+		)
 
-	@staticmethod
-	def get_stats(args):
-		pass"""
-
-		with open(target_file_path, "w") as target:
-			with open(
-				os.path.join(get_module_path("core"), "doctype", scrub(doc.doctype), "boilerplate", template),
-			) as source:
-				target.write(
-					dontmanage.as_unicode(
-						dontmanage.utils.cstr(source.read()).format(
-							app_publisher=app_publisher,
-							year=dontmanage.utils.nowdate()[:4],
-							classname=doc.name.replace(" ", "").replace("-", ""),
-							base_class_import=base_class_import,
-							base_class=base_class,
-							doctype=doc.name,
-							**opts,
-							custom_controller=custom_controller,
-						)
-					)
-				)
+	with open(target_file_path, "w") as target, open(template_file_path) as source:
+		template = source.read()
+		controller_file_content = cstr(template).format(
+			app_publisher=app_publisher,
+			year=now_datetime().year,
+			classname=doc.name.replace(" ", "").replace("-", ""),
+			base_class_import=base_class_import,
+			base_class=base_class,
+			doctype=doc.name,
+			**opts,
+			custom_controller=controller_body,
+		)
+		target.write(dontmanage.as_unicode(controller_file_content))

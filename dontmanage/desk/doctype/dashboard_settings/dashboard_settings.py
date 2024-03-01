@@ -10,6 +10,17 @@ from dontmanage.model.document import Document
 
 
 class DashboardSettings(Document):
+	# begin: auto-generated types
+	# This code is auto-generated. Do not modify anything in this block.
+
+	from typing import TYPE_CHECKING
+
+	if TYPE_CHECKING:
+		from dontmanage.types import DF
+
+		chart_config: DF.Code | None
+		user: DF.Link | None
+	# end: auto-generated types
 	pass
 
 
@@ -40,10 +51,8 @@ def save_chart_config(reset, config, chart_name):
 		chart_config[chart_name] = {}
 	else:
 		config = dontmanage.parse_json(config)
-		if not chart_name in chart_config:
+		if chart_name not in chart_config:
 			chart_config[chart_name] = {}
 		chart_config[chart_name].update(config)
 
-	dontmanage.db.set_value(
-		"Dashboard Settings", dontmanage.session.user, "chart_config", json.dumps(chart_config)
-	)
+	dontmanage.db.set_value("Dashboard Settings", dontmanage.session.user, "chart_config", json.dumps(chart_config))

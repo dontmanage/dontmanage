@@ -16,7 +16,7 @@ dontmanage.ui.form.ControlDatetime = class ControlDatetime extends dontmanage.ui
 	}
 
 	get_start_date() {
-		this.value = this.value == null ? undefined : this.value;
+		this.value = this.value == null || this.value == "" ? undefined : this.value;
 		let value = dontmanage.datetime.convert_to_user_tz(this.value);
 		return dontmanage.datetime.str_to_obj(value);
 	}

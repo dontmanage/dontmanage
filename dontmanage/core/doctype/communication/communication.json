@@ -2,7 +2,7 @@
  "actions": [],
  "allow_import": 1,
  "creation": "2013-01-29 10:47:14",
- "default_view": "Inbox",
+ "default_view": "List",
  "description": "Keeps track of all communications",
  "doctype": "DocType",
  "document_type": "Setup",
@@ -31,6 +31,7 @@
   "additional_info",
   "communication_date",
   "read_receipt",
+  "send_after",
   "column_break_14",
   "sender_full_name",
   "read_by_recipient",
@@ -125,7 +126,7 @@
    "fieldtype": "Select",
    "hidden": 1,
    "label": "Delivery Status",
-   "options": "\nSent\nBounced\nOpened\nMarked As Spam\nRejected\nDelayed\nSoft-Bounced\nClicked\nRecipient Unsubscribed\nError\nExpired\nSending\nRead"
+   "options": "\nSent\nBounced\nOpened\nMarked As Spam\nRejected\nDelayed\nSoft-Bounced\nClicked\nRecipient Unsubscribed\nError\nExpired\nSending\nRead\nScheduled"
   },
   {
    "fieldname": "section_break_8",
@@ -318,7 +319,7 @@
   },
   {
    "fieldname": "message_id",
-   "fieldtype": "Data",
+   "fieldtype": "Small Text",
    "ignore_xss_filter": 1,
    "label": "Message ID",
    "length": 995,
@@ -390,12 +391,17 @@
    "hidden": 1,
    "label": "IMAP Folder",
    "read_only": 1
+  },
+  {
+   "fieldname": "send_after",
+   "fieldtype": "Datetime",
+   "label": "Send After"
   }
  ],
  "icon": "fa fa-comment",
  "idx": 1,
  "links": [],
- "modified": "2022-05-09 00:13:45.310564",
+ "modified": "2023-11-27 20:38:27.467076",
  "modified_by": "Administrator",
  "module": "Core",
  "name": "Communication",

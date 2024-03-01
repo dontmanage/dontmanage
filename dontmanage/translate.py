@@ -15,10 +15,8 @@ import operator
 import os
 import re
 from contextlib import contextmanager
-from csv import reader
+from csv import reader, writer
 
-from babel.messages.extract import extract_python
-from babel.messages.jslexer import Token, tokenize, unquote_string
 from pypika.terms import PseudoColumn
 
 import dontmanage
@@ -56,11 +54,10 @@ CSV_STRIP_WHITESPACE_PATTERN = re.compile(r"{\s?([0-9]+)\s?}")
 
 # Cache keys
 MERGED_TRANSLATION_KEY = "merged_translations"
-APP_TRANSLATION_KEY = "translations_from_apps"
 USER_TRANSLATION_KEY = "lang_user_translations"
 
 
-def get_language(lang_list: list = None) -> str:
+def get_language(lang_list: list | None = None) -> str:
 	"""Set `dontmanage.local.lang` from HTTP headers at beginning of request
 
 	Order of priority for setting language:
@@ -91,7 +88,7 @@ def get_language(lang_list: list = None) -> str:
 		if preferred_language_cookie in lang_set:
 			return preferred_language_cookie
 
-		parent_language = get_parent_language(language)
+		parent_language = get_parent_language(preferred_language_cookie)
 		if parent_language in lang_set:
 			return parent_language
 
@@ -123,10 +120,10 @@ def get_parent_language(lang: str) -> str:
 		return lang[: lang.index("-")]
 
 
-def get_user_lang(user: str = None) -> str:
+def get_user_lang(user: str | None = None) -> str:
 	"""Set dontmanage.local.lang from user preferences on session beginning or resumption"""
 	user = user or dontmanage.session.user
-	lang = dontmanage.cache().hget("lang", user)
+	lang = dontmanage.cache.hget("lang", user)
 
 	if not lang:
 		# User.language => Session Defaults => dontmanage.local.lang => 'en'
@@ -137,7 +134,7 @@ def get_user_lang(user: str = None) -> str:
 			or "en"
 		)
 
-		dontmanage.cache().hset("lang", user, lang)
+		dontmanage.cache.hset("lang", user, lang)
 
 	return lang
 
@@ -169,9 +166,8 @@ def get_dict(fortype: str, name: str | None = None) -> dict[str, str]:
 	:param name: name of the document for which assets are to be returned.
 	"""
 	fortype = fortype.lower()
-	cache = dontmanage.cache()
 	asset_key = fortype + ":" + (name or "-")
-	translation_assets = cache.hget("translation_assets", dontmanage.local.lang, shared=True) or {}
+	translation_assets = dontmanage.cache.hget("translation_assets", dontmanage.local.lang) or {}
 
 	if asset_key not in translation_assets:
 		messages = []
@@ -211,7 +207,7 @@ def get_dict(fortype: str, name: str | None = None) -> dict[str, str]:
 		# remove untranslated
 		message_dict = {k: v for k, v in message_dict.items() if k != v}
 		translation_assets[asset_key] = message_dict
-		cache.hset("translation_assets", dontmanage.local.lang, translation_assets, shared=True)
+		dontmanage.cache.hset("translation_assets", dontmanage.local.lang, translation_assets)
 
 	translation_map: dict = translation_assets[asset_key]
 
@@ -232,7 +228,7 @@ def get_dict_from_hooks(fortype, name):
 	translated_dict = {}
 
 	hooks = dontmanage.get_hooks("get_translated_dict")
-	for (hook_fortype, fortype_name) in hooks:
+	for hook_fortype, fortype_name in hooks:
 		if hook_fortype == fortype and fortype_name == name:
 			for method in hooks[(hook_fortype, fortype_name)]:
 				translated_dict.update(dontmanage.get_attr(method)())
@@ -293,10 +289,11 @@ def get_all_translations(lang: str) -> dict[str, str]:
 		return all_translations
 
 	try:
-		return dontmanage.cache().hget(MERGED_TRANSLATION_KEY, lang, generator=_merge_translations)
+		return dontmanage.cache.hget(MERGED_TRANSLATION_KEY, lang, generator=_merge_translations)
 	except Exception:
 		# People mistakenly call translation function on global variables
 		# where locals are not initalized, translations dont make much sense there
+		dontmanage.logger().error("Unable to load translations", exc_info=True)
 		return {}
 
 
@@ -308,20 +305,17 @@ def get_translations_from_apps(lang, apps=None):
 	if lang == "en":
 		return {}
 
-	def _get_from_disk():
-		translations = {}
-		for app in apps or dontmanage.get_all_apps(True):
-			path = os.path.join(dontmanage.get_pymodule_path(app), "translations", lang + ".csv")
-			translations.update(get_translation_dict_from_file(path, lang, app) or {})
-		if "-" in lang:
-			parent = lang.split("-", 1)[0]
-			parent_translations = get_translations_from_apps(parent)
-			parent_translations.update(translations)
-			return parent_translations
+	translations = {}
+	for app in apps or dontmanage.get_installed_apps(_ensure_on_bench=True):
+		path = os.path.join(dontmanage.get_app_path(app, "translations"), lang + ".csv")
+		translations.update(get_translation_dict_from_file(path, lang, app) or {})
+	if "-" in lang:
+		parent = lang.split("-", 1)[0]
+		parent_translations = get_translations_from_apps(parent)
+		parent_translations.update(translations)
+		return parent_translations
 
-		return translations
-
-	return dontmanage.cache().hget(APP_TRANSLATION_KEY, lang, shared=True, generator=_get_from_disk)
+	return translations
 
 
 def get_translation_dict_from_file(path, lang, app, throw=False) -> dict[str, str]:
@@ -337,9 +331,7 @@ def get_translation_dict_from_file(path, lang, app, throw=False) -> dict[str, st
 			elif len(item) in [2, 3]:
 				translation_map[item[0]] = strip(item[1])
 			elif item:
-				msg = "Bad translation in '{app}' for language '{lang}': {values}".format(
-					app=app, lang=lang, values=cstr(item)
-				)
+				msg = f"Bad translation in '{app}' for language '{lang}': {cstr(item)}"
 				dontmanage.log_error(message=msg, title="Error in translation file")
 				if throw:
 					dontmanage.throw(msg, title="Error in translation file")
@@ -365,20 +357,18 @@ def get_user_translations(lang):
 			user_translations[key] = value
 		return user_translations
 
-	return dontmanage.cache().hget(USER_TRANSLATION_KEY, lang, generator=_read_from_db)
+	return dontmanage.cache.hget(USER_TRANSLATION_KEY, lang, generator=_read_from_db)
 
 
 def clear_cache():
 	"""Clear all translation assets from :meth:`dontmanage.cache`"""
-	cache = dontmanage.cache()
-	cache.delete_key("langinfo")
+	dontmanage.cache.delete_key("langinfo")
 
 	# clear translations saved in boot cache
-	cache.delete_key("bootinfo")
-	cache.delete_key("translation_assets", shared=True)
-	cache.delete_key(APP_TRANSLATION_KEY, shared=True)
-	cache.delete_key(USER_TRANSLATION_KEY)
-	cache.delete_key(MERGED_TRANSLATION_KEY)
+	dontmanage.cache.delete_key("bootinfo")
+	dontmanage.cache.delete_key("translation_assets")
+	dontmanage.cache.delete_key(USER_TRANSLATION_KEY)
+	dontmanage.cache.delete_key(MERGED_TRANSLATION_KEY)
 
 
 def get_messages_for_app(app, deduplicate=True):
@@ -465,16 +455,13 @@ def get_messages_from_doctype(name):
 
 		if d.fieldtype == "Select" and d.options:
 			options = d.options.split("\n")
-			if not "icon" in options[0]:
+			if "icon" not in options[0]:
 				messages.extend(options)
 		if d.fieldtype == "HTML" and d.options:
 			messages.append(d.options)
 
 	# translations of roles
-	for d in meta.get("permissions"):
-		if d.role:
-			messages.append(d.role)
-
+	messages.extend(d.role for d in meta.get("permissions") if d.role)
 	messages = [message for message in messages if message]
 	messages = [("DocType: " + name, message) for message in messages if is_translatable(message)]
 
@@ -588,10 +575,11 @@ def get_messages_from_custom_fields(app_name):
 				continue
 			messages.append(("Custom Field - {}: {}".format(prop, cf["name"]), cf[prop]))
 		if cf["fieldtype"] == "Selection" and cf.get("options"):
-			for option in cf["options"].split("\n"):
-				if option and "icon" not in option and is_translatable(option):
-					messages.append(("Custom Field - Description: " + cf["name"], option))
-
+			messages.extend(
+				("Custom Field - Description: " + cf["name"], option)
+				for option in cf["options"].split("\n")
+				if option and "icon" not in option and is_translatable(option)
+			)
 	return messages
 
 
@@ -650,7 +638,7 @@ def get_server_messages(app):
 	inside an app"""
 	messages = []
 	file_extensions = (".py", ".html", ".js", ".vue")
-	app_walk = os.walk(dontmanage.get_pymodule_path(app))
+	app_walk = os.walk(dontmanage.get_app_path(app))
 
 	for basepath, folders, files in app_walk:
 		folders[:] = [folder for folder in folders if folder not in {".git", "__pycache__"}]
@@ -687,9 +675,9 @@ def get_messages_from_include_files(app_name=None):
 def get_all_messages_from_js_files(app_name=None):
 	"""Extracts all translatable strings from app `.js` files"""
 	messages = []
-	for app in [app_name] if app_name else dontmanage.get_installed_apps():
+	for app in [app_name] if app_name else dontmanage.get_installed_apps(_ensure_on_bench=True):
 		if os.path.exists(dontmanage.get_app_path(app, "public")):
-			for basepath, folders, files in os.walk(dontmanage.get_app_path(app, "public")):
+			for basepath, folders, files in os.walk(dontmanage.get_app_path(app, "public")):  # noqa: B007
 				if "dontmanage/public/js/lib" in basepath:
 					continue
 
@@ -744,6 +732,7 @@ def get_messages_from_file(path: str) -> list[tuple[str, str, str | None, int]]:
 
 def extract_messages_from_python_code(code: str) -> list[tuple[int, str, str | None]]:
 	"""Extracts translatable strings from Python code using babel."""
+	from babel.messages.extract import extract_python
 
 	messages = []
 
@@ -816,6 +805,8 @@ def extract_javascript(code, keywords=("__",), options=None):
 	                * `template_string` -- set to false to disable ES6
 	                                       template string support.
 	"""
+	from babel.messages.jslexer import Token, tokenize, unquote_string
+
 	if options is None:
 		options = {}
 
@@ -1004,7 +995,6 @@ def write_csv_file(path, app_messages, lang_dict):
 	:param lang_dict: Full translated dict.
 	"""
 	app_messages.sort(key=lambda x: x[1])
-	from csv import writer
 
 	with open(path, "w", newline="") as msgfile:
 		w = writer(msgfile, lineterminator="\n")
@@ -1097,8 +1087,8 @@ def update_translations(lang, untranslated_file, translated_file, app="_ALL_APPS
 	for key, value in zip(
 		dontmanage.get_file_items(untranslated_file, ignore_empty_lines=False),
 		dontmanage.get_file_items(translated_file, ignore_empty_lines=False),
+		strict=False,
 	):
-
 		# undo hack in get_untranslated
 		translation_dict[restore_newlines(key)] = restore_newlines(value)
 
@@ -1125,6 +1115,50 @@ def import_translations(lang, path):
 		write_translations_file(app, lang, full_dict)
 
 
+def migrate_translations(source_app, target_app):
+	"""Migrate target-app-specific translations from source-app to target-app"""
+	clear_cache()
+	strings_in_source_app = [m[1] for m in dontmanage.translate.get_messages_for_app(source_app)]
+	strings_in_target_app = [m[1] for m in dontmanage.translate.get_messages_for_app(target_app)]
+
+	strings_in_target_app_but_not_in_source_app = list(
+		set(strings_in_target_app) - set(strings_in_source_app)
+	)
+
+	languages = dontmanage.translate.get_all_languages()
+
+	source_app_translations_dir = dontmanage.get_app_path(source_app, "translations")
+	target_app_translations_dir = dontmanage.get_app_path(target_app, "translations")
+
+	if not os.path.exists(target_app_translations_dir):
+		os.makedirs(target_app_translations_dir)
+
+	for lang in languages:
+		source_csv = os.path.join(source_app_translations_dir, lang + ".csv")
+
+		if not os.path.exists(source_csv):
+			continue
+
+		target_csv = os.path.join(target_app_translations_dir, lang + ".csv")
+		temp_csv = os.path.join(source_app_translations_dir, "_temp.csv")
+
+		with open(source_csv) as s, open(target_csv, "a+") as t, open(temp_csv, "a+") as temp:
+			source_reader = reader(s, lineterminator="\n")
+			target_writer = writer(t, lineterminator="\n")
+			temp_writer = writer(temp, lineterminator="\n")
+
+			for row in source_reader:
+				if row[0] in strings_in_target_app_but_not_in_source_app:
+					target_writer.writerow(row)
+				else:
+					temp_writer.writerow(row)
+
+		if not os.path.getsize(target_csv):
+			os.remove(target_csv)
+		os.remove(source_csv)
+		os.rename(temp_csv, source_csv)
+
+
 def rebuild_all_translation_files():
 	"""Rebuild all translation files: `[app]/translations/[lang].csv`."""
 	for lang in get_all_languages():
@@ -1146,11 +1180,9 @@ def write_translations_file(app, lang, full_dict=None, app_messages=None):
 	if not app_messages:
 		return
 
-	tpath = dontmanage.get_pymodule_path(app, "translations")
+	tpath = dontmanage.get_app_path(app, "translations")
 	dontmanage.create_folder(tpath)
-	write_csv_file(
-		os.path.join(tpath, lang + ".csv"), app_messages, full_dict or get_all_translations(lang)
-	)
+	write_csv_file(os.path.join(tpath, lang + ".csv"), app_messages, full_dict or get_all_translations(lang))
 
 
 def send_translations(translation_dict):
@@ -1162,26 +1194,9 @@ def send_translations(translation_dict):
 
 
 def deduplicate_messages(messages):
-	ret = []
 	op = operator.itemgetter(1)
 	messages = sorted(messages, key=op)
-	for k, g in itertools.groupby(messages, op):
-		ret.append(next(g))
-	return ret
-
-
-def rename_language(old_name, new_name):
-	if not dontmanage.db.exists("Language", new_name):
-		return
-
-	language_in_system_settings = dontmanage.db.get_single_value("System Settings", "language")
-	if language_in_system_settings == old_name:
-		dontmanage.db.set_single_value("System Settings", "language", new_name)
-
-	dontmanage.db.sql(
-		"""update `tabUser` set language=%(new_name)s where language=%(old_name)s""",
-		{"old_name": old_name, "new_name": new_name},
-	)
+	return [next(g) for k, g in itertools.groupby(messages, op)]
 
 
 @dontmanage.whitelist()
@@ -1236,11 +1251,7 @@ def get_messages(language, start=0, page_length=100, search_text=""):
 	from dontmanage.dontmanageclient import DontManageClient
 
 	translator = DontManageClient(get_translator_url())
-	translated_dict = translator.post_api(
-		"translator.api.get_strings_for_translation", params=locals()
-	)
-
-	return translated_dict
+	return translator.post_api("translator.api.get_strings_for_translation", params=locals())
 
 
 @dontmanage.whitelist()
@@ -1268,10 +1279,10 @@ def get_contribution_status(message_id):
 
 	doc = dontmanage.get_doc("Translation", message_id)
 	translator = DontManageClient(get_translator_url())
-	contributed_translation = translator.get_api(
-		"translator.api.get_contribution_status", params={"translation_id": doc.contribution_docname}
+	return translator.get_api(
+		"translator.api.get_contribution_status",
+		params={"translation_id": doc.contribution_docname},
 	)
-	return contributed_translation
 
 
 def get_translator_url():
@@ -1279,7 +1290,7 @@ def get_translator_url():
 
 
 @dontmanage.whitelist(allow_guest=True)
-def get_all_languages(with_language_name=False):
+def get_all_languages(with_language_name: bool = False) -> list:
 	"""Returns all enabled language codes ar, ch etc"""
 
 	def get_language_codes():
@@ -1292,14 +1303,9 @@ def get_all_languages(with_language_name=False):
 		dontmanage.connect()
 
 	if with_language_name:
-		return dontmanage.cache().get_value("languages_with_name", get_all_language_with_name)
+		return dontmanage.cache.get_value("languages_with_name", get_all_language_with_name)
 	else:
-		return dontmanage.cache().get_value("languages", get_language_codes)
-
-
-@dontmanage.whitelist(allow_guest=True)
-def set_preferred_language_cookie(preferred_language):
-	dontmanage.local.cookie_manager.set_cookie("preferred_language", preferred_language)
+		return dontmanage.cache.get_value("languages", get_language_codes)
 
 
 def get_preferred_language_cookie():
@@ -1322,7 +1328,7 @@ def print_language(language: str):
 
 	```
 	with print_language("de"):
-	    html = dontmanage.get_print( ... )
+	    html = dontmanage.get_print(...)
 	```
 	"""
 	if not language or language == dontmanage.local.lang:

@@ -1,14 +1,13 @@
 .filter-icon.active {
-	use {
-		stroke: var(--text-on-blue);
-	}
+	--icon-stroke: var(--primary);
 }
 
 .filter-popover {
 	min-width: 500px;
 	min-height: 50px;
-	font-size: var(--text-md);
+	@include get_textstyle("base", "regular");
 	z-index: 1019;
+	border: 1px solid var(--border-color);
 }
 
 .filter-area {
@@ -41,7 +40,6 @@
 				}
 			}
 		}
-
 	}
 
 	.empty-filters {
@@ -94,7 +92,7 @@
 			}
 
 			.remove-filter {
-				font-size: var(--text-sm);
+				@include get_textstyle("sm", "regular");
 				color: var(--primary);
 			}
 
@@ -105,4 +103,3 @@
 		}
 	}
 }
-

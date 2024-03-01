@@ -7,6 +7,18 @@ from dontmanage.realtime import get_website_room
 
 
 class DiscussionReply(Document):
+	# begin: auto-generated types
+	# This code is auto-generated. Do not modify anything in this block.
+
+	from typing import TYPE_CHECKING
+
+	if TYPE_CHECKING:
+		from dontmanage.types import DF
+
+		reply: DF.TextEditor | None
+		topic: DF.Link | None
+
+	# end: auto-generated types
 	def on_update(self):
 		dontmanage.publish_realtime(
 			event="update_message",

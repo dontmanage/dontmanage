@@ -25,6 +25,65 @@ from dontmanage.utils import cint
 
 
 class CustomizeForm(Document):
+	# begin: auto-generated types
+	# This code is auto-generated. Do not modify anything in this block.
+
+	from typing import TYPE_CHECKING
+
+	if TYPE_CHECKING:
+		from dontmanage.core.doctype.doctype_action.doctype_action import DocTypeAction
+		from dontmanage.core.doctype.doctype_link.doctype_link import DocTypeLink
+		from dontmanage.core.doctype.doctype_state.doctype_state import DocTypeState
+		from dontmanage.custom.doctype.customize_form_field.customize_form_field import CustomizeFormField
+		from dontmanage.types import DF
+
+		actions: DF.Table[DocTypeAction]
+		allow_auto_repeat: DF.Check
+		allow_copy: DF.Check
+		allow_import: DF.Check
+		autoname: DF.Data | None
+		default_email_template: DF.Link | None
+		default_print_format: DF.Link | None
+		default_view: DF.Literal
+		doc_type: DF.Link | None
+		editable_grid: DF.Check
+		email_append_to: DF.Check
+		fields: DF.Table[CustomizeFormField]
+		force_re_route_to_default_view: DF.Check
+		image_field: DF.Data | None
+		is_calendar_and_gantt: DF.Check
+		istable: DF.Check
+		label: DF.Data | None
+		links: DF.Table[DocTypeLink]
+		make_attachments_public: DF.Check
+		max_attachments: DF.Int
+		naming_rule: DF.Literal[
+			"",
+			"Set by user",
+			"By fieldname",
+			'By "Naming Series" field',
+			"Expression",
+			"Expression (old style)",
+			"Random",
+			"By script",
+		]
+		queue_in_background: DF.Check
+		quick_entry: DF.Check
+		search_fields: DF.Data | None
+		sender_field: DF.Data | None
+		sender_name_field: DF.Data | None
+		show_preview_popup: DF.Check
+		show_title_field_in_link: DF.Check
+		sort_field: DF.Literal
+		sort_order: DF.Literal["ASC", "DESC"]
+		states: DF.Table[DocTypeState]
+		subject_field: DF.Data | None
+		title_field: DF.Data | None
+		track_changes: DF.Check
+		track_views: DF.Check
+		translated_doctype: DF.Check
+	# end: auto-generated types
+
 	def on_update(self):
 		dontmanage.db.delete("Singles", {"doctype": "Customize Form"})
 		dontmanage.db.delete("Customize Form Field")
@@ -35,7 +94,7 @@ class CustomizeForm(Document):
 		if not self.doc_type:
 			return
 
-		meta = dontmanage.get_meta(self.doc_type)
+		meta = dontmanage.get_meta(self.doc_type, cached=False)
 
 		self.validate_doctype(meta)
 
@@ -172,7 +231,18 @@ class CustomizeForm(Document):
 		check_email_append_to(self)
 
 		if self.flags.update_db:
-			dontmanage.db.updatedb(self.doc_type)
+			try:
+				dontmanage.db.updatedb(self.doc_type)
+			except Exception as e:
+				if dontmanage.db.is_db_table_size_limit(e):
+					dontmanage.throw(
+						_("You have hit the row size limit on database table: {0}").format(
+							"<a href='https://docs.dontmanageerp.com/docs/v14/user/manual/en/customize-dontmanageerp/articles/maximum-number-of-fields-in-a-form'>"
+							"Maximum Number of Fields in a Form</a>"
+						),
+						title=_("Database Table Row Size Limit"),
+					)
+				raise
 
 		if not hasattr(self, "hide_success") or not self.hide_success:
 			dontmanage.msgprint(_("{0} updated").format(_(self.doc_type)), alert=True)
@@ -181,7 +251,9 @@ class CustomizeForm(Document):
 
 		if self.flags.rebuild_doctype_for_global_search:
 			dontmanage.enqueue(
-				"dontmanage.utils.global_search.rebuild_for_doctype", now=True, doctype=self.doc_type
+				"dontmanage.utils.global_search.rebuild_for_doctype",
+				doctype=self.doc_type,
+				enqueue_after_commit=True,
 			)
 
 	def set_property_setters(self):
@@ -193,17 +265,46 @@ class CustomizeForm(Document):
 		# docfield
 		for df in self.get("fields"):
 			meta_df = meta.get("fields", {"fieldname": df.fieldname})
-			if not meta_df or meta_df[0].get("is_custom_field"):
+			if not meta_df or not is_standard_or_system_generated_field(meta_df[0]):
 				continue
+
 			self.set_property_setters_for_docfield(meta, df, meta_df)
 
 		# action and links
 		self.set_property_setters_for_actions_and_links(meta)
 
+	def set_property_setter_for_field_order(self, meta):
+		new_order = [df.fieldname for df in self.fields]
+		existing_order = getattr(meta, "field_order", None)
+		default_order = [
+			fieldname for fieldname, df in meta._fields.items() if not getattr(df, "is_custom_field", False)
+		]
+
+		if new_order == default_order:
+			if existing_order:
+				delete_property_setter(self.doc_type, "field_order")
+
+			return
+
+		if existing_order and new_order == json.loads(existing_order):
+			return
+
+		dontmanage.make_property_setter(
+			{
+				"doctype": self.doc_type,
+				"doctype_or_field": "DocType",
+				"property": "field_order",
+				"value": json.dumps(new_order),
+			},
+			is_system_generated=False,
+		)
+
 	def set_property_setters_for_doctype(self, meta):
 		for prop, prop_type in doctype_properties.items():
 			if self.get(prop) != meta.get(prop):
 				self.make_property_setter(prop, self.get(prop), prop_type)
+
+		self.set_property_setter_for_field_order(meta)
 
 	def set_property_setters_for_docfield(self, meta, df, meta_df):
 		for prop, prop_type in docfield_properties.items():
@@ -243,9 +344,7 @@ class CustomizeForm(Document):
 			)
 			and (df.get(prop) == 0)
 		):
-			dontmanage.msgprint(
-				_("Row {0}: Not allowed to disable Mandatory for standard fields").format(df.idx)
-			)
+			dontmanage.msgprint(_("Row {0}: Not allowed to disable Mandatory for standard fields").format(df.idx))
 			return False
 
 		elif (
@@ -312,7 +411,9 @@ class CustomizeForm(Document):
 					original = dontmanage.get_doc(doctype, d.name)
 					for prop, prop_type in field_map.items():
 						if d.get(prop) != original.get(prop):
-							self.make_property_setter(prop, d.get(prop), prop_type, apply_on=doctype, row_name=d.name)
+							self.make_property_setter(
+								prop, d.get(prop), prop_type, apply_on=doctype, row_name=d.name
+							)
 					items.append(d.name)
 				else:
 					# custom - just insert/update
@@ -350,12 +451,14 @@ class CustomizeForm(Document):
 
 	def update_custom_fields(self):
 		for i, df in enumerate(self.get("fields")):
-			if df.get("is_custom_field"):
-				if not dontmanage.db.exists("Custom Field", {"dt": self.doc_type, "fieldname": df.fieldname}):
-					self.add_custom_field(df, i)
-					self.flags.update_db = True
-				else:
-					self.update_in_custom_field(df, i)
+			if is_standard_or_system_generated_field(df):
+				continue
+
+			if not dontmanage.db.exists("Custom Field", {"dt": self.doc_type, "fieldname": df.fieldname}):
+				self.add_custom_field(df, i)
+				self.flags.update_db = True
+			else:
+				self.update_in_custom_field(df, i)
 
 		self.delete_custom_fields()
 
@@ -380,7 +483,7 @@ class CustomizeForm(Document):
 	def update_in_custom_field(self, df, i):
 		meta = dontmanage.get_meta(self.doc_type)
 		meta_df = meta.get("fields", {"fieldname": df.fieldname})
-		if not (meta_df and meta_df[0].get("is_custom_field")):
+		if not meta_df or is_standard_or_system_generated_field(meta_df[0]):
 			# not a custom field
 			return
 
@@ -416,12 +519,10 @@ class CustomizeForm(Document):
 		}
 		for fieldname in fields_to_remove:
 			df = meta.get("fields", {"fieldname": fieldname})[0]
-			if df.get("is_custom_field"):
+			if not is_standard_or_system_generated_field(df):
 				dontmanage.delete_doc("Custom Field", df.name)
 
-	def make_property_setter(
-		self, prop, value, property_type, fieldname=None, apply_on=None, row_name=None
-	):
+	def make_property_setter(self, prop, value, property_type, fieldname=None, apply_on=None, row_name=None):
 		delete_property_setter(self.doc_type, prop, fieldname, row_name)
 
 		property_value = self.get_existing_property_value(prop, fieldname)
@@ -490,20 +591,15 @@ class CustomizeForm(Document):
 			max_length = cint(dontmanage.db.type_map.get(df.fieldtype)[1])
 			fieldname = df.fieldname
 			docs = dontmanage.db.sql(
-				"""
+				f"""
 				SELECT name, {fieldname}, LENGTH({fieldname}) AS len
-				FROM `tab{doctype}`
+				FROM `tab{self.doc_type}`
 				WHERE LENGTH({fieldname}) > {max_length}
-			""".format(
-					fieldname=fieldname, doctype=self.doc_type, max_length=max_length
-				),
+			""",
 				as_dict=True,
 			)
-			links = []
 			label = df.label
-			for doc in docs:
-				links.append(dontmanage.utils.get_link_to_form(self.doc_type, doc.name))
-			links_str = ", ".join(links)
+			links_str = ", ".join(dontmanage.utils.get_link_to_form(self.doc_type, doc.name) for doc in docs)
 
 			if docs:
 				dontmanage.throw(
@@ -522,6 +618,24 @@ class CustomizeForm(Document):
 			return
 
 		reset_customization(self.doc_type)
+		self.fetch_to_customize()
+
+	@dontmanage.whitelist()
+	def reset_layout(self):
+		if not self.doc_type:
+			return
+
+		property_setters = dontmanage.get_all(
+			"Property Setter",
+			filters={"doc_type": self.doc_type, "property": ("in", ("field_order", "insert_after"))},
+			pluck="name",
+		)
+
+		if not property_setters:
+			return
+
+		dontmanage.db.delete("Property Setter", {"name": ("in", property_setters)})
+		dontmanage.clear_cache(doctype=self.doc_type)
 		self.fetch_to_customize()
 
 	@classmethod
@@ -561,6 +675,10 @@ def reset_customization(doctype):
 	dontmanage.clear_cache(doctype=doctype)
 
 
+def is_standard_or_system_generated_field(df):
+	return not df.get("is_custom_field") or df.get("is_system_generated")
+
+
 doctype_properties = {
 	"search_fields": "Data",
 	"title_field": "Data",
@@ -571,6 +689,7 @@ doctype_properties = {
 	"allow_copy": "Check",
 	"istable": "Check",
 	"quick_entry": "Check",
+	"queue_in_background": "Check",
 	"editable_grid": "Check",
 	"max_attachments": "Int",
 	"make_attachments_public": "Check",
@@ -586,7 +705,6 @@ doctype_properties = {
 	"naming_rule": "Data",
 	"autoname": "Data",
 	"show_title_field_in_link": "Check",
-	"translate_link_fields": "Check",
 	"is_calendar_and_gantt": "Check",
 	"default_view": "Select",
 	"force_re_route_to_default_view": "Check",
@@ -598,6 +716,7 @@ docfield_properties = {
 	"label": "Data",
 	"fieldtype": "Select",
 	"options": "Text",
+	"sort_options": "Check",
 	"fetch_from": "Small Text",
 	"fetch_if_empty": "Check",
 	"show_dashboard": "Check",

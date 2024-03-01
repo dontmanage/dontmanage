@@ -6,6 +6,31 @@ from dontmanage.model.document import Document
 
 
 class NotificationSettings(Document):
+	# begin: auto-generated types
+	# This code is auto-generated. Do not modify anything in this block.
+
+	from typing import TYPE_CHECKING
+
+	if TYPE_CHECKING:
+		from dontmanage.desk.doctype.notification_subscribed_document.notification_subscribed_document import (
+			NotificationSubscribedDocument,
+		)
+		from dontmanage.types import DF
+
+		enable_email_assignment: DF.Check
+		enable_email_energy_point: DF.Check
+		enable_email_event_reminders: DF.Check
+		enable_email_mention: DF.Check
+		enable_email_notifications: DF.Check
+		enable_email_share: DF.Check
+		enable_email_threads_on_assigned_document: DF.Check
+		enabled: DF.Check
+		energy_points_system_notifications: DF.Check
+		seen: DF.Check
+		subscribed_documents: DF.TableMultiSelect[NotificationSubscribedDocument]
+		user: DF.Link | None
+
+	# end: auto-generated types
 	def on_update(self):
 		from dontmanage.desk.notifications import clear_notification_config
 
@@ -90,6 +115,24 @@ def get_permission_query_conditions(user):
 	return f"""(`tabNotification Settings`.name = {dontmanage.db.escape(user)})"""
 
 
+def has_permission(doc, ptype="read", user=None):
+	# - Administrator can access everything.
+	# - System managers can access everything except admin.
+	# - Everyone else can only access their document.
+	user = user or dontmanage.session.user
+
+	if user == "Administrator":
+		return True
+
+	if "System Manager" in dontmanage.get_roles(user):
+		return doc.name != "Administrator"
+
+	return doc.name == user
+
+
 @dontmanage.whitelist()
 def set_seen_value(value, user):
+	if dontmanage.flags.read_only:
+		return
+
 	dontmanage.db.set_value("Notification Settings", user, "seen", value, update_modified=False)

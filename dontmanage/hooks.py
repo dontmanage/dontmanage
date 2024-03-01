@@ -1,3 +1,5 @@
+import os
+
 from . import __version__ as app_version
 
 app_name = "dontmanage"
@@ -8,7 +10,7 @@ source_link = "https://github.com/dontmanage/dontmanage"
 app_license = "MIT"
 app_logo_url = "/assets/dontmanage/images/dontmanage-framework-logo.svg"
 
-develop_version = "14.x.x-develop"
+develop_version = "15.x.x-develop"
 
 app_email = "developers@dontmanage.io"
 
@@ -29,10 +31,16 @@ app_include_js = [
 	"form.bundle.js",
 	"controls.bundle.js",
 	"report.bundle.js",
+	"telemetry.bundle.js",
 ]
+
 app_include_css = [
 	"desk.bundle.css",
 	"report.bundle.css",
+]
+app_include_icons = [
+	"dontmanage/icons/timeless/icons.svg",
+	"dontmanage/icons/espresso/icons.svg",
 ]
 
 doctype_js = {
@@ -56,6 +64,10 @@ website_route_rules = [
 
 website_redirects = [
 	{"source": r"/desk(.*)", "target": r"/app\1"},
+	{
+		"source": "/.well-known/openid-configuration",
+		"target": "/api/method/dontmanage.integrations.oauth2.openid_configuration",
+	},
 ]
 
 base_template = "templates/base.html"
@@ -79,9 +91,12 @@ on_session_creation = [
 	"dontmanage.core.doctype.user.user.notify_admin_access_to_system_manager",
 ]
 
-on_logout = (
-	"dontmanage.core.doctype.session_default_settings.session_default_settings.clear_session_defaults"
-)
+on_logout = "dontmanage.core.doctype.session_default_settings.session_default_settings.clear_session_defaults"
+
+# PDF
+pdf_header_html = "dontmanage.utils.pdf.pdf_header_html"
+pdf_body_html = "dontmanage.utils.pdf.pdf_body_html"
+pdf_footer_html = "dontmanage.utils.pdf.pdf_footer_html"
 
 # permissions
 
@@ -102,13 +117,14 @@ permission_query_conditions = {
 	"Communication": "dontmanage.core.doctype.communication.communication.get_permission_query_conditions_for_communication",
 	"Workflow Action": "dontmanage.workflow.doctype.workflow_action.workflow_action.get_permission_query_conditions",
 	"Prepared Report": "dontmanage.core.doctype.prepared_report.prepared_report.get_permission_query_condition",
+	"File": "dontmanage.core.doctype.file.file.get_permission_query_conditions",
 }
 
 has_permission = {
 	"Event": "dontmanage.desk.doctype.event.event.has_permission",
 	"ToDo": "dontmanage.desk.doctype.todo.todo.has_permission",
-	"User": "dontmanage.core.doctype.user.user.has_permission",
 	"Note": "dontmanage.desk.doctype.note.note.has_permission",
+	"User": "dontmanage.core.doctype.user.user.has_permission",
 	"Dashboard Chart": "dontmanage.desk.doctype.dashboard_chart.dashboard_chart.has_permission",
 	"Number Card": "dontmanage.desk.doctype.number_card.number_card.has_permission",
 	"Kanban Board": "dontmanage.desk.doctype.kanban_board.kanban_board.has_permission",
@@ -118,18 +134,16 @@ has_permission = {
 	"Workflow Action": "dontmanage.workflow.doctype.workflow_action.workflow_action.has_permission",
 	"File": "dontmanage.core.doctype.file.file.has_permission",
 	"Prepared Report": "dontmanage.core.doctype.prepared_report.prepared_report.has_permission",
+	"Notification Settings": "dontmanage.desk.doctype.notification_settings.notification_settings.has_permission",
 }
 
-has_website_permission = {
-	"Address": "dontmanage.contacts.doctype.address.address.has_website_permission"
-}
+has_website_permission = {"Address": "dontmanage.contacts.doctype.address.address.has_website_permission"}
 
 jinja = {
 	"methods": "dontmanage.utils.jinja_globals",
 	"filters": [
 		"dontmanage.utils.data.global_date_format",
 		"dontmanage.utils.markdown",
-		"dontmanage.website.utils.get_shade",
 		"dontmanage.website.utils.abs_url",
 	],
 }
@@ -138,16 +152,11 @@ standard_queries = {"User": "dontmanage.core.doctype.user.user.user_query"}
 
 doc_events = {
 	"*": {
-		"after_insert": [
-			"dontmanage.event_streaming.doctype.event_update_log.event_update_log.notify_consumers"
-		],
 		"on_update": [
 			"dontmanage.desk.notifications.clear_doctype_notifications",
-			"dontmanage.core.doctype.activity_log.feed.update_feed",
 			"dontmanage.workflow.doctype.workflow_action.workflow_action.process_workflow_actions",
-			"dontmanage.automation.doctype.assignment_rule.assignment_rule.apply",
 			"dontmanage.core.doctype.file.utils.attach_files_to_document",
-			"dontmanage.event_streaming.doctype.event_update_log.event_update_log.notify_consumers",
+			"dontmanage.automation.doctype.assignment_rule.assignment_rule.apply",
 			"dontmanage.automation.doctype.assignment_rule.assignment_rule.update_due_date",
 			"dontmanage.core.doctype.user_type.user_type.apply_permissions_for_non_standard_user_type",
 		],
@@ -155,15 +164,16 @@ doc_events = {
 		"on_cancel": [
 			"dontmanage.desk.notifications.clear_doctype_notifications",
 			"dontmanage.workflow.doctype.workflow_action.workflow_action.process_workflow_actions",
-			"dontmanage.event_streaming.doctype.event_update_log.event_update_log.notify_consumers",
+			"dontmanage.automation.doctype.assignment_rule.assignment_rule.apply",
 		],
 		"on_trash": [
 			"dontmanage.desk.notifications.clear_doctype_notifications",
 			"dontmanage.workflow.doctype.workflow_action.workflow_action.process_workflow_actions",
-			"dontmanage.event_streaming.doctype.event_update_log.event_update_log.notify_consumers",
 		],
 		"on_update_after_submit": [
-			"dontmanage.workflow.doctype.workflow_action.workflow_action.process_workflow_actions"
+			"dontmanage.workflow.doctype.workflow_action.workflow_action.process_workflow_actions",
+			"dontmanage.automation.doctype.assignment_rule.assignment_rule.apply",
+			"dontmanage.automation.doctype.assignment_rule.assignment_rule.update_due_date",
 		],
 		"on_change": [
 			"dontmanage.social.doctype.energy_point_rule.energy_point_rule.process_energy_points",
@@ -193,19 +203,29 @@ scheduler_events = {
 			"dontmanage.oauth.delete_oauth2_data",
 			"dontmanage.website.doctype.web_page.web_page.check_publish_status",
 			"dontmanage.twofactor.delete_all_barcodes_for_users",
-		]
+		],
+		"0/10 * * * *": [
+			"dontmanage.email.doctype.email_account.email_account.pull",
+		],
+		# Hourly but offset by 30 minutes
+		"30 * * * *": [
+			"dontmanage.core.doctype.prepared_report.prepared_report.expire_stalled_report",
+		],
+		# Daily but offset by 45 minutes
+		"45 0 * * *": [
+			"dontmanage.core.doctype.log_settings.log_settings.run_log_clean_up",
+		],
 	},
 	"all": [
 		"dontmanage.email.queue.flush",
-		"dontmanage.email.doctype.email_account.email_account.pull",
 		"dontmanage.email.doctype.email_account.email_account.notify_unreplied",
 		"dontmanage.utils.global_search.sync_global_search",
 		"dontmanage.monitor.flush",
+		"dontmanage.automation.doctype.reminder.reminder.send_reminders",
 	],
 	"hourly": [
 		"dontmanage.model.utils.link_count.update_link_count",
 		"dontmanage.model.utils.user_settings.sync_user_settings",
-		"dontmanage.utils.error.collect_error_snapshots",
 		"dontmanage.desk.page.backups.backups.delete_downloadable_backups",
 		"dontmanage.deferred_insert.save_to_db",
 		"dontmanage.desk.form.document_follow.send_hourly_updates",
@@ -214,7 +234,6 @@ scheduler_events = {
 		"dontmanage.website.doctype.personal_data_deletion_request.personal_data_deletion_request.process_data_deletion_request",
 	],
 	"daily": [
-		"dontmanage.email.queue.set_expiry_for_email_queue",
 		"dontmanage.desk.notifications.clear_notifications",
 		"dontmanage.desk.doctype.event.event.send_event_digest",
 		"dontmanage.sessions.clear_expired_sessions",
@@ -225,9 +244,6 @@ scheduler_events = {
 		"dontmanage.integrations.doctype.google_contacts.google_contacts.sync",
 		"dontmanage.automation.doctype.auto_repeat.auto_repeat.make_auto_repeat_entry",
 		"dontmanage.automation.doctype.auto_repeat.auto_repeat.set_auto_repeat_as_completed",
-		"dontmanage.email.doctype.unhandled_email.unhandled_email.remove_old_unhandled_emails",
-		"dontmanage.core.doctype.prepared_report.prepared_report.delete_expired_prepared_reports",
-		"dontmanage.core.doctype.log_settings.log_settings.run_log_clean_up",
 	],
 	"daily_long": [
 		"dontmanage.integrations.doctype.dropbox_settings.dropbox_settings.take_backups_daily",
@@ -273,7 +289,7 @@ setup_wizard_exception = [
 	"dontmanage.desk.page.setup_wizard.setup_wizard.log_setup_wizard_exception",
 ]
 
-before_migrate = []
+before_migrate = ["dontmanage.core.doctype.patch_log.patch_log.before_migrate"]
 after_migrate = ["dontmanage.website.doctype.website_theme.website_theme.after_migrate"]
 
 otp_methods = ["OTP App", "Email", "SMS"]
@@ -401,6 +417,7 @@ ignore_links_on_delete = [
 	"Integration Request",
 	"Unhandled Email",
 	"Webhook Request Log",
+	"Workspace",
 ]
 
 # Request Hooks
@@ -409,13 +426,45 @@ before_request = [
 	"dontmanage.monitor.start",
 	"dontmanage.rate_limiter.apply",
 ]
-after_request = ["dontmanage.rate_limiter.update", "dontmanage.monitor.stop", "dontmanage.recorder.dump"]
 
 # Background Job Hooks
 before_job = [
+	"dontmanage.recorder.record",
 	"dontmanage.monitor.start",
 ]
+
+if os.getenv("DONTMANAGE_SENTRY_DSN") and (
+	os.getenv("ENABLE_SENTRY_DB_MONITORING") or os.getenv("SENTRY_TRACING_SAMPLE_RATE")
+):
+	before_request.append("dontmanage.utils.sentry.set_sentry_context")
+	before_job.append("dontmanage.utils.sentry.set_sentry_context")
+
 after_job = [
+	"dontmanage.recorder.dump",
 	"dontmanage.monitor.stop",
 	"dontmanage.utils.file_lock.release_document_locks",
+	"dontmanage.utils.telemetry.flush",
 ]
+
+extend_bootinfo = [
+	"dontmanage.utils.telemetry.add_bootinfo",
+	"dontmanage.core.doctype.user_permission.user_permission.send_user_permissions",
+	"dontmanage.utils.sentry.add_bootinfo",
+]
+
+export_python_type_annotations = True
+
+# log doctype cleanups to automatically add in log settings
+default_log_clearing_doctypes = {
+	"Error Log": 14,
+	"Email Queue": 30,
+	"Scheduled Job Log": 7,
+	"Submission Queue": 7,
+	"Prepared Report": 14,
+	"Webhook Request Log": 30,
+	"Unhandled Email": 30,
+	"Reminder": 30,
+	"Integration Request": 90,
+	"Activity Log": 90,
+	"Route History": 90,
+}

@@ -215,8 +215,7 @@ dontmanage.ui.form.ControlData = class ControlData extends dontmanage.ui.form.Co
 	}
 	set_input_attributes() {
 		if (
-			in_list(
-				["Data", "Link", "Dynamic Link", "Password", "Select", "Read Only"],
+			["Data", "Link", "Dynamic Link", "Password", "Select", "Read Only"].includes(
 				this.df.fieldtype
 			)
 		) {

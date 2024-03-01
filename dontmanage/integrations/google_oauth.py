@@ -39,7 +39,7 @@ class GoogleOAuth:
 		self.domain = domain.lower()
 		self.scopes = (
 			" ".join(_SCOPES[self.domain])
-			if isinstance(_SCOPES[self.domain], (list, tuple))
+			if isinstance(_SCOPES[self.domain], list | tuple)
 			else _SCOPES[self.domain]
 		)
 
@@ -145,9 +145,7 @@ def handle_response(
 	raise_err: bool = False,
 ):
 	if "error" in response:
-		dontmanage.log_error(
-			dontmanage._(error_title), dontmanage._(response.get("error_description", error_message))
-		)
+		dontmanage.log_error(dontmanage._(error_title), dontmanage._(response.get("error_description", error_message)))
 
 		if raise_err:
 			dontmanage.throw(dontmanage._(error_title), GoogleAuthenticationError, dontmanage._(error_message))
@@ -158,9 +156,7 @@ def handle_response(
 
 
 def is_valid_access_token(access_token: str) -> bool:
-	response = get(
-		"https://oauth2.googleapis.com/tokeninfo", params={"access_token": access_token}
-	).json()
+	response = get("https://oauth2.googleapis.com/tokeninfo", params={"access_token": access_token}).json()
 
 	if "error" in response:
 		return False
@@ -169,7 +165,7 @@ def is_valid_access_token(access_token: str) -> bool:
 
 
 @dontmanage.whitelist(methods=["GET"])
-def callback(state: str, code: str = None, error: str = None) -> None:
+def callback(state: str, code: str | None = None, error: str | None = None) -> None:
 	"""Common callback for google integrations.
 	Invokes functions using `dontmanage.get_attr` and also adds required (keyworded) arguments
 	along with committing and redirecting us back to dontmanage site."""
@@ -196,6 +192,4 @@ def callback(state: str, code: str = None, error: str = None) -> None:
 			)
 
 	dontmanage.local.response["type"] = "redirect"
-	dontmanage.local.response[
-		"location"
-	] = f"{redirect}?{failure_query_param if error else success_query_param}"
+	dontmanage.local.response["location"] = f"{redirect}?{failure_query_param if error else success_query_param}"

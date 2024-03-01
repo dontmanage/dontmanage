@@ -14,17 +14,20 @@
 </div>
 
 <div align="center">
-	<a href="https://github.com/dontmanage/dontmanage/actions/workflows/server-mariadb-tests.yml">
-		<img src="https://github.com/dontmanage/dontmanage/actions/workflows/server-mariadb-tests.yml/badge.svg">
+	<a target="_blank" href="#LICENSE" title="License: MIT">
+		<img src="https://img.shields.io/badge/License-MIT-success.svg">
+	</a>
+	<a target="_blank" href="https://www.python.org/downloads/" title="Python version">
+		<img src="https://img.shields.io/badge/python-%3E=_3.10-success.svg">
+	</a>
+	<a href="https://dontmanageframework.com/docs">
+		<img src="https://img.shields.io/badge/docs-%F0%9F%93%96-success.svg"/>
+	</a>
+	<a href="https://github.com/dontmanage/dontmanage/actions/workflows/server-tests.yml">
+		<img src="https://github.com/dontmanage/dontmanage/actions/workflows/server-tests.yml/badge.svg">
 	</a>
 	<a href="https://github.com/dontmanage/dontmanage/actions/workflows/ui-tests.yml">
 		<img src="https://github.com/dontmanage/dontmanage/actions/workflows/ui-tests.yml/badge.svg?branch=develop">
-	</a>
-	<a href='https://dontmanageframework.com/docs'>
-		<img src='https://img.shields.io/badge/docs-📖-7575FF.svg?style=flat-square'/>
-	</a>
-	<a href='https://www.codetriage.com/dontmanage/dontmanage'>
-		<img src='https://www.codetriage.com/dontmanage/dontmanage/badges/users.svg'>
 	</a>
 	<a href="https://codecov.io/gh/dontmanage/dontmanage">
 		<img src="https://codecov.io/gh/dontmanage/dontmanage/branch/develop/graph/badge.svg?token=XoTa679hIj"/>
@@ -32,7 +35,7 @@
 </div>
 
 
-Full-stack web application framework that uses Python and MariaDB on the server side and a tightly integrated client side library. Built for [DontManageErp](https://dontmanageerp.com)
+Full-stack web application framework that uses Python and MariaDB on the server side and a tightly integrated client side library. Built for [DontManageErp](https://dontmanageerp.com).
 
 <div align="center" style="max-height: 40px;">
 	<a href="https://dontmanagecloud.com/dontmanage/signup">
@@ -53,10 +56,15 @@ Full-stack web application framework that uses Python and MariaDB on the server 
 
 ## Installation
 
-* [Install via Docker](https://github.com/dontmanage/dontmanage_docker)
-* [Install via DontManage Bench](https://github.com/dontmanage/bench)
-* [Offical Documentation](https://dontmanageframework.com/docs/user/en/installation)
-* [Managed Hosting on DontManage Cloud](https://dontmanagecloud.com/dontmanage/signup)
+### Production
+* [Managed Hosting on DontManage Cloud](https://dontmanagecloud.com/)
+* [Easy install script using Docker images](https://github.com/dontmanage/bench/tree/develop#easy-install-script)
+* [Manual install using Docker images](https://github.com/dontmanage/dontmanage_docker)
+
+### Development
+* [Easy install script using Docker images](https://github.com/dontmanage/bench/tree/develop#easy-install-script)
+* [Development installation on bare metal](https://dontmanageframework.com/docs/user/en/installation)
+
 
 ## Contributing
 
@@ -72,3 +80,5 @@ Full-stack web application framework that uses Python and MariaDB on the server 
 
 ## License
 This repository has been released under the [MIT License](LICENSE).
+
+By contributing to DontManage, you agree that your contributions will be licensed under its MIT License.

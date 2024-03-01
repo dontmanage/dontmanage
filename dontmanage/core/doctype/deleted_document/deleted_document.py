@@ -7,10 +7,33 @@ import dontmanage
 from dontmanage import _
 from dontmanage.desk.doctype.bulk_update.bulk_update import show_progress
 from dontmanage.model.document import Document
+from dontmanage.model.workflow import get_workflow_name
 
 
 class DeletedDocument(Document):
+	# begin: auto-generated types
+	# This code is auto-generated. Do not modify anything in this block.
+
+	from typing import TYPE_CHECKING
+
+	if TYPE_CHECKING:
+		from dontmanage.types import DF
+
+		data: DF.Code | None
+		deleted_doctype: DF.Data | None
+		deleted_name: DF.Data | None
+		new_name: DF.ReadOnly | None
+		restored: DF.Check
+	# end: auto-generated types
 	pass
+
+	@staticmethod
+	def clear_old_logs(days=180):
+		from dontmanage.query_builder import Interval
+		from dontmanage.query_builder.functions import Now
+
+		table = dontmanage.qb.DocType("Deleted Document")
+		dontmanage.db.delete(table, filters=(table.modified < (Now() - Interval(days=days))))
 
 
 @dontmanage.whitelist()
@@ -27,6 +50,11 @@ def restore(name, alert=True):
 	except dontmanage.DocstatusTransitionError:
 		dontmanage.msgprint(_("Cancelled Document restored as Draft"))
 		doc.docstatus = 0
+		active_workflow = get_workflow_name(doc.doctype)
+		if active_workflow:
+			workflow_state_fieldname = dontmanage.get_value("Workflow", active_workflow, "workflow_state_field")
+			if doc.get(workflow_state_fieldname):
+				doc.set(workflow_state_fieldname, None)
 		doc.insert()
 
 	doc.add_comment("Edit", _("restored {0} as {1}").format(deleted.deleted_name, doc.name))
@@ -53,11 +81,11 @@ def bulk_restore(docnames):
 			restored.append(d)
 
 		except dontmanage.DocumentAlreadyRestored:
-			dontmanage.message_log.pop()
+			dontmanage.clear_last_message()
 			invalid.append(d)
 
 		except Exception:
-			dontmanage.message_log.pop()
+			dontmanage.clear_last_message()
 			failed.append(d)
 			dontmanage.db.rollback()
 

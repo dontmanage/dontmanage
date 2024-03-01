@@ -2,6 +2,8 @@
 // Adapted from John Resig - http://ejohn.org/ - MIT Licensed
 
 dontmanage.template = { compiled: {}, debug: {} };
+
+/* eslint-disable */
 dontmanage.template.compile = function (str, name) {
 	var key = name || str;
 
@@ -96,14 +98,17 @@ dontmanage.template.compile = function (str, name) {
 
 	return dontmanage.template.compiled[key];
 };
+/* eslint-enable */
+
 dontmanage.render = function (str, data, name) {
 	return dontmanage.template.compile(str, name)(data);
 };
 dontmanage.render_template = function (name, data) {
+	let template;
 	if (name.indexOf(" ") !== -1) {
-		var template = name;
+		template = name;
 	} else {
-		var template = dontmanage.templates[name];
+		template = dontmanage.templates[name];
 	}
 	if (data === undefined) {
 		data = {};

@@ -12,6 +12,47 @@ from dontmanage.website.utils import clear_cache
 
 
 class Comment(Document):
+	# begin: auto-generated types
+	# This code is auto-generated. Do not modify anything in this block.
+
+	from typing import TYPE_CHECKING
+
+	if TYPE_CHECKING:
+		from dontmanage.types import DF
+
+		comment_by: DF.Data | None
+		comment_email: DF.Data | None
+		comment_type: DF.Literal[
+			"Comment",
+			"Like",
+			"Info",
+			"Label",
+			"Workflow",
+			"Created",
+			"Submitted",
+			"Cancelled",
+			"Updated",
+			"Deleted",
+			"Assigned",
+			"Assignment Completed",
+			"Attachment",
+			"Attachment Removed",
+			"Shared",
+			"Unshared",
+			"Bot",
+			"Relinked",
+			"Edit",
+		]
+		content: DF.HTMLEditor | None
+		ip_address: DF.Data | None
+		published: DF.Check
+		reference_doctype: DF.Link | None
+		reference_name: DF.DynamicLink | None
+		reference_owner: DF.Data | None
+		seen: DF.Check
+		subject: DF.Text | None
+
+	# end: auto-generated types
 	def after_insert(self):
 		notify_mentions(self.reference_doctype, self.reference_name, self.content)
 		self.notify_change("add")
@@ -53,7 +94,7 @@ class Comment(Document):
 
 	def remove_comment_from_cache(self):
 		_comments = get_comments_from_parent(self)
-		for c in _comments:
+		for c in list(_comments):
 			if c.get("name") == self.name:
 				_comments.remove(c)
 
@@ -152,16 +193,11 @@ def update_comments_in_parent(reference_doctype, reference_name, _comments):
 
 	except Exception as e:
 		if dontmanage.db.is_column_missing(e) and getattr(dontmanage.local, "request", None):
-			# missing column and in request, add column and update after commit
-			dontmanage.local._comments = getattr(dontmanage.local, "_comments", []) + [
-				(reference_doctype, reference_name, _comments)
-			]
-
+			pass
 		elif dontmanage.db.is_data_too_long(e):
 			raise dontmanage.DataTooLongException
-
 		else:
-			raise ImplicitCommitError
+			raise
 	else:
 		if dontmanage.flags.in_patch:
 			return
@@ -169,13 +205,3 @@ def update_comments_in_parent(reference_doctype, reference_name, _comments):
 		# Clear route cache
 		if route := dontmanage.get_cached_value(reference_doctype, reference_name, "route"):
 			clear_cache(route)
-
-
-def update_comments_in_parent_after_request():
-	"""update _comments in parent if _comments column is missing"""
-	if hasattr(dontmanage.local, "_comments"):
-		for (reference_doctype, reference_name, _comments) in dontmanage.local._comments:
-			add_column(reference_doctype, "_comments", "Text")
-			update_comments_in_parent(reference_doctype, reference_name, _comments)
-
-		dontmanage.db.commit()

@@ -8,6 +8,16 @@ from dontmanage.utils import unique
 
 
 class Tag(Document):
+	# begin: auto-generated types
+	# This code is auto-generated. Do not modify anything in this block.
+
+	from typing import TYPE_CHECKING
+
+	if TYPE_CHECKING:
+		from dontmanage.types import DF
+
+		description: DF.SmallText | None
+	# end: auto-generated types
 	pass
 
 
@@ -38,8 +48,6 @@ def add_tags(tags, dt, docs, color=None):
 		for tag in tags:
 			DocTags(dt).add(doc, tag)
 
-	# return tag
-
 
 @dontmanage.whitelist()
 def remove_tag(tag, dt, dn):
@@ -59,7 +67,7 @@ def get_tags(doctype, txt):
 	tag = dontmanage.get_list("Tag", filters=[["name", "like", f"%{txt}%"]])
 	tags = [t.name for t in tag]
 
-	return sorted(filter(lambda t: t and txt.lower() in t.lower(), list(set(tags))))
+	return sorted(filter(lambda t: t and txt.casefold() in t.casefold(), list(set(tags))))
 
 
 class DocTags:
@@ -79,7 +87,7 @@ class DocTags:
 	def add(self, dn, tag):
 		"""add a new user tag"""
 		tl = self.get_tags(dn).split(",")
-		if not tag in tl:
+		if tag not in tl:
 			tl.append(tag)
 			if not dontmanage.db.exists("Tag", tag):
 				dontmanage.get_doc({"doctype": "Tag", "name": tag}).insert(ignore_permissions=True)
@@ -143,6 +151,7 @@ def update_tags(doc, tags):
 
 	:param doc: Document to be added to global tags
 	"""
+	doc.check_permission("write")
 	new_tags = {tag.strip() for tag in tags.split(",") if tag}
 	existing_tags = [
 		tag.tag
@@ -165,9 +174,7 @@ def update_tags(doc, tags):
 
 	deleted_tags = list(set(existing_tags) - set(new_tags))
 	for tag in deleted_tags:
-		dontmanage.db.delete(
-			"Tag Link", {"document_type": doc.doctype, "document_name": doc.name, "tag": tag}
-		)
+		dontmanage.db.delete("Tag Link", {"document_type": doc.doctype, "document_name": doc.name, "tag": tag})
 
 
 @dontmanage.whitelist()
@@ -178,16 +185,19 @@ def get_documents_for_tag(tag):
 	"""
 	# remove hastag `#` from tag
 	tag = tag[1:]
-	results = []
 
 	result = dontmanage.get_list(
 		"Tag Link", filters={"tag": tag}, fields=["document_type", "document_name", "title", "tag"]
 	)
 
-	for res in result:
-		results.append({"doctype": res.document_type, "name": res.document_name, "content": res.title})
-
-	return results
+	return [
+		{
+			"doctype": res.document_type,
+			"name": res.document_name,
+			"content": res.title,
+		}
+		for res in result
+	]
 
 
 @dontmanage.whitelist()

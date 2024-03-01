@@ -5,6 +5,41 @@ dontmanage.ui.form.on("Workflow", {
 		frm.set_query("document_type", { issingle: 0, istable: 0 });
 	},
 	refresh: function (frm) {
+		frm.layout.message.empty();
+		let title, note;
+		let workflow_builder_url = "/app/workflow-builder";
+		let msg = __(
+			"Workflow Builder allows you to create workflows visually. You can drag and drop states and link them to create transitions. Also you can update thieir properties from the sidebar."
+		);
+
+		if (frm.is_new()) {
+			title = __("Create your workflow visually using the Workflow Builder.");
+		} else {
+			title = __("Edit your workflow visually using the Workflow Builder.");
+			note = __(
+				"NOTE: If you add states or transitions in the table, it will be reflected in the Workflow Builder but you will have to position them manually. Also Workflow Builder is currently in <b>BETA</b>."
+			);
+			workflow_builder_url += "/" + frm.doc.name;
+		}
+
+		let message = `
+		<div class="flex">
+			<div class="mr-3"><img style="border-radius: var(--border-radius-md)" width="600" src="/assets/dontmanage/images/workflow-builder.gif"></div>
+			<div>
+				<p style="font-size: var(--text-xl)">${title}</p>
+				<p>${msg}</p>
+				<p class="mb-3">${note || ""}</p>
+				<div>
+					<a class="btn btn-primary btn-sm" href="${workflow_builder_url}">
+						${__("Workflow Builder")} ${dontmanage.utils.icon("right", "xs")}
+					</a>
+				</div>
+			</div>
+		</div>
+		`;
+
+		frm.layout.show_message(message);
+
 		if (frm.doc.document_type) {
 			frm.add_custom_button(__("Go to {0} List", [frm.doc.document_type]), () => {
 				dontmanage.set_route("List", frm.doc.document_type);
@@ -13,10 +48,14 @@ dontmanage.ui.form.on("Workflow", {
 
 		frm.events.update_field_options(frm);
 		frm.ignore_warning = frm.is_new() ? true : false;
+		frm.state_status_mapping = {};
 
 		if (frm.is_new()) {
 			return;
 		}
+		frm.doc.states.forEach((row) => {
+			frm.state_status_mapping[row.state] = row.doc_status;
+		});
 
 		frm.states = null;
 		frm.trigger("make_state_table");
@@ -24,10 +63,36 @@ dontmanage.ui.form.on("Workflow", {
 			frm.trigger("render_state_table");
 		});
 	},
-	validate: (frm) => {
+	validate: async (frm) => {
+		if (frm.doc.is_active && (!frm.doc.states.length || !frm.doc.transitions.length)) {
+			let message = "Workflow must have atleast one state and transition";
+			dontmanage.throw({
+				message: __(message),
+				title: __("Missing Values Required"),
+				indicator: "orange",
+			});
+		}
+
 		if (frm.ignore_warning) {
 			return;
 		}
+
+		let updated_states = [];
+		frm.doc.states.forEach((row) => {
+			if (
+				frm.state_status_mapping[row.state] &&
+				frm.state_status_mapping[row.state] !== row.doc_status
+			) {
+				updated_states.push(row.state);
+			}
+		});
+
+		if (updated_states.length) {
+			frm.doc._update_state_docstatus = await create_docstatus_change_warning(
+				updated_states
+			);
+		}
+
 		return frm.trigger("get_orphaned_states_and_count").then(() => {
 			if (frm.states && frm.states.length) {
 				dontmanage.validated = false;
@@ -40,17 +105,21 @@ dontmanage.ui.form.on("Workflow", {
 	},
 	update_field_options: function (frm) {
 		var doc = frm.doc;
-		if (doc.document_type) {
-			const get_field_method =
-				"dontmanage.workflow.doctype.workflow.workflow.get_fieldnames_for";
-			dontmanage.xcall(get_field_method, { doctype: doc.document_type }).then((resp) => {
-				frm.fields_dict.states.grid.update_docfield_property(
-					"update_field",
-					"options",
-					[""].concat(resp)
-				);
-			});
+		if (!doc.document_type) {
+			return;
 		}
+		dontmanage.model.with_doctype(doc.document_type, () => {
+			const fieldnames = dontmanage
+				.get_meta(doc.document_type)
+				.fields.filter((field) => !dontmanage.model.no_value_type.includes(field.fieldtype))
+				.map((field) => field.fieldname);
+
+			frm.fields_dict.states.grid.update_docfield_property(
+				"update_field",
+				"options",
+				[""].concat(fieldnames)
+			);
+		});
 	},
 	create_warning_dialog: function (frm) {
 		const warning_html = `<p class="bold">
@@ -149,9 +218,53 @@ dontmanage.ui.form.on("Workflow", {
 });
 
 dontmanage.ui.form.on("Workflow Document State", {
+	state: function (_, cdt, cdn) {
+		var row = locals[cdt][cdn];
+		delete row.workflow_builder_id;
+	},
+
 	states_remove: function (frm) {
 		frm.trigger("get_orphaned_states_and_count").then(() => {
 			frm.trigger("render_state_table");
 		});
 	},
 });
+
+dontmanage.ui.form.on("Workflow Transition", {
+	state: function (_, cdt, cdn) {
+		var row = locals[cdt][cdn];
+		delete row.workflow_builder_id;
+	},
+
+	next_state: function (_, cdt, cdn) {
+		var row = locals[cdt][cdn];
+		delete row.workflow_builder_id;
+	},
+
+	action: function (_, cdt, cdn) {
+		var row = locals[cdt][cdn];
+		delete row.workflow_builder_id;
+	},
+
+	states_remove: function (frm) {
+		frm.trigger("get_orphaned_states_and_count").then(() => {
+			frm.trigger("render_state_table");
+		});
+	},
+});
+
+async function create_docstatus_change_warning(updated_states) {
+	return await new Promise((resolve) => {
+		dontmanage.confirm(
+			__(
+				`DocStatus of the following states have changed:<br><strong>{0}</strong><br>
+				Do you want to update the docstatus of existing documents in those states?<br>
+				This does not undo any effect bought in by the document's existing docstatus.
+				`,
+				[updated_states.join(", ")]
+			),
+			() => resolve(true),
+			() => resolve(false)
+		);
+	});
+}

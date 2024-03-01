@@ -1,6 +1,9 @@
 import dontmanage
 from dontmanage import _
 from dontmanage.core.utils import get_parent_doc
+from dontmanage.desk.doctype.notification_settings.notification_settings import (
+	is_email_notifications_enabled_for_type,
+)
 from dontmanage.desk.doctype.todo.todo import ToDo
 from dontmanage.email.doctype.email_account.email_account import EmailAccount
 from dontmanage.utils import get_formatted_email, get_url, parse_addr
@@ -66,14 +69,24 @@ class CommunicationEmailMixin:
 
 		cc = self.cc_list()
 
-		# Need to inform parent document owner incase communication is created through inbound mail
 		if include_sender:
-			cc.append(self.sender_mailid)
+			sender = self.sender_mailid
+			# if user has selected send_me_a_copy, use their email as sender
+			if dontmanage.session.user not in dontmanage.STANDARD_USERS:
+				sender = dontmanage.db.get_value("User", dontmanage.session.user, "email")
+			cc.append(sender)
+
 		if is_inbound_mail_communcation:
-			if (doc_owner := self.get_owner()) not in dontmanage.STANDARD_USERS:
+			# inform parent document owner incase communication is created through inbound mail
+			if doc_owner := self.get_owner():
 				cc.append(doc_owner)
 			cc = set(cc) - {self.sender_mailid}
-			cc.update(self.get_assignees())
+			assignees = set(self.get_assignees())
+			# Check and remove If user disabled notifications for incoming emails on assigned document.
+			for assignee in assignees.copy():
+				if not is_email_notifications_enabled_for_type(assignee, "threads_on_assigned_document"):
+					assignees.remove(assignee)
+			cc.update(assignees)
 
 		cc = set(cc) - set(self.filter_thread_notification_disbled_users(cc))
 		cc = cc - set(self.mail_recipients(is_inbound_mail_communcation=is_inbound_mail_communcation))
@@ -82,7 +95,7 @@ class CommunicationEmailMixin:
 		if is_inbound_mail_communcation:
 			cc = cc - set(self.cc_list() + self.to_list())
 
-		self._final_cc = [m for m in cc if m not in dontmanage.STANDARD_USERS]
+		self._final_cc = [m for m in cc if m and m not in dontmanage.STANDARD_USERS]
 		return self._final_cc
 
 	def get_mail_cc_with_displayname(self, is_inbound_mail_communcation=False, include_sender=False):
@@ -133,7 +146,7 @@ class CommunicationEmailMixin:
 		return get_formatted_email(self.mail_sender_fullname(), mail=self.mail_sender())
 
 	def get_content(self, print_format=None):
-		if print_format:
+		if print_format and dontmanage.db.get_single_value("System Settings", "attach_view_link"):
 			return self.content + self.get_attach_link(print_format)
 		return self.content
 
@@ -184,9 +197,7 @@ class CommunicationEmailMixin:
 			}
 			final_attachments.append(d)
 
-		for a in self.get_attachments() or []:
-			final_attachments.append({"fid": a["name"]})
-
+		final_attachments.extend({"fid": a["name"]} for a in self.get_attachments() or [])
 		return final_attachments
 
 	def get_unsubscribe_message(self):
@@ -216,7 +227,11 @@ class CommunicationEmailMixin:
 			"reference_name": self.reference_name,
 			"reference_type": self.reference_doctype,
 		}
-		return ToDo.get_owners(filters)
+
+		if self.reference_doctype and self.reference_name:
+			return ToDo.get_owners(filters)
+		else:
+			return []
 
 	@staticmethod
 	def filter_thread_notification_disbled_users(emails):
@@ -224,9 +239,7 @@ class CommunicationEmailMixin:
 		if not emails:
 			return []
 
-		return dontmanage.get_all(
-			"User", pluck="email", filters={"email": ["in", emails], "thread_notify": 0}
-		)
+		return dontmanage.get_all("User", pluck="email", filters={"email": ["in", emails], "thread_notify": 0})
 
 	@staticmethod
 	def filter_disabled_users(emails):
@@ -244,7 +257,6 @@ class CommunicationEmailMixin:
 		print_letterhead=None,
 		is_inbound_mail_communcation=None,
 	) -> dict:
-
 		outgoing_email_account = self.get_outgoing_email_account()
 		if not outgoing_email_account:
 			return {}
@@ -255,9 +267,7 @@ class CommunicationEmailMixin:
 		cc = self.get_mail_cc_with_displayname(
 			is_inbound_mail_communcation=is_inbound_mail_communcation, include_sender=send_me_a_copy
 		)
-		bcc = self.get_mail_bcc_with_displayname(
-			is_inbound_mail_communcation=is_inbound_mail_communcation
-		)
+		bcc = self.get_mail_bcc_with_displayname(is_inbound_mail_communcation=is_inbound_mail_communcation)
 
 		if not (recipients or cc):
 			return {}
@@ -283,6 +293,7 @@ class CommunicationEmailMixin:
 			"read_receipt": self.read_receipt,
 			"is_notification": (self.sent_or_received == "Received" and True) or False,
 			"print_letterhead": print_letterhead,
+			"send_after": self.send_after,
 		}
 
 	def send_email(

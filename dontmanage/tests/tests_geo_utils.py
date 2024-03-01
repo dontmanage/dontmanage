@@ -41,14 +41,10 @@ class TestGeoUtils(DontManageTestCase):
 		self.assertEqual(coords, {"type": "FeatureCollection", "features": []})
 
 	def test_get_coords_from_not_existable_location(self):
-		self.assertRaises(
-			dontmanage.ValidationError, get_coords, "ToDo", self.test_filter_todo, "location_field"
-		)
+		self.assertRaises(dontmanage.ValidationError, get_coords, "ToDo", self.test_filter_todo, "location_field")
 
 	def test_get_coords_from_not_existable_coords(self):
-		self.assertRaises(
-			dontmanage.ValidationError, get_coords, "ToDo", self.test_filter_todo, "coordinates"
-		)
+		self.assertRaises(dontmanage.ValidationError, get_coords, "ToDo", self.test_filter_todo, "coordinates")
 
 	def tearDown(self):
 		self.todo.delete()

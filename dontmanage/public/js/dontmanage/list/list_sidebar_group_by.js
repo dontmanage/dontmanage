@@ -152,7 +152,7 @@ dontmanage.views.ListGroupBy = class ListGroupBy {
 			fieldtype: "MultiCheck",
 			columns: 2,
 			options: fields.map((df) => ({
-				label: __(df.label),
+				label: __(df.label, null, df.parent),
 				value: df.fieldname,
 				checked: this.group_by_fields.includes(df.fieldname),
 			})),
@@ -214,14 +214,17 @@ dontmanage.views.ListGroupBy = class ListGroupBy {
 	}
 
 	get_dropdown_html(field, fieldtype, applied = false) {
-		let label = field.name == null ? __("Not Set") : field.name;
-		if (label === dontmanage.session.user) {
+		let label;
+		if (field.name == null) {
+			label = __("Not Set");
+		} else if (field.name === dontmanage.session.user) {
 			label = __("Me");
 		} else if (fieldtype && fieldtype == "Check") {
-			label = label == "0" ? __("No") : __("Yes");
+			label = field.name == "0" ? __("No") : __("Yes");
+		} else {
+			label = __(field.name);
 		}
 		let value = field.name == null ? "" : encodeURIComponent(field.name);
-
 		let applied_html = applied
 			? `<span class="applied"> ${dontmanage.utils.icon("tick", "xs")} </span>`
 			: "";

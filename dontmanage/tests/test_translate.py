@@ -8,9 +8,9 @@ from unittest.mock import patch
 import dontmanage
 import dontmanage.translate
 from dontmanage import _
-from dontmanage.core.doctype.translation.test_translation import clear_translation_cache
 from dontmanage.tests.utils import DontManageTestCase
 from dontmanage.translate import (
+	clear_cache,
 	extract_javascript,
 	extract_messages_from_javascript_code,
 	extract_messages_from_python_code,
@@ -18,10 +18,10 @@ from dontmanage.translate import (
 	get_parent_language,
 	get_translation_dict_from_file,
 )
-from dontmanage.utils import set_request
+from dontmanage.utils import get_bench_path, set_request
 
 dirname = os.path.dirname(__file__)
-translation_string_file = os.path.join(dirname, "translation_test_file.txt")
+translation_string_file = os.path.abspath(os.path.join(dirname, "translation_test_file.txt"))
 first_lang, second_lang, third_lang, fourth_lang, fifth_lang = choices(
 	# skip "en*" since it is a default language
 	dontmanage.get_all("Language", pluck="name", filters=[["name", "not like", "en%"]]),
@@ -30,27 +30,25 @@ first_lang, second_lang, third_lang, fourth_lang, fifth_lang = choices(
 
 
 class TestTranslate(DontManageTestCase):
-	guest_sessions_required = [
+	guest_sessions_required = (
 		"test_guest_request_language_resolution_with_cookie",
 		"test_guest_request_language_resolution_with_request_header",
-	]
+	)
 
 	def setUp(self):
 		if self._testMethodName in self.guest_sessions_required:
 			dontmanage.set_user("Guest")
-
-		clear_translation_cache()
 
 	def tearDown(self):
 		dontmanage.form_dict.pop("_lang", None)
 		if self._testMethodName in self.guest_sessions_required:
 			dontmanage.set_user("Administrator")
 
-		clear_translation_cache()
-
 	def test_extract_message_from_file(self):
 		data = dontmanage.translate.get_messages_from_file(translation_string_file)
-		exp_filename = "apps/dontmanage/dontmanage/tests/translation_test_file.txt"
+		bench_path = get_bench_path()
+		file_path = dontmanage.get_app_path("dontmanage", "tests", "translation_test_file.txt")
+		exp_filename = os.path.relpath(file_path, bench_path)
 
 		self.assertEqual(
 			len(data),
@@ -58,13 +56,27 @@ class TestTranslate(DontManageTestCase):
 			msg=f"Mismatched output:\nExpected: {expected_output}\nFound: {data}",
 		)
 
-		for extracted, expected in zip(data, expected_output):
+		for extracted, expected in zip(data, expected_output, strict=False):
 			ext_filename, ext_message, ext_context, ext_line = extracted
 			exp_message, exp_context, exp_line = expected
 			self.assertEqual(ext_filename, exp_filename)
 			self.assertEqual(ext_message, exp_message)
 			self.assertEqual(ext_context, exp_context)
 			self.assertEqual(ext_line, exp_line)
+
+	def test_read_language_variant(self):
+		dontmanage.local.lang = "en"
+		self.assertEqual(_("Mobile No"), "Mobile No")
+		try:
+			dontmanage.local.lang = "pt-BR"
+			self.assertEqual(_("Mobile No"), "Telefone Celular")
+		finally:
+			try:
+				dontmanage.local.lang = "pt"
+				self.assertEqual(_("Mobile No"), "Nr. de Telemóvel")
+			finally:
+				dontmanage.local.lang = "en"
+				self.assertEqual(_("Mobile No"), "Mobile No")
 
 	def test_translation_with_context(self):
 		try:
@@ -145,7 +157,6 @@ class TestTranslate(DontManageTestCase):
 		verify_translation_files("dontmanage")
 
 	def test_python_extractor(self):
-
 		code = textwrap.dedent(
 			"""
 			dontmanage._("attr")
@@ -174,12 +185,11 @@ class TestTranslate(DontManageTestCase):
 
 		output = extract_messages_from_python_code(code)
 		self.assertEqual(len(expected_output), len(output))
-		for expected, actual in zip(expected_output, output):
+		for expected, actual in zip(expected_output, output, strict=False):
 			with self.subTest():
 				self.assertEqual(expected, actual)
 
 	def test_js_extractor(self):
-
 		code = textwrap.dedent(
 			"""
 			__("attr")
@@ -212,7 +222,7 @@ class TestTranslate(DontManageTestCase):
 		output = extract_messages_from_javascript_code(code)
 
 		self.assertEqual(len(expected_output), len(output))
-		for expected, actual in zip(expected_output, output):
+		for expected, actual in zip(expected_output, output, strict=False):
 			with self.subTest():
 				self.assertEqual(expected, actual)
 

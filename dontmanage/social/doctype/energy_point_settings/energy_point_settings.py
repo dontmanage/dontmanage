@@ -8,6 +8,20 @@ from dontmanage.utils import add_to_date, getdate, today
 
 
 class EnergyPointSettings(Document):
+	# begin: auto-generated types
+	# This code is auto-generated. Do not modify anything in this block.
+
+	from typing import TYPE_CHECKING
+
+	if TYPE_CHECKING:
+		from dontmanage.social.doctype.review_level.review_level import ReviewLevel
+		from dontmanage.types import DF
+
+		enabled: DF.Check
+		last_point_allocation_date: DF.Date | None
+		point_allocation_periodicity: DF.Literal["Daily", "Weekly", "Monthly"]
+		review_levels: DF.Table[ReviewLevel]
+	# end: auto-generated types
 	pass
 
 
@@ -18,9 +32,7 @@ def is_energy_point_enabled():
 def allocate_review_points():
 	settings = dontmanage.get_single("Energy Point Settings")
 
-	if not can_allocate_today(
-		settings.last_point_allocation_date, settings.point_allocation_periodicity
-	):
+	if not can_allocate_today(settings.last_point_allocation_date, settings.point_allocation_periodicity):
 		return
 
 	user_point_map = {}

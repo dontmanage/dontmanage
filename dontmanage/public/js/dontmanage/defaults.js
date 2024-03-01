@@ -3,10 +3,14 @@
 
 dontmanage.defaults = {
 	get_user_default: function (key) {
-		var defaults = dontmanage.boot.user.defaults;
-		var d = defaults[key];
-		if (!d && dontmanage.defaults.is_a_user_permission_key(key))
+		let defaults = dontmanage.boot.user.defaults;
+		let d = defaults[key];
+		if (!d && dontmanage.defaults.is_a_user_permission_key(key)) {
 			d = defaults[dontmanage.model.scrub(key)];
+			// Check for default user permission values
+			let user_default = this.get_user_permission_default(key, defaults);
+			if (user_default) d = user_default;
+		}
 		if ($.isArray(d)) d = d[0];
 
 		if (!dontmanage.defaults.in_user_permission(key, d)) {
@@ -15,6 +19,27 @@ dontmanage.defaults = {
 
 		return d;
 	},
+
+	get_user_permission_default: function (key, defaults) {
+		let permissions = this.get_user_permissions();
+		let user_default = null;
+		if (permissions[key]) {
+			permissions[key].forEach((item) => {
+				if (defaults[key] == item.doc) {
+					user_default = item.doc;
+				}
+			});
+
+			permissions[key].forEach((item) => {
+				if (item.is_default) {
+					user_default = item.doc;
+				}
+			});
+		}
+
+		return user_default;
+	},
+
 	get_user_defaults: function (key) {
 		var defaults = dontmanage.boot.user.defaults;
 		var d = defaults[key];
@@ -82,10 +107,9 @@ dontmanage.defaults = {
 		let user_permission = this.get_user_permissions()[dontmanage.model.unscrub(key)];
 
 		if (user_permission && user_permission.length) {
-			let doc_found = user_permission.some((perm) => {
+			return user_permission.some((perm) => {
 				return perm.doc === value;
 			});
-			return doc_found;
 		} else {
 			// there is no user permission for this doctype
 			// so we can allow this doc i.e., value
@@ -104,5 +128,13 @@ dontmanage.defaults = {
 				this._user_permissions = Object.assign({}, r.message);
 			}
 		});
+	},
+
+	load_user_permission_from_boot: function () {
+		if (dontmanage.boot.user.user_permissions) {
+			this._user_permissions = Object.assign({}, dontmanage.boot.user.user_permissions);
+		} else {
+			dontmanage.defaults.update_user_permissions();
+		}
 	},
 };

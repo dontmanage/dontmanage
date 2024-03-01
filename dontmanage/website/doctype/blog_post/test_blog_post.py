@@ -20,6 +20,10 @@ class TestBlogPost(DontManageTestCase):
 	def setUp(self):
 		reset_customization("Blog Post")
 
+	def tearDown(self):
+		if hasattr(dontmanage.local, "request"):
+			delattr(dontmanage.local, "request")
+
 	def test_generator_view(self):
 		pages = dontmanage.get_all(
 			"Blog Post", fields=["name", "route"], filters={"published": 1, "route": ("!=", "")}, limit=1
@@ -58,7 +62,7 @@ class TestBlogPost(DontManageTestCase):
 
 		# On blog post page find link to the category page
 		soup = BeautifulSoup(blog_page_html, "html.parser")
-		category_page_link = list(soup.find_all("a", href=re.compile(blog.blog_category)))[0]
+		category_page_link = next(iter(soup.find_all("a", href=re.compile(blog.blog_category))))
 		category_page_url = category_page_link["href"]
 
 		cached_value = dontmanage.db.value_cache.get(("DocType", "Blog Post", "name"))
@@ -80,7 +84,7 @@ class TestBlogPost(DontManageTestCase):
 		# Create some Blog Posts for a Blog Category
 		category_title, blogs, BLOG_COUNT = "List Category", [], 4
 
-		for index in range(BLOG_COUNT):
+		for _ in range(BLOG_COUNT):
 			blog = make_test_blog(category_title)
 			blogs.append(blog)
 
@@ -159,17 +163,10 @@ class TestBlogPost(DontManageTestCase):
 
 		from dontmanage.templates.includes.likes.likes import like
 
-		dontmanage.form_dict.reference_doctype = "Blog Post"
-		dontmanage.form_dict.reference_name = test_blog.name
-		dontmanage.form_dict.like = True
-		dontmanage.local.request_ip = "127.0.0.1"
-
-		liked = like()
+		liked = like("Blog Post", test_blog.name, True)
 		self.assertEqual(liked, True)
 
-		dontmanage.form_dict.like = False
-
-		disliked = like()
+		disliked = like("Blog Post", test_blog.name, False)
 		self.assertEqual(disliked, False)
 
 		dontmanage.db.delete("Comment", {"comment_type": "Like", "reference_doctype": "Blog Post"})
@@ -185,11 +182,9 @@ def make_test_blog(category_title="Test Blog Category"):
 	if not dontmanage.db.exists("Blog Category", category_name):
 		dontmanage.get_doc(dict(doctype="Blog Category", title=category_title)).insert()
 	if not dontmanage.db.exists("Blogger", "test-blogger"):
-		dontmanage.get_doc(
-			dict(doctype="Blogger", short_name="test-blogger", full_name="Test Blogger")
-		).insert()
+		dontmanage.get_doc(dict(doctype="Blogger", short_name="test-blogger", full_name="Test Blogger")).insert()
 
-	test_blog = dontmanage.get_doc(
+	return dontmanage.get_doc(
 		dict(
 			doctype="Blog Post",
 			blog_category=category_name,
@@ -200,5 +195,3 @@ def make_test_blog(category_title="Test Blog Category"):
 			published=1,
 		)
 	).insert()
-
-	return test_blog

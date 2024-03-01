@@ -10,26 +10,32 @@ be used to build database driven apps.
 
 Read the documentation: https://dontmanageframework.com/docs
 """
+import copy
 import functools
+import gc
 import importlib
 import inspect
 import json
 import os
 import re
+import traceback
+import unicodedata
 import warnings
-from typing import TYPE_CHECKING, Any, Callable, Literal, Optional, overload
+from collections.abc import Callable
+from typing import TYPE_CHECKING, Any, Literal, Optional, TypeAlias, overload
 
 import click
 from werkzeug.local import Local, release_local
 
+import dontmanage
 from dontmanage.query_builder import (
-	get_qb_engine,
+	get_query,
 	get_query_builder,
 	patch_query_aggregation,
 	patch_query_execute,
 )
 from dontmanage.utils.caching import request_cache
-from dontmanage.utils.data import cstr, sbool
+from dontmanage.utils.data import cint, cstr, sbool
 
 # Local application imports
 from .exceptions import *
@@ -42,19 +48,17 @@ from .utils.jinja import (
 )
 from .utils.lazy_loader import lazy_import
 
-__version__ = "14.30.0"
+__version__ = "15.16.1"
 __title__ = "DontManage Framework"
 
 controllers = {}
 local = Local()
+cache = None
 STANDARD_USERS = ("Guest", "Administrator")
 
-_dev_server = int(sbool(os.environ.get("DEV_SERVER", False)))
 _qb_patched = {}
-re._MAXCACHE = (
-	50  # reduced from default 512 given we are already maintaining this on parent worker
-)
-
+_dev_server = int(sbool(os.environ.get("DEV_SERVER", False)))
+_tune_gc = bool(sbool(os.environ.get("DONTMANAGE_TUNE_GC", True)))
 
 if _dev_server:
 	warnings.simplefilter("always", DeprecationWarning)
@@ -155,6 +159,7 @@ qb = local("qb")
 conf = local("conf")
 form = form_dict = local("form_dict")
 request = local("request")
+job = local("job")
 response = local("response")
 session = local("session")
 user = local("user")
@@ -168,29 +173,41 @@ lang = local("lang")
 
 # This if block is never executed when running the code. It is only used for
 # telling static code analyzer where to find dynamically defined attributes.
-if TYPE_CHECKING:
+if TYPE_CHECKING:  # pragma: no cover
+	from werkzeug.wrappers import Request
+
 	from dontmanage.database.mariadb.database import MariaDBDatabase
 	from dontmanage.database.postgres.database import PostgresDatabase
+	from dontmanage.email.doctype.email_queue.email_queue import EmailQueue
 	from dontmanage.model.document import Document
 	from dontmanage.query_builder.builder import MariaDB, Postgres
 	from dontmanage.utils.redis_wrapper import RedisWrapper
 
 	db: MariaDBDatabase | PostgresDatabase
 	qb: MariaDB | Postgres
+	cache: RedisWrapper
+	response: _dict
+	conf: _dict
+	form_dict: _dict
+	flags: _dict
+	request: Request
+	session: _dict
+	user: str
+	flags: _dict
+	lang: str
 
 
 # end: static analysis hack
 
 
-def init(site: str, sites_path: str = ".", new_site: bool = False) -> None:
+def init(site: str, sites_path: str = ".", new_site: bool = False, force=False) -> None:
 	"""Initialize dontmanage for the current site. Reset thread locals `dontmanage.local`"""
-	if getattr(local, "initialised", None):
+	if getattr(local, "initialised", None) and not force:
 		return
 
 	local.error_log = []
 	local.message_log = []
 	local.debug_log = []
-	local.realtime_log = []
 	local.flags = _dict(
 		{
 			"currently_saving": [],
@@ -207,9 +224,7 @@ def init(site: str, sites_path: str = ".", new_site: bool = False) -> None:
 			"read_only": False,
 		}
 	)
-	local.rollback_observers = []
 	local.locked_documents = []
-	local.before_commit = []
 	local.test_objects = {}
 
 	local.site = site
@@ -233,30 +248,28 @@ def init(site: str, sites_path: str = ".", new_site: bool = False) -> None:
 	local.role_permissions = {}
 	local.valid_columns = {}
 	local.new_doc_templates = {}
-	local.link_count = {}
 
 	local.jenv = None
 	local.jloader = None
 	local.cache = {}
-	local.document_cache = {}
 	local.form_dict = _dict()
-	local.preload_assets = {"style": [], "script": []}
+	local.preload_assets = {"style": [], "script": [], "icons": []}
 	local.session = _dict()
 	local.dev_server = _dev_server
-	local.qb = get_query_builder(local.conf.db_type or "mariadb")
-	local.qb.engine = get_qb_engine()
-	setup_module_map()
+	local.qb = get_query_builder(local.conf.db_type)
+	local.qb.get_query = get_query
+	setup_redis_cache_connection()
 
 	if not _qb_patched.get(local.conf.db_type):
 		patch_query_execute()
 		patch_query_aggregation()
 
+	setup_module_map(include_all_apps=not (dontmanage.request or dontmanage.job or dontmanage.flags.in_migrate))
+
 	local.initialised = True
 
 
-def connect(
-	site: str | None = None, db_name: str | None = None, set_admin_as_user: bool = True
-) -> None:
+def connect(site: str | None = None, db_name: str | None = None, set_admin_as_user: bool = True) -> None:
 	"""Connect to site database instance.
 
 	:param site: If site is given, calls `dontmanage.init`.
@@ -268,13 +281,21 @@ def connect(
 	if site:
 		init(site)
 
-	local.db = get_db(user=db_name or local.conf.db_name)
+	local.db = get_db(
+		host=local.conf.db_host,
+		port=local.conf.db_port,
+		user=db_name or local.conf.db_name,
+		password=None,
+	)
 	if set_admin_as_user:
 		set_user("Administrator")
 
 
-def connect_replica():
+def connect_replica() -> bool:
 	from dontmanage.database import get_db
+
+	if local and hasattr(local, "replica_db") and hasattr(local, "primary_db"):
+		return False
 
 	user = local.conf.db_name
 	password = local.conf.db_password
@@ -290,23 +311,19 @@ def connect_replica():
 	local.primary_db = local.db
 	local.db = local.replica_db
 
+	return True
+
 
 def get_site_config(sites_path: str | None = None, site_path: str | None = None) -> dict[str, Any]:
 	"""Returns `site_config.json` combined with `sites/common_site_config.json`.
 	`site_config` is a set of site wide settings like database name, password, email etc."""
-	config = {}
+	config = _dict()
 
 	sites_path = sites_path or getattr(local, "sites_path", None)
 	site_path = site_path or getattr(local, "site_path", None)
 
 	if sites_path:
-		common_site_config = os.path.join(sites_path, "common_site_config.json")
-		if os.path.exists(common_site_config):
-			try:
-				config.update(get_file_json(common_site_config))
-			except Exception as error:
-				click.secho("common_site_config.json is invalid", fg="red")
-				print(error)
+		config.update(get_common_site_config(sites_path))
 
 	if site_path:
 		site_config = os.path.join(site_path, "site_config.json")
@@ -319,17 +336,68 @@ def get_site_config(sites_path: str | None = None, site_path: str | None = None)
 		elif local.site and not local.flags.new_site:
 			raise IncorrectSitePath(f"{local.site} does not exist")
 
-	return _dict(config)
+	# Generalized env variable overrides and defaults
+	def db_default_ports(db_type):
+		from dontmanage.database.mariadb.database import MariaDBDatabase
+
+		return {
+			"mariadb": MariaDBDatabase.default_port,  # 3306
+			"postgres": 5432,
+		}[db_type]
+
+	config["redis_queue"] = (
+		os.environ.get("DONTMANAGE_REDIS_QUEUE") or config.get("redis_queue") or "redis://127.0.0.1:11311"
+	)
+	config["redis_cache"] = (
+		os.environ.get("DONTMANAGE_REDIS_CACHE") or config.get("redis_cache") or "redis://127.0.0.1:13311"
+	)
+	config["db_type"] = os.environ.get("DONTMANAGE_DB_TYPE") or config.get("db_type") or "mariadb"
+	config["db_host"] = os.environ.get("DONTMANAGE_DB_HOST") or config.get("db_host") or "127.0.0.1"
+	config["db_port"] = (
+		os.environ.get("DONTMANAGE_DB_PORT") or config.get("db_port") or db_default_ports(config["db_type"])
+	)
+
+	# Allow externally extending the config with hooks
+	if extra_config := config.get("extra_config"):
+		if isinstance(extra_config, str):
+			extra_config = [extra_config]
+		for hook in extra_config:
+			try:
+				module, method = hook.rsplit(".", 1)
+				config |= getattr(importlib.import_module(module), method)()
+			except Exception:
+				print(f"Config hook {hook} failed")
+				traceback.print_exc()
+
+	return config
+
+
+def get_common_site_config(sites_path: str | None = None) -> dict[str, Any]:
+	"""Returns common site config as dictionary.
+
+	This is useful for:
+	- checking configuration which should only be allowed in common site config
+	- When no site context is present and fallback is required.
+	"""
+	sites_path = sites_path or getattr(local, "sites_path", None)
+
+	common_site_config = os.path.join(sites_path, "common_site_config.json")
+	if os.path.exists(common_site_config):
+		try:
+			return _dict(get_file_json(common_site_config))
+		except Exception as error:
+			click.secho("common_site_config.json is invalid", fg="red")
+			print(error)
+	return _dict()
 
 
 def get_conf(site: str | None = None) -> dict[str, Any]:
 	if hasattr(local, "conf"):
 		return local.conf
 
-	else:
-		# if no site, get from common_site_config.json
-		with init_site(site):
-			return local.conf
+	# if no site, get from common_site_config.json
+	with init_site(site):
+		return local.conf
 
 
 class init_site:
@@ -353,17 +421,14 @@ def destroy():
 	release_local(local)
 
 
-redis_server = None
+def setup_redis_cache_connection():
+	"""Defines `dontmanage.cache` as `RedisWrapper` instance"""
+	global cache
 
-
-def cache() -> "RedisWrapper":
-	"""Returns redis connection."""
-	global redis_server
-	if not redis_server:
+	if not cache:
 		from dontmanage.utils.redis_wrapper import RedisWrapper
 
-		redis_server = RedisWrapper.from_url(conf.get("redis_cache") or "redis://localhost:11311")
-	return redis_server
+		cache = RedisWrapper.from_url(conf.get("redis_cache"))
 
 
 def get_traceback(with_context: bool = False) -> str:
@@ -378,14 +443,14 @@ def errprint(msg: str) -> None:
 
 	:param msg: Message."""
 	msg = as_unicode(msg)
-	if not request or (not "cmd" in local.form_dict) or conf.developer_mode:
+	if not request or ("cmd" not in local.form_dict) or conf.developer_mode:
 		print(msg)
 
 	error_log.append({"exc": msg})
 
 
 def print_sql(enable: bool = True) -> None:
-	return cache().set_value("flag_print_sql", enable)
+	return cache.set_value("flag_print_sql", enable)
 
 
 def log(msg: str) -> None:
@@ -399,6 +464,13 @@ def log(msg: str) -> None:
 	debug_log.append(as_unicode(msg))
 
 
+@functools.lru_cache(maxsize=1024)
+def _strip_html_tags(message):
+	from dontmanage.utils import strip_html_tags
+
+	return strip_html_tags(message)
+
+
 def msgprint(
 	msg: str,
 	title: str | None = None,
@@ -407,9 +479,11 @@ def msgprint(
 	as_list: bool = False,
 	indicator: Literal["blue", "green", "orange", "red", "yellow"] | None = None,
 	alert: bool = False,
-	primary_action: str = None,
+	primary_action: str | None = None,
 	is_minimizable: bool = False,
 	wide: bool = False,
+	*,
+	realtime=False,
 ) -> None:
 	"""Print a message to the user (via HTTP response).
 	Messages are sent in the `__server_messages` property in the
@@ -423,25 +497,23 @@ def msgprint(
 	:param primary_action: [optional] Bind a primary server/client side action.
 	:param is_minimizable: [optional] Allow users to minimize the modal
 	:param wide: [optional] Show wide modal
+	:param realtime: Publish message immediately using websocket.
 	"""
 	import inspect
 	import sys
 
-	from dontmanage.utils import strip_html_tags
-
 	msg = safe_decode(msg)
 	out = _dict(message=msg)
-
-	@functools.lru_cache(maxsize=1024)
-	def _strip_html_tags(message):
-		return strip_html_tags(message)
 
 	def _raise_exception():
 		if raise_exception:
 			if inspect.isclass(raise_exception) and issubclass(raise_exception, Exception):
-				raise raise_exception(msg)
+				exc = raise_exception(msg)
 			else:
-				raise ValidationError(msg)
+				exc = ValidationError(msg)
+			if out.__dontmanage_exc_id:
+				exc.__dontmanage_exc_id = out.__dontmanage_exc_id
+			raise exc
 
 	if flags.mute_messages:
 		_raise_exception()
@@ -478,6 +550,7 @@ def msgprint(
 
 	if raise_exception:
 		out.raise_exception = 1
+		out.__dontmanage_exc_id = generate_hash()
 
 	if primary_action:
 		out.primary_action = primary_action
@@ -485,11 +558,10 @@ def msgprint(
 	if wide:
 		out.wide = wide
 
-	message_log.append(json.dumps(out))
-
-	if raise_exception and hasattr(raise_exception, "__name__"):
-		local.response["exc_type"] = raise_exception.__name__
-
+	if realtime:
+		publish_realtime(event="msgprint", message=out)
+	else:
+		message_log.append(out)
 	_raise_exception()
 
 
@@ -497,12 +569,8 @@ def clear_messages():
 	local.message_log = []
 
 
-def get_message_log():
-	log = []
-	for msg_out in local.message_log:
-		log.append(json.loads(msg_out))
-
-	return log
+def get_message_log() -> list[dict]:
+	return [msg_out for msg_out in local.message_log]
 
 
 def clear_last_message():
@@ -624,7 +692,8 @@ def sendmail(
 	header=None,
 	print_letterhead=False,
 	with_container=False,
-):
+	email_read_tracker_url=None,
+) -> Optional["EmailQueue"]:
 	"""Send email using user's default **Email Account** or global default **Email Account**.
 
 
@@ -705,10 +774,11 @@ def sendmail(
 		header=header,
 		print_letterhead=print_letterhead,
 		with_container=with_container,
+		email_read_tracker_url=email_read_tracker_url,
 	)
 
 	# build email queue and send the email if send_now is True.
-	builder.process(send_now=now)
+	return builder.process(send_now=now)
 
 
 whitelisted = []
@@ -736,14 +806,21 @@ def whitelist(allow_guest=False, xss_safe=False, methods=None):
 		methods = ["GET", "POST", "PUT", "DELETE"]
 
 	def innerfn(fn):
+		from dontmanage.utils.typing_validations import validate_argument_types
+
 		global whitelisted, guest_methods, xss_safe_methods, allowed_http_methods_for_whitelisted_func
+
+		# validate argument types only if request is present
+		in_request_or_test = lambda: getattr(local, "request", None) or local.flags.in_test  # noqa: E731
 
 		# get function from the unbound / bound method
 		# this is needed because functions can be compared, but not methods
 		method = None
 		if hasattr(fn, "__func__"):
-			method = fn
+			method = validate_argument_types(fn, apply_condition=in_request_or_test)
 			fn = method.__func__
+		else:
+			fn = validate_argument_types(fn, apply_condition=in_request_or_test)
 
 		whitelisted.append(fn)
 		allowed_http_methods_for_whitelisted_func[fn] = methods
@@ -765,9 +842,7 @@ def is_whitelisted(method):
 	is_guest = session["user"] == "Guest"
 	if method not in whitelisted or is_guest and method not in guest_methods:
 		summary = _("You are not permitted to access this resource.")
-		detail = _("Function {0} is not whitelisted.").format(
-			bold(f"{method.__module__}.{method.__name__}")
-		)
+		detail = _("Function {0} is not whitelisted.").format(bold(f"{method.__module__}.{method.__name__}"))
 		msg = f"<details><summary>{summary}</summary>{detail}</details>"
 		throw(msg, PermissionError, title="Method Not Allowed")
 
@@ -781,14 +856,18 @@ def is_whitelisted(method):
 
 def read_only():
 	def innfn(fn):
+		@functools.wraps(fn)
 		def wrapper_fn(*args, **kwargs):
+			# dontmanage.read_only could be called from nested functions, in such cases don't swap the
+			# connection again.
+			switched_connection = False
 			if conf.read_from_replica:
-				connect_replica()
+				switched_connection = connect_replica()
 
 			try:
 				retval = fn(*args, **get_newargs(fn, kwargs))
 			finally:
-				if local and hasattr(local, "primary_db"):
+				if switched_connection and local and hasattr(local, "primary_db"):
 					local.db.close()
 					local.db = local.primary_db
 
@@ -838,7 +917,7 @@ def only_for(roles: list[str] | tuple[str] | str, message=False):
 	if isinstance(roles, str):
 		roles = (roles,)
 
-	if not set(roles).intersection(get_roles()):
+	if set(roles).isdisjoint(get_roles()):
 		if not message:
 			raise PermissionError
 
@@ -872,6 +951,7 @@ def clear_cache(user: str | None = None, doctype: str | None = None):
 	:param doctype: If doctype is given, only DocType cache is cleared."""
 	import dontmanage.cache_manager
 	import dontmanage.utils.caching
+	from dontmanage.website.router import clear_routing_cache
 
 	if doctype:
 		dontmanage.cache_manager.clear_doctype_cache(doctype)
@@ -879,11 +959,8 @@ def clear_cache(user: str | None = None, doctype: str | None = None):
 	elif user:
 		dontmanage.cache_manager.clear_user_cache(user)
 	else:  # everything
-		from dontmanage import translate
-
-		dontmanage.cache_manager.clear_user_cache()
-		dontmanage.cache_manager.clear_domain_cache()
-		translate.clear_cache()
+		# Delete ALL keys associated with this site.
+		dontmanage.cache.delete_keys("")
 		reset_metadata_version()
 		local.cache = {}
 		local.new_doc_templates = {}
@@ -900,22 +977,19 @@ def clear_cache(user: str | None = None, doctype: str | None = None):
 	if hasattr(local, "website_settings"):
 		del local.website_settings
 
+	clear_routing_cache()
+
 
 def only_has_select_perm(doctype, user=None, ignore_permissions=False):
 	if ignore_permissions:
 		return False
 
-	if not user:
-		user = local.session.user
+	from dontmanage.permissions import get_role_permissions
 
-	import dontmanage.permissions
+	user = user or local.session.user
+	permissions = get_role_permissions(doctype, user=user)
 
-	permissions = dontmanage.permissions.get_role_permissions(doctype, user=user)
-
-	if permissions.get("select") and not permissions.get("read"):
-		return True
-	else:
-		return False
+	return permissions.get("select") and not permissions.get("read")
 
 
 def has_permission(
@@ -923,10 +997,10 @@ def has_permission(
 	ptype="read",
 	doc=None,
 	user=None,
-	verbose=False,
 	throw=False,
 	*,
 	parent_doctype=None,
+	debug=False,
 ):
 	"""
 	Returns True if the user has permission `ptype` for given `doctype` or `doc`
@@ -936,7 +1010,6 @@ def has_permission(
 	:param ptype: Permission type (`read`, `write`, `create`, `submit`, `cancel`, `amend`). Default: `read`.
 	:param doc: [optional] Checks User permissions for given doc.
 	:param user: [optional] Check for given user. Default: current user.
-	:param verbose: DEPRECATED, will be removed in a future release.
 	:param parent_doctype: Required when checking permission for a child DocType (unless doc is specified).
 	"""
 	import dontmanage.permissions
@@ -951,20 +1024,13 @@ def has_permission(
 		user=user,
 		raise_exception=throw,
 		parent_doctype=parent_doctype,
+		debug=debug,
 	)
 
 	if throw and not out:
-		# mimics dontmanage.throw
-		document_label = f"{_(doc.doctype)} {doc.name}" if doc else _(doctype)
-		msgprint(
-			_("No permission for {0}").format(document_label),
-			raise_exception=ValidationError,
-			title=None,
-			indicator="red",
-			is_minimizable=None,
-			wide=None,
-			as_list=False,
-		)
+		document_label = f"{_(doctype)} {doc if isinstance(doc, str) else doc.name}" if doc else _(doctype)
+		dontmanage.flags.error_message = _("No permission for {0}").format(document_label)
+		raise dontmanage.PermissionError
 
 	return out
 
@@ -1014,7 +1080,7 @@ def is_table(doctype: str) -> bool:
 	def get_tables():
 		return db.get_values("DocType", filters={"istable": 1}, order_by=None, pluck=True)
 
-	tables = cache().get_value("is_table", get_tables)
+	tables = cache.get_value("is_table", get_tables)
 	return doctype in tables
 
 
@@ -1041,24 +1107,32 @@ def generate_hash(txt: str | None = None, length: int = 56) -> str:
 def reset_metadata_version():
 	"""Reset `metadata_version` (Client (Javascript) build ID) hash."""
 	v = generate_hash()
-	cache().set_value("metadata_version", v)
+	cache.set_value("metadata_version", v)
 	return v
 
 
 def new_doc(
 	doctype: str,
+	*,
 	parent_doc: Optional["Document"] = None,
 	parentfield: str | None = None,
 	as_dict: bool = False,
+	**kwargs,
 ) -> "Document":
 	"""Returns a new document of the given DocType with defaults set.
 
 	:param doctype: DocType of the new document.
 	:param parent_doc: [optional] add to parent document.
-	:param parentfield: [optional] add against this `parentfield`."""
+	:param parentfield: [optional] add against this `parentfield`.
+	:param as_dict: [optional] return as dictionary instead of Document.
+	:param kwargs: [optional] You can specify fields as field=value pairs in function call.
+	"""
+
 	from dontmanage.model.create_new import get_new_doc
 
-	return get_new_doc(doctype, parent_doc, parentfield, as_dict=as_dict)
+	new_doc = get_new_doc(doctype, parent_doc, parentfield, as_dict=as_dict)
+
+	return new_doc.update(kwargs)
 
 
 def set_value(doctype, docname, fieldname, value=None):
@@ -1069,25 +1143,10 @@ def set_value(doctype, docname, fieldname, value=None):
 
 
 def get_cached_doc(*args, **kwargs) -> "Document":
-	def _respond(doc, from_redis=False):
-		if isinstance(doc, dict):
-			local.document_cache[key] = doc = get_doc(doc)
-
-		elif from_redis:
-			local.document_cache[key] = doc
-
+	if (key := can_cache_doc(args)) and (doc := cache.get_value(key)):
 		return doc
 
-	if key := can_cache_doc(args):
-		# local cache - has "ready" `Document` objects
-		if doc := local.document_cache.get(key):
-			return _respond(doc)
-
-		# redis cache
-		if doc := cache().hget("document_cache", key):
-			return _respond(doc, True)
-
-	# Not found in local/redis, fetch from DB
+	# Not found in cache, fetch from DB
 	doc = get_doc(*args, **kwargs)
 
 	# Store in cache
@@ -1100,14 +1159,7 @@ def get_cached_doc(*args, **kwargs) -> "Document":
 
 
 def _set_document_in_cache(key: str, doc: "Document") -> None:
-	local.document_cache[key] = doc
-
-	# Avoid setting in local.cache since we're already using local.document_cache above
-	# Try pickling the doc object as-is first, else fallback to doc.as_dict()
-	try:
-		cache().hset("document_cache", key, doc, cache_locally=False)
-	except Exception:
-		cache().hset("document_cache", key, doc.as_dict(), cache_locally=False)
+	cache.set_value(key, doc)
 
 
 def can_cache_doc(args) -> str | None:
@@ -1128,24 +1180,29 @@ def can_cache_doc(args) -> str | None:
 
 
 def get_document_cache_key(doctype: str, name: str):
-	return f"{doctype}::{name}"
+	return f"document_cache::{doctype}::{name}"
 
 
-def clear_document_cache(doctype, name):
-	cache().hdel("last_modified", doctype)
-	key = get_document_cache_key(doctype, name)
-	if key in local.document_cache:
-		del local.document_cache[key]
-	cache().hdel("document_cache", key)
+def clear_document_cache(doctype: str, name: str | None = None) -> None:
+	def clear_in_redis():
+		if name is not None:
+			cache.delete_value(get_document_cache_key(doctype, name))
+		else:
+			cache.delete_keys(get_document_cache_key(doctype, ""))
+
+	clear_in_redis()
+	if hasattr(db, "after_commit"):
+		db.after_commit.add(clear_in_redis)
+		db.after_rollback.add(clear_in_redis)
+
 	if doctype == "System Settings" and hasattr(local, "system_settings"):
 		delattr(local, "system_settings")
+
 	if doctype == "Website Settings" and hasattr(local, "website_settings"):
 		delattr(local, "website_settings")
 
 
-def get_cached_value(
-	doctype: str, name: str, fieldname: str = "name", as_dict: bool = False
-) -> Any:
+def get_cached_value(doctype: str, name: str, fieldname: str = "name", as_dict: bool = False) -> Any:
 	try:
 		doc = get_cached_doc(doctype, name)
 	except DoesNotExistError:
@@ -1159,11 +1216,46 @@ def get_cached_value(
 
 	values = [doc.get(f) for f in fieldname]
 	if as_dict:
-		return _dict(zip(fieldname, values))
+		return _dict(zip(fieldname, values, strict=False))
 	return values
 
 
-def get_doc(*args, **kwargs) -> "Document":
+_SingleDocument: TypeAlias = "Document"
+_NewDocument: TypeAlias = "Document"
+
+
+@overload
+def get_doc(document: "Document", /) -> "Document":
+	pass
+
+
+@overload
+def get_doc(doctype: str, /) -> _SingleDocument:
+	"""Retrieve Single DocType from DB, doctype must be positional argument."""
+	pass
+
+
+@overload
+def get_doc(doctype: str, name: str, /, *, for_update: bool | None = None) -> "Document":
+	"""Retrieve DocType from DB, doctype and name must be positional argument."""
+	pass
+
+
+@overload
+def get_doc(**kwargs: dict) -> "_NewDocument":
+	"""Initialize document from kwargs.
+	Not recommended. Use `dontmanage.new_doc` instead."""
+	pass
+
+
+@overload
+def get_doc(documentdict: dict) -> "_NewDocument":
+	"""Create document from dict.
+	Not recommended. Use `dontmanage.new_doc` instead."""
+	pass
+
+
+def get_doc(*args, **kwargs):
 	"""Return a `dontmanage.model.document.Document` object of the given type and name.
 
 	:param arg1: DocType name as string **or** document JSON.
@@ -1184,7 +1276,7 @@ def get_doc(*args, **kwargs) -> "Document":
 	doc = dontmanage.model.document.get_doc(*args, **kwargs)
 
 	# Replace cache if stale one exists
-	if (key := can_cache_doc(args)) and cache().hexists("document_cache", key):
+	if not kwargs.get("for_update") and (key := can_cache_doc(args)) and cache.exists(key):
 		_set_document_in_cache(key, doc)
 
 	return doc
@@ -1290,7 +1382,7 @@ def reload_doc(
 	return dontmanage.modules.reload_doc(module, dt, dn, force=force, reset_permissions=reset_permissions)
 
 
-@whitelist()
+@whitelist(methods=["POST", "PUT"])
 def rename_doc(
 	doctype: str,
 	old: str,
@@ -1356,11 +1448,21 @@ def get_app_path(app_name, *joins):
 	return get_pymodule_path(app_name, *joins)
 
 
+def get_app_source_path(app_name, *joins):
+	"""Return source path of given app.
+
+	:param app: App name.
+	:param *joins: Join additional path elements using `os.path.join`."""
+	return get_app_path(app_name, "..", *joins)
+
+
 def get_site_path(*joins):
 	"""Return path of current site.
 
 	:param *joins: Join additional path elements using `os.path.join`."""
-	return os.path.join(local.site_path, *joins)
+	from os.path import join
+
+	return join(local.site_path, *joins)
 
 
 def get_pymodule_path(modulename, *joins):
@@ -1368,14 +1470,17 @@ def get_pymodule_path(modulename, *joins):
 
 	:param modulename: Python module name.
 	:param *joins: Join additional path elements using `os.path.join`."""
-	if not "public" in joins:
+	from os.path import abspath, dirname, join
+
+	if "public" not in joins:
 		joins = [scrub(part) for part in joins]
-	return os.path.join(os.path.dirname(get_module(scrub(modulename)).__file__ or ""), *joins)
+
+	return abspath(join(dirname(get_module(scrub(modulename)).__file__ or ""), *joins))
 
 
 def get_module_list(app_name):
 	"""Get list of modules for given all via `app/modules.txt`."""
-	return get_file_items(os.path.join(os.path.dirname(get_module(app_name).__file__), "modules.txt"))
+	return get_file_items(get_app_path(app_name, "modules.txt"))
 
 
 def get_all_apps(with_internal_apps=True, sites_path=None):
@@ -1398,16 +1503,12 @@ def get_all_apps(with_internal_apps=True, sites_path=None):
 
 
 @request_cache
-def get_installed_apps(sort=False, dontmanage_last=False, *, _ensure_on_bench=False):
+def get_installed_apps(*, _ensure_on_bench=False) -> list[str]:
 	"""
 	Get list of installed apps in current site.
 
-	:param sort: [DEPRECATED] Sort installed apps based on the sequence in sites/apps.txt
-	:param dontmanage_last: [DEPRECATED] Keep dontmanage last. Do not use this, reverse the app list instead.
-	:param ensure_on_bench: Only return apps that are present on bench.
+	:param _ensure_on_bench: Only return apps that are present on bench.
 	"""
-	from dontmanage.utils.deprecations import deprecation_warning
-
 	if getattr(flags, "in_install_db", True):
 		return []
 
@@ -1416,22 +1517,9 @@ def get_installed_apps(sort=False, dontmanage_last=False, *, _ensure_on_bench=Fa
 
 	installed = json.loads(db.get_global("installed_apps") or "[]")
 
-	if sort:
-		if not local.all_apps:
-			local.all_apps = cache().get_value("all_apps", get_all_apps)
-
-		deprecation_warning("`sort` argument is deprecated and will be removed in v15.")
-		installed = [app for app in local.all_apps if app in installed]
-
 	if _ensure_on_bench:
-		all_apps = cache().get_value("all_apps", get_all_apps)
+		all_apps = cache.get_value("all_apps", get_all_apps)
 		installed = [app for app in installed if app in all_apps]
-
-	if dontmanage_last:
-		deprecation_warning("`dontmanage_last` argument is deprecated and will be removed in v15.")
-		if "dontmanage" in installed:
-			installed.remove("dontmanage")
-		installed.append("dontmanage")
 
 	return installed
 
@@ -1472,7 +1560,7 @@ def _load_app_hooks(app_name: str | None = None):
 			raise
 
 		def _is_valid_hook(obj):
-			return not isinstance(obj, (types.ModuleType, types.FunctionType, type))
+			return not isinstance(obj, types.ModuleType | types.FunctionType | type)
 
 		for key, value in inspect.getmembers(app_hooks, predicate=_is_valid_hook):
 			if not key.startswith("_"):
@@ -1481,7 +1569,7 @@ def _load_app_hooks(app_name: str | None = None):
 
 
 def get_hooks(
-	hook: str = None, default: Any | None = "_KEEP_DEFAULT_LIST", app_name: str = None
+	hook: str | None = None, default: Any | None = "_KEEP_DEFAULT_LIST", app_name: str | None = None
 ) -> _dict:
 	"""Get hooks via `app/hooks.py`
 
@@ -1495,7 +1583,7 @@ def get_hooks(
 		if conf.developer_mode:
 			hooks = _dict(_load_app_hooks())
 		else:
-			hooks = _dict(cache().get_value("app_hooks", _load_app_hooks))
+			hooks = _dict(cache.get_value("app_hooks", _load_app_hooks))
 
 	if hook:
 		return hooks.get(hook, ([] if default == "_KEEP_DEFAULT_LIST" else default))
@@ -1523,26 +1611,32 @@ def append_hook(target, key, value):
 		target[key].extend(value)
 
 
-def setup_module_map():
+def setup_module_map(include_all_apps=True):
 	"""Rebuild map of all modules (internal)."""
-	_cache = cache()
-
 	if conf.db_name:
-		local.app_modules = _cache.get_value("app_modules")
-		local.module_app = _cache.get_value("module_app")
+		local.app_modules = cache.get_value("app_modules")
+		local.module_app = cache.get_value("module_app")
 
 	if not (local.app_modules and local.module_app):
 		local.module_app, local.app_modules = {}, {}
-		for app in get_all_apps(with_internal_apps=True):
+		if include_all_apps:
+			apps = get_all_apps(with_internal_apps=True)
+		else:
+			apps = get_installed_apps(_ensure_on_bench=True)
+		for app in apps:
 			local.app_modules.setdefault(app, [])
 			for module in get_module_list(app):
 				module = scrub(module)
+				if module in local.module_app:
+					print(
+						f"WARNING: module `{module}` found in apps `{local.module_app[module]}` and `{app}`"
+					)
 				local.module_app[module] = app
 				local.app_modules[app].append(module)
 
 		if conf.db_name:
-			_cache.set_value("app_modules", local.app_modules)
-			_cache.set_value("module_app", local.module_app)
+			cache.set_value("app_modules", local.app_modules)
+			cache.set_value("module_app", local.module_app)
 
 
 def get_file_items(path, raise_not_found=False, ignore_empty_lines=True):
@@ -1585,11 +1679,7 @@ def read_file(path, raise_not_found=False):
 def get_attr(method_string: str) -> Any:
 	"""Get python method object from its name."""
 	app_name = method_string.split(".", 1)[0]
-	if (
-		not local.flags.in_uninstall
-		and not local.flags.in_install
-		and app_name not in get_installed_apps()
-	):
+	if not local.flags.in_uninstall and not local.flags.in_install and app_name not in get_installed_apps():
 		throw(_("App {0} is not installed").format(app_name), AppNotInstalledError)
 
 	modulename = ".".join(method_string.split(".")[:-1])
@@ -1611,7 +1701,8 @@ def get_newargs(fn: Callable, kwargs: dict[str, Any]) -> dict[str, Any]:
 	"""Remove any kwargs that are not supported by the function.
 
 	Example:
-	        >>> def fn(a=1, b=2): pass
+	        >>> def fn(a=1, b=2):
+	        ...     pass
 
 	        >>> get_newargs(fn, {"a": 2, "c": 1})
 	                {"a": 2}
@@ -1621,23 +1712,21 @@ def get_newargs(fn: Callable, kwargs: dict[str, Any]) -> dict[str, Any]:
 	# Ref: https://docs.python.org/3/library/inspect.html#inspect.Parameter.kind
 	varkw_exist = False
 
-	if hasattr(fn, "fnargs"):
-		fnargs = fn.fnargs
-	else:
-		signature = inspect.signature(fn)
-		fnargs = list(signature.parameters)
+	signature = inspect.signature(fn)
+	fnargs = list(signature.parameters)
 
-		for param_name, parameter in signature.parameters.items():
-			if parameter.kind == inspect.Parameter.VAR_KEYWORD:
-				varkw_exist = True
-				fnargs.remove(param_name)
-				break
+	for param_name, parameter in signature.parameters.items():
+		if parameter.kind == inspect.Parameter.VAR_KEYWORD:
+			varkw_exist = True
+			fnargs.remove(param_name)
+			break
 
 	newargs = {}
 	for a in kwargs:
 		if (a in fnargs) or varkw_exist:
 			newargs[a] = kwargs.get(a)
 
+	# WARNING: This behaviour is now  part of business logic in places, never remove.
 	newargs.pop("ignore_permissions", None)
 	newargs.pop("flags", None)
 
@@ -1727,13 +1816,13 @@ def copy_doc(doc: "Document", ignore_no_copy: bool = True) -> "Document":
 
 	newdoc = get_doc(copy.deepcopy(d))
 	newdoc.set("__islocal", 1)
-	for fieldname in fields_to_clear + ["amended_from", "amendment_date"]:
+	for fieldname in [*fields_to_clear, "amended_from", "amendment_date"]:
 		newdoc.set(fieldname, None)
 
 	if not ignore_no_copy:
 		remove_no_copy_fields(newdoc)
 
-	for i, d in enumerate(newdoc.get_all_children()):
+	for _i, d in enumerate(newdoc.get_all_children()):
 		d.set("__islocal", 1)
 
 		for fieldname in fields_to_clear:
@@ -1743,27 +1832,6 @@ def copy_doc(doc: "Document", ignore_no_copy: bool = True) -> "Document":
 			remove_no_copy_fields(d)
 
 	return newdoc
-
-
-def compare(val1, condition, val2):
-	"""Compare two values using `dontmanage.utils.compare`
-
-	`condition` could be:
-	- "^"
-	- "in"
-	- "not in"
-	- "="
-	- "!="
-	- ">"
-	- "<"
-	- ">="
-	- "<="
-	- "not None"
-	- "None"
-	"""
-	import dontmanage.utils
-
-	return dontmanage.utils.compare(val1, condition, val2)
 
 
 def respond_as_web_page(
@@ -1852,7 +1920,7 @@ def redirect_to_message(title, html, http_status_code=None, context=None, indica
 	if indicator_color:
 		message["context"].update({"indicator_color": indicator_color})
 
-	cache().set_value(f"message_id:{message_id}", message, expires_in_sec=60)
+	cache.set_value(f"message_id:{message_id}", message, expires_in_sec=60)
 	location = f"/message?id={message_id}"
 
 	if not getattr(local, "is_ajax", False):
@@ -1887,9 +1955,6 @@ def get_list(doctype, *args, **kwargs):
 
 	        # filter as a list of lists
 	        dontmanage.get_list("ToDo", fields="*", filters = [["modified", ">", "2014-01-01"]])
-
-	        # filter as a list of dicts
-	        dontmanage.get_list("ToDo", fields="*", filters = {"description": ("like", "test%")})
 	"""
 	import dontmanage.model.db_query
 
@@ -1914,12 +1979,9 @@ def get_all(doctype, *args, **kwargs):
 
 	        # filter as a list of lists
 	        dontmanage.get_all("ToDo", fields=["*"], filters = [["modified", ">", "2014-01-01"]])
-
-	        # filter as a list of dicts
-	        dontmanage.get_all("ToDo", fields=["*"], filters = {"description": ("like", "test%")})
 	"""
 	kwargs["ignore_permissions"] = True
-	if not "limit_page_length" in kwargs:
+	if "limit_page_length" not in kwargs:
 		kwargs["limit_page_length"] = 0
 	return get_list(doctype, *args, **kwargs)
 
@@ -1939,7 +2001,7 @@ def get_value(*args, **kwargs):
 	return db.get_value(*args, **kwargs)
 
 
-def as_json(obj: dict | list, indent=1, separators=None) -> str:
+def as_json(obj: dict | list, indent=1, separators=None, ensure_ascii=True) -> str:
 	from dontmanage.utils.response import json_handler
 
 	if separators is None:
@@ -1947,18 +2009,27 @@ def as_json(obj: dict | list, indent=1, separators=None) -> str:
 
 	try:
 		return json.dumps(
-			obj, indent=indent, sort_keys=True, default=json_handler, separators=separators
+			obj,
+			indent=indent,
+			sort_keys=True,
+			default=json_handler,
+			separators=separators,
+			ensure_ascii=ensure_ascii,
 		)
 	except TypeError:
 		# this would break in case the keys are not all os "str" type - as defined in the JSON
 		# adding this to ensure keys are sorted (expected behaviour)
 		sorted_obj = dict(sorted(obj.items(), key=lambda kv: str(kv[0])))
-		return json.dumps(sorted_obj, indent=indent, default=json_handler, separators=separators)
+		return json.dumps(
+			sorted_obj,
+			indent=indent,
+			default=json_handler,
+			separators=separators,
+			ensure_ascii=ensure_ascii,
+		)
 
 
 def are_emails_muted():
-	from dontmanage.utils import cint
-
 	return flags.mute_emails or cint(conf.get("mute_emails") or 0) or False
 
 
@@ -2001,7 +2072,6 @@ def get_print(
 	name=None,
 	print_format=None,
 	style=None,
-	html=None,
 	as_pdf=False,
 	doc=None,
 	output=None,
@@ -2021,6 +2091,8 @@ def get_print(
 	from dontmanage.utils.pdf import get_pdf
 	from dontmanage.website.serve import get_response_content
 
+	original_form_dict = copy.deepcopy(local.form_dict)
+
 	local.form_dict.doctype = doctype
 	local.form_dict.name = name
 	local.form_dict.format = print_format
@@ -2033,13 +2105,9 @@ def get_print(
 	if password:
 		pdf_options["password"] = password
 
-	if not html:
-		html = get_response_content("printview")
-
-	if as_pdf:
-		return get_pdf(html, options=pdf_options, output=output)
-	else:
-		return html
+	html = get_response_content("printview")
+	local.form_dict = original_form_dict
+	return get_pdf(html, options=pdf_options, output=output) if as_pdf else html
 
 
 def attach_print(
@@ -2053,49 +2121,46 @@ def attach_print(
 	lang=None,
 	print_letterhead=True,
 	password=None,
+	letterhead=None,
 ):
+	from dontmanage.translate import print_language
 	from dontmanage.utils import scrub_urls
-
-	if not file_name:
-		file_name = name
-	file_name = cstr(file_name).replace(" ", "").replace("/", "-")
+	from dontmanage.utils.pdf import get_pdf
 
 	print_settings = db.get_singles_dict("Print Settings")
-
-	_lang = local.lang
-
-	# set lang as specified in print format attachment
-	if lang:
-		local.lang = lang
-	local.flags.ignore_print_permissions = True
-
-	no_letterhead = not print_letterhead
 
 	kwargs = dict(
 		print_format=print_format,
 		style=style,
-		html=html,
 		doc=doc,
-		no_letterhead=no_letterhead,
+		no_letterhead=not print_letterhead,
+		letterhead=letterhead,
 		password=password,
 	)
 
-	content = ""
-	if int(print_settings.send_print_as_pdf or 0):
-		ext = ".pdf"
-		kwargs["as_pdf"] = True
-		content = get_print(doctype, name, **kwargs)
-	else:
-		ext = ".html"
-		content = scrub_urls(get_print(doctype, name, **kwargs)).encode("utf-8")
+	local.flags.ignore_print_permissions = True
 
-	out = {"fname": file_name + ext, "fcontent": content}
+	with print_language(lang or local.lang):
+		content = ""
+		if cint(print_settings.send_print_as_pdf):
+			ext = ".pdf"
+			kwargs["as_pdf"] = True
+			content = (
+				get_pdf(html, options={"password": password} if password else None)
+				if html
+				else get_print(doctype, name, **kwargs)
+			)
+		else:
+			ext = ".html"
+			content = html or scrub_urls(get_print(doctype, name, **kwargs)).encode("utf-8")
 
 	local.flags.ignore_print_permissions = False
-	# reset lang to original local lang
-	local.lang = _lang
 
-	return out
+	if not file_name:
+		file_name = name
+	file_name = cstr(file_name).replace(" ", "").replace("/", "-") + ext
+
+	return {"fname": file_name, "fcontent": content}
 
 
 def publish_progress(*args, **kwargs):
@@ -2202,9 +2267,7 @@ loggers = {}
 log_level = None
 
 
-def logger(
-	module=None, with_more_info=False, allow_site=True, filter=None, max_size=100_000, file_count=20
-):
+def logger(module=None, with_more_info=False, allow_site=True, filter=None, max_size=100_000, file_count=20):
 	"""Returns a python logger that uses StreamHandler"""
 	from dontmanage.utils.logger import get_logger
 
@@ -2218,41 +2281,8 @@ def logger(
 	)
 
 
-def log_error(title=None, message=None, reference_doctype=None, reference_name=None):
-	"""Log error to Error Log"""
-	# Parameter ALERT:
-	# the title and message may be swapped
-	# the better API for this is log_error(title, message), and used in many cases this way
-	# this hack tries to be smart about whats a title (single line ;-)) and fixes it
-
-	traceback = None
-	if message:
-		if "\n" in title:  # traceback sent as title
-			traceback, title = title, message
-		else:
-			traceback = message
-
-	title = title or "Error"
-	traceback = as_unicode(traceback or get_traceback(with_context=True))
-
-	error_log = get_doc(
-		doctype="Error Log",
-		error=traceback,
-		method=title,
-		reference_doctype=reference_doctype,
-		reference_name=reference_name,
-	)
-
-	if flags.read_only:
-		error_log.deferred_insert()
-	else:
-		return error_log.insert(ignore_permissions=True)
-
-
 def get_desk_link(doctype, name):
-	html = (
-		'<a href="/app/Form/{doctype}/{name}" style="font-weight: bold;">{doctype_local} {name}</a>'
-	)
+	html = '<a href="/app/Form/{doctype}/{name}" style="font-weight: bold;">{doctype_local} {name}</a>'
 	return html.format(doctype=doctype, name=name, doctype_local=_(doctype))
 
 
@@ -2262,40 +2292,10 @@ def bold(text):
 
 def safe_eval(code, eval_globals=None, eval_locals=None):
 	"""A safer `eval`"""
-	whitelisted_globals = {"int": int, "float": float, "long": int, "round": round}
 
-	UNSAFE_ATTRIBUTES = {
-		# Generator Attributes
-		"gi_frame",
-		"gi_code",
-		# Coroutine Attributes
-		"cr_frame",
-		"cr_code",
-		"cr_origin",
-		# Async Generator Attributes
-		"ag_code",
-		"ag_frame",
-		# Traceback Attributes
-		"tb_frame",
-		"tb_next",
-		# Format Attributes
-		"format",
-		"format_map",
-	}
+	from dontmanage.utils.safe_exec import safe_eval
 
-	for attribute in UNSAFE_ATTRIBUTES:
-		if attribute in code:
-			throw(f'Illegal rule {bold(code)}. Cannot use "{attribute}"')
-
-	if "__" in code:
-		throw(f'Illegal rule {bold(code)}. Cannot use "__"')
-
-	if not eval_globals:
-		eval_globals = {}
-
-	eval_globals["__builtins__"] = {}
-	eval_globals.update(whitelisted_globals)
-	return eval(code, eval_globals, eval_locals)
+	return safe_eval(code, eval_globals, eval_locals)
 
 
 def get_website_settings(key):
@@ -2333,7 +2333,7 @@ def get_version(doctype, name, limit=None, head=False, raise_err=True):
 	Note: Applicable only if DocType has changes tracked.
 
 	Example
-	>>> dontmanage.get_version('User', 'foobar@gmail.com')
+	>>> dontmanage.get_version("User", "foobar@gmail.com")
 	>>>
 	[
 	        {
@@ -2411,7 +2411,7 @@ def mock(type, size=1, locale="en"):
 	if type not in dir(fake):
 		raise ValueError("Not a valid mock type.")
 	else:
-		for i in range(size):
+		for _i in range(size):
 			data = getattr(fake, type)()
 			results.append(data)
 
@@ -2420,4 +2420,34 @@ def mock(type, size=1, locale="en"):
 	return squashify(results)
 
 
-from dontmanage.desk.search import validate_and_sanitize_search_inputs  # noqa
+def validate_and_sanitize_search_inputs(fn):
+	@functools.wraps(fn)
+	def wrapper(*args, **kwargs):
+		from dontmanage.desk.search import sanitize_searchfield
+
+		kwargs.update(dict(zip(fn.__code__.co_varnames, args, strict=False)))
+		sanitize_searchfield(kwargs["searchfield"])
+		kwargs["start"] = cint(kwargs["start"])
+		kwargs["page_len"] = cint(kwargs["page_len"])
+
+		if kwargs["doctype"] and not db.exists("DocType", kwargs["doctype"]):
+			return []
+
+		return fn(**kwargs)
+
+	return wrapper
+
+
+from dontmanage.utils.error import log_error
+
+if _tune_gc:
+	# generational GC gets triggered after certain allocs (g0) which is 700 by default.
+	# This number is quite small for dontmanage where a single query can potentially create 700+
+	# objects easily.
+	# Bump this number higher, this will make GC less aggressive but that improves performance of
+	# everything else.
+	g0, g1, g2 = gc.get_threshold()  # defaults are 700, 10, 10.
+	gc.set_threshold(g0 * 10, g1 * 2, g2 * 2)
+
+# Remove references to pattern that are pre-compiled and loaded to global scopes.
+re.purge()

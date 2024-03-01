@@ -37,9 +37,7 @@ def get_permission_query_conditions(user):
 	report_condition = False
 	module_condition = False
 
-	allowed_doctypes = [
-		dontmanage.db.escape(doctype) for doctype in dontmanage.permissions.get_doctypes_with_read()
-	]
+	allowed_doctypes = [dontmanage.db.escape(doctype) for doctype in dontmanage.permissions.get_doctypes_with_read()]
 	allowed_reports = [dontmanage.db.escape(report) for report in get_allowed_report_names()]
 	allowed_modules = [
 		dontmanage.db.escape(module.get("module_name")) for module in get_modules_from_all_apps_for_user()
@@ -55,11 +53,9 @@ def get_permission_query_conditions(user):
 		)
 	if allowed_modules:
 		module_condition = """`tabDashboard Chart`.`module` in ({allowed_modules})
-			or `tabDashboard Chart`.`module` is NULL""".format(
-			allowed_modules=",".join(allowed_modules)
-		)
+			or `tabDashboard Chart`.`module` is NULL""".format(allowed_modules=",".join(allowed_modules))
 
-	return """
+	return f"""
 		((`tabDashboard Chart`.`chart_type` in ('Count', 'Sum', 'Average')
 		and {doctype_condition})
 		or
@@ -67,11 +63,7 @@ def get_permission_query_conditions(user):
 		and {report_condition}))
 		and
 		({module_condition})
-	""".format(
-		doctype_condition=doctype_condition,
-		report_condition=report_condition,
-		module_condition=module_condition,
-	)
+	"""
 
 
 def has_permission(doc, ptype, user):
@@ -79,17 +71,16 @@ def has_permission(doc, ptype, user):
 	if "System Manager" in roles:
 		return True
 
-	if doc.chart_type == "Report":
+	if doc.roles:
+		allowed = [d.role for d in doc.roles]
+		if has_common(roles, allowed):
+			return True
+	elif doc.chart_type == "Report":
 		if doc.report_name in get_allowed_report_names():
 			return True
 	else:
 		allowed_doctypes = dontmanage.permissions.get_doctypes_with_read()
 		if doc.document_type in allowed_doctypes:
-			return True
-
-	if doc.roles:
-		allowed = [d.role for d in doc.roles]
-		if has_common(roles, allowed):
 			return True
 
 	return False
@@ -110,7 +101,7 @@ def get(
 	refresh=None,
 ):
 	if chart_name:
-		chart = dontmanage.get_doc("Dashboard Chart", chart_name)
+		chart: DashboardChart = dontmanage.get_doc("Dashboard Chart", chart_name)
 	else:
 		chart = dontmanage._dict(dontmanage.parse_json(chart))
 
@@ -208,13 +199,14 @@ def get_chart_config(chart, filters, timespan, timegrain, from_date, to_date):
 	filters.append([doctype, datefield, ">=", from_date, False])
 	filters.append([doctype, datefield, "<=", to_date, False])
 
-	data = dontmanage.db.get_list(
+	data = dontmanage.get_list(
 		doctype,
-		fields=[f"{datefield} as _unit", f"SUM({value_field})", "COUNT(*)"],
+		fields=[datefield, f"SUM({value_field})", "COUNT(*)"],
 		filters=filters,
-		group_by="_unit",
-		order_by="_unit asc",
+		group_by=datefield,
+		order_by=datefield,
 		as_list=True,
+		parent_doctype=chart.parent_document_type,
 	)
 
 	result = get_result(data, timegrain, from_date, to_date, chart.chart_type)
@@ -252,9 +244,7 @@ def get_heatmap_chart_config(chart, filters, heatmap_year):
 			doctype,
 			fields=[
 				timestamp_field,
-				"{aggregate_function}({value_field})".format(
-					aggregate_function=aggregate_function, value_field=value_field
-				),
+				f"{aggregate_function}({value_field})",
 			],
 			filters=filters,
 			group_by=f"date({datefield})",
@@ -264,15 +254,13 @@ def get_heatmap_chart_config(chart, filters, heatmap_year):
 		)
 	)
 
-	chart_config = {
+	return {
 		"labels": [],
 		"dataPoints": data,
 	}
-	return chart_config
 
 
 def get_group_by_chart_config(chart, filters):
-
 	aggregate_function = get_aggregate_function(chart.group_by_type)
 	value_field = chart.aggregate_function_based_on or "1"
 	group_by_field = chart.group_by_based_on
@@ -292,12 +280,10 @@ def get_group_by_chart_config(chart, filters):
 	)
 
 	if data:
-		chart_config = {
+		return {
 			"labels": [item["name"] if item["name"] else "Not Specified" for item in data],
 			"datasets": [{"name": chart.name, "values": [item["count"] for item in data]}],
 		}
-
-		return chart_config
 	else:
 		return None
 
@@ -315,7 +301,7 @@ def get_result(data, timegrain, from_date, to_date, chart_type):
 	result = [[date, 0] for date in dates]
 	data_index = 0
 	if data:
-		for i, d in enumerate(result):
+		for d in result:
 			count = 0
 			while data_index < len(data) and getdate(data[data_index][0]) <= d[0]:
 				d[1] += data[data_index][1]
@@ -339,8 +325,51 @@ def get_charts_for_user(doctype, txt, searchfield, start, page_len, filters):
 
 
 class DashboardChart(Document):
+	# begin: auto-generated types
+	# This code is auto-generated. Do not modify anything in this block.
+
+	from typing import TYPE_CHECKING
+
+	if TYPE_CHECKING:
+		from dontmanage.core.doctype.has_role.has_role import HasRole
+		from dontmanage.desk.doctype.dashboard_chart_field.dashboard_chart_field import DashboardChartField
+		from dontmanage.types import DF
+
+		aggregate_function_based_on: DF.Literal
+		based_on: DF.Literal
+		chart_name: DF.Data
+		chart_type: DF.Literal["Count", "Sum", "Average", "Group By", "Custom", "Report"]
+		color: DF.Color | None
+		custom_options: DF.Code | None
+		document_type: DF.Link | None
+		dynamic_filters_json: DF.Code | None
+		filters_json: DF.Code
+		from_date: DF.Date | None
+		group_by_based_on: DF.Literal
+		group_by_type: DF.Literal["Count", "Sum", "Average"]
+		heatmap_year: DF.Literal
+		is_public: DF.Check
+		is_standard: DF.Check
+		last_synced_on: DF.Datetime | None
+		module: DF.Link | None
+		number_of_groups: DF.Int
+		parent_document_type: DF.Link | None
+		report_name: DF.Link | None
+		roles: DF.Table[HasRole]
+		source: DF.Link | None
+		time_interval: DF.Literal["Yearly", "Quarterly", "Monthly", "Weekly", "Daily"]
+		timeseries: DF.Check
+		timespan: DF.Literal["Last Year", "Last Quarter", "Last Month", "Last Week", "Select Date Range"]
+		to_date: DF.Date | None
+		type: DF.Literal["Line", "Bar", "Percentage", "Pie", "Donut", "Heatmap"]
+		use_report_chart: DF.Check
+		value_based_on: DF.Literal
+		x_field: DF.Literal
+		y_axis: DF.Table[DashboardChartField]
+
+	# end: auto-generated types
 	def on_update(self):
-		dontmanage.cache().delete_key(f"chart-data:{self.name}")
+		dontmanage.cache.delete_key(f"chart-data:{self.name}")
 		if dontmanage.conf.developer_mode and self.is_standard:
 			export_to_files(record_list=[["Dashboard Chart", self.name]], record_module=self.module)
 

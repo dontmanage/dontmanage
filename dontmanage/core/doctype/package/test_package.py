@@ -26,7 +26,11 @@ class TestPackage(DontManageTestCase):
 		self.assertTrue(
 			os.path.exists(
 				dontmanage.get_site_path(
-					"packages", "test-package", "test_module_for_package", "doctype", "test_doctype_for_package"
+					"packages",
+					"test-package",
+					"test_module_for_package",
+					"doctype",
+					"test_doctype_for_package",
 				)
 			)
 		)
@@ -49,9 +53,7 @@ class TestPackage(DontManageTestCase):
 def make_test_package():
 	if not dontmanage.db.exists("Package", "Test Package"):
 		dontmanage.get_doc(
-			dict(
-				doctype="Package", name="Test Package", package_name="test-package", readme="# Test Package"
-			)
+			dict(doctype="Package", name="Test Package", package_name="test-package", readme="# Test Package")
 		).insert()
 
 

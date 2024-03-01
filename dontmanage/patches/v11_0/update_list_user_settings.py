@@ -12,10 +12,8 @@ def execute():
 	for user in users:
 		# get user_settings for each user
 		settings = dontmanage.db.sql(
-			"select * from `__UserSettings` \
-			where user={}".format(
-				dontmanage.db.escape(user.user)
-			),
+			f"select * from `__UserSettings` \
+			where user={dontmanage.db.escape(user.user)}",
 			as_dict=True,
 		)
 

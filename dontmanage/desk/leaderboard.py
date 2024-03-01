@@ -3,7 +3,7 @@ from dontmanage.utils import get_fullname
 
 
 def get_leaderboards():
-	leaderboards = {
+	return {
 		"User": {
 			"fields": ["points"],
 			"method": "dontmanage.desk.leaderboard.get_energy_point_leaderboard",
@@ -11,23 +11,21 @@ def get_leaderboards():
 			"icon": "users",
 		}
 	}
-	return leaderboards
 
 
 @dontmanage.whitelist()
 def get_energy_point_leaderboard(date_range, company=None, field=None, limit=None):
-	all_users = dontmanage.get_all(
+	users = dontmanage.get_list(
 		"User",
 		filters={
 			"name": ["not in", ["Administrator", "Guest"]],
 			"enabled": 1,
 			"user_type": ["!=", "Website User"],
 		},
-		order_by="name ASC",
+		pluck="name",
 	)
-	all_users_list = list(map(lambda x: x["name"], all_users))
 
-	filters = [["type", "!=", "Review"], ["user", "in", all_users_list]]
+	filters = [["type", "!=", "Review"], ["user", "in", users]]
 	if date_range:
 		date_range = dontmanage.parse_json(date_range)
 		filters.append(["creation", "between", [date_range[0], date_range[1]]])
@@ -40,15 +38,13 @@ def get_energy_point_leaderboard(date_range, company=None, field=None, limit=Non
 	)
 
 	energy_point_users_list = list(map(lambda x: x["name"], energy_point_users))
-	for user in all_users_list:
+	for user in users:
 		if user not in energy_point_users_list:
 			energy_point_users.append({"name": user, "value": 0})
 
 	for user in energy_point_users:
 		user_id = user["name"]
 		user["name"] = get_fullname(user["name"])
-		user["formatted_name"] = '<a href="/app/user-profile/{}">{}</a>'.format(
-			user_id, get_fullname(user_id)
-		)
+		user["formatted_name"] = f'<a href="/app/user-profile/{user_id}">{get_fullname(user_id)}</a>'
 
 	return energy_point_users

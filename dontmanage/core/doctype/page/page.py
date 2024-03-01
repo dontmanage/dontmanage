@@ -14,6 +14,25 @@ from dontmanage.model.utils import render_include
 
 
 class Page(Document):
+	# begin: auto-generated types
+	# This code is auto-generated. Do not modify anything in this block.
+
+	from typing import TYPE_CHECKING
+
+	if TYPE_CHECKING:
+		from dontmanage.core.doctype.has_role.has_role import HasRole
+		from dontmanage.types import DF
+
+		icon: DF.Data | None
+		module: DF.Link
+		page_name: DF.Data
+		restrict_to_domain: DF.Link | None
+		roles: DF.Table[HasRole]
+		standard: DF.Literal["Yes", "No"]
+		system_page: DF.Check
+		title: DF.Data | None
+
+	# end: auto-generated types
 	def autoname(self):
 		"""
 		Creates a url friendly name for this page.
@@ -68,14 +87,13 @@ class Page(Document):
 			if not os.path.exists(path + ".js"):
 				with open(path + ".js", "w") as f:
 					f.write(
-						"""dontmanage.pages['%s'].on_page_load = function(wrapper) {
-	var page = dontmanage.ui.make_app_page({
+						f"""dontmanage.pages['{self.name}'].on_page_load = function(wrapper) {{
+	var page = dontmanage.ui.make_app_page({{
 		parent: wrapper,
-		title: '%s',
+		title: '{self.title}',
 		single_column: true
-	});
-}"""
-						% (self.name, self.title)
+	}});
+}}"""
 					)
 
 	def as_dict(self, no_nulls=False):
@@ -91,9 +109,7 @@ class Page(Document):
 		"""Returns true if Has Role is not set or the user is allowed."""
 		from dontmanage.utils import has_common
 
-		allowed = [
-			d.role for d in dontmanage.get_all("Has Role", fields=["role"], filters={"parent": self.name})
-		]
+		allowed = [d.role for d in dontmanage.get_all("Has Role", fields=["role"], filters={"parent": self.name})]
 
 		custom_roles = get_custom_allowed_roles("page", self.name)
 		allowed.extend(custom_roles)
@@ -140,7 +156,9 @@ class Page(Document):
 						try:
 							out = dontmanage.get_attr(
 								"{app}.{module}.page.{page}.{page}.get_context".format(
-									app=dontmanage.local.module_app[scrub(self.module)], module=scrub(self.module), page=page_name
+									app=dontmanage.local.module_app[scrub(self.module)],
+									module=scrub(self.module),
+									page=page_name,
 								)
 							)(context)
 

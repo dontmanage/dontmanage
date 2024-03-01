@@ -3,7 +3,7 @@ from dontmanage.desk.doctype.notification_log.notification_log import make_notif
 
 
 def execute():
-	if not dontmanage.get_value("Email Account", {"auth_method": "OAuth"}):
+	if dontmanage.get_all("Email Account", {"auth_method": "OAuth", "connected_user": ["is", "set"]}, limit=1):
 		return
 
 	# Setting awaiting password to 1 for email accounts where Oauth is enabled.

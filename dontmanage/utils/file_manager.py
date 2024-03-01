@@ -54,19 +54,12 @@ def upload():
 
 	comment = {}
 	if dt and dn:
+		file_url = file_doc.file_url.replace("#", "%23") if file_doc.file_name else file_doc.file_url
+		icon = ' <i class="fa fa-lock text-warning"></i>' if file_doc.is_private else ""
+		file_name = file_doc.file_name or file_doc.file_url
 		comment = dontmanage.get_doc(dt, dn).add_comment(
 			"Attachment",
-			_("added {0}").format(
-				"<a href='{file_url}' target='_blank'>{file_name}</a>{icon}".format(
-					**{
-						"icon": ' <i class="fa fa-lock text-warning"></i>' if file_doc.is_private else "",
-						"file_url": file_doc.file_url.replace("#", "%23")
-						if file_doc.file_name
-						else file_doc.file_url,
-						"file_name": file_doc.file_name or file_doc.file_url,
-					}
-				)
-			),
+			f"<a href='{file_url}' target='_blank'>{file_name}</a>{icon}",
 		)
 
 	return {
@@ -251,9 +244,7 @@ def write_file(content, fname, is_private=0):
 def remove_all(dt, dn, from_delete=False, delete_permanently=False):
 	"""remove all files in a transaction"""
 	try:
-		for fid in dontmanage.get_all(
-			"File", {"attached_to_doctype": dt, "attached_to_name": dn}, pluck="name"
-		):
+		for fid in dontmanage.get_all("File", {"attached_to_doctype": dt, "attached_to_name": dn}, pluck="name"):
 			if from_delete:
 				# If deleting a doc, directly delete files
 				dontmanage.delete_doc("File", fid, ignore_permissions=True, delete_permanently=delete_permanently)
@@ -281,9 +272,7 @@ def remove_file(
 	"""Remove file and File entry"""
 	file_name = None
 	if not (attached_to_doctype and attached_to_name):
-		attached = dontmanage.db.get_value(
-			"File", fid, ["attached_to_doctype", "attached_to_name", "file_name"]
-		)
+		attached = dontmanage.db.get_value("File", fid, ["attached_to_doctype", "attached_to_name", "file_name"])
 		if attached:
 			attached_to_doctype, attached_to_name, file_name = attached
 
@@ -295,7 +284,7 @@ def remove_file(
 			ignore_permissions = True
 		if not file_name:
 			file_name = dontmanage.db.get_value("File", fid, "file_name")
-		comment = doc.add_comment("Attachment Removed", _("Removed {0}").format(file_name))
+		comment = doc.add_comment("Attachment Removed", file_name)
 		dontmanage.delete_doc(
 			"File", fid, ignore_permissions=ignore_permissions, delete_permanently=delete_permanently
 		)
@@ -391,7 +380,7 @@ def get_file_path(file_name):
 def get_content_hash(content):
 	if isinstance(content, str):
 		content = content.encode()
-	return hashlib.md5(content).hexdigest()
+	return hashlib.md5(content, usedforsecurity=False).hexdigest()
 
 
 def get_file_name(fname, optional_suffix):

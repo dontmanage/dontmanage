@@ -10,14 +10,16 @@ from dontmanage import _
 from dontmanage.utils import get_request_session
 
 
-def make_request(method, url, auth=None, headers=None, data=None):
+def make_request(method, url, auth=None, headers=None, data=None, json=None):
 	auth = auth or ""
 	data = data or {}
 	headers = headers or {}
 
 	try:
 		s = get_request_session()
-		dontmanage.flags.integration_request = s.request(method, url, data=data, auth=auth, headers=headers)
+		dontmanage.flags.integration_request = s.request(
+			method, url, data=data, auth=auth, headers=headers, json=json
+		)
 		dontmanage.flags.integration_request.raise_for_status()
 
 		if dontmanage.flags.integration_request.headers.get("content-type") == "text/plain; charset=utf-8":
@@ -39,6 +41,14 @@ def make_post_request(url, **kwargs):
 
 def make_put_request(url, **kwargs):
 	return make_request("PUT", url, **kwargs)
+
+
+def make_patch_request(url, **kwargs):
+	return make_request("PATCH", url, **kwargs)
+
+
+def make_delete_request(url, **kwargs):
+	return make_request("DELETE", url, **kwargs)
 
 
 def create_request_log(
@@ -97,5 +107,5 @@ def get_json(obj):
 
 
 def json_handler(obj):
-	if isinstance(obj, (datetime.date, datetime.timedelta, datetime.datetime)):
+	if isinstance(obj, datetime.date | datetime.timedelta | datetime.datetime):
 		return str(obj)

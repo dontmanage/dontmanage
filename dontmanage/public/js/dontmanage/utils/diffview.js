@@ -16,10 +16,15 @@ dontmanage.ui.DiffView = class DiffView {
 	make_dialog() {
 		const get_query = () => ({
 			query: "dontmanage.utils.diff.version_query",
-			filters: { docname: this.docname, ref_doctype: this.doctype },
+			filters: {
+				docname: this.docname,
+				ref_doctype: this.doctype,
+				fieldname: this.fieldname,
+				page_len: 100,
+			},
 		});
 		const onchange = () => this.compute_diff();
-		let dialog = new dontmanage.ui.Dialog({
+		return new dontmanage.ui.Dialog({
 			title: __("Compare Versions"),
 			fields: [
 				{
@@ -56,7 +61,6 @@ dontmanage.ui.DiffView = class DiffView {
 			],
 			size: "extra-large",
 		});
-		return dialog;
 	}
 
 	compute_diff() {

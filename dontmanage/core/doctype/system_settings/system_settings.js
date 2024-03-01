@@ -16,6 +16,8 @@ dontmanage.ui.form.on("System Settings", {
 				}
 			},
 		});
+
+		frm.trigger("set_rounding_method_options");
 	},
 	enable_password_policy: function (frm) {
 		if (frm.doc.enable_password_policy == 0) {
@@ -30,17 +32,25 @@ dontmanage.ui.form.on("System Settings", {
 			frm.set_value("bypass_restrict_ip_check_if_2fa_enabled", 0);
 		}
 	},
-	enable_prepared_report_auto_deletion: function (frm) {
-		if (frm.doc.enable_prepared_report_auto_deletion) {
-			if (!frm.doc.prepared_report_expiry_period) {
-				frm.set_value("prepared_report_expiry_period", 7);
-			}
-		}
-	},
-	on_update: function (frm) {
-		if (dontmanage.boot.time_zone && dontmanage.boot.time_zone.system !== frm.doc.time_zone) {
-			// Clear cache after saving to refresh the values of boot.
-			dontmanage.ui.toolbar.clear_cache();
+	after_save: function (frm) {
+		/**
+		 * Checks whether the effective value has changed.
+		 *
+		 * @param {Array.<string>} - Tuple with new fallback, previous fallback and
+		 *   optionally an override value.
+		 * @returns {boolean} - Whether the resulting value has effectively changed
+		 */
+		const has_effectively_changed = ([new_fallback, prev_fallback, override = undefined]) =>
+			!override && prev_fallback !== new_fallback;
+
+		const attr_tuples = [
+			[frm.doc.language, dontmanage.boot.sysdefaults.language, dontmanage.boot.user.language],
+			[frm.doc.rounding_method, dontmanage.boot.sysdefaults.rounding_method], // no user override.
+		];
+
+		if (attr_tuples.some(has_effectively_changed)) {
+			dontmanage.msgprint(__("Refreshing..."));
+			window.location.reload();
 		}
 	},
 	first_day_of_the_week(frm) {
@@ -62,5 +72,18 @@ dontmanage.ui.form.on("System Settings", {
 				frm.set_value("rounding_method", dontmanage.boot.sysdefaults.rounding_method);
 			}
 		);
+	},
+
+	set_rounding_method_options: function (frm) {
+		if (frm.doc.rounding_method != "Banker's Rounding (legacy)") {
+			let field = frm.fields_dict.rounding_method;
+
+			field.df.options = field.df.options
+				.split("\n")
+				.filter((o) => o != "Banker's Rounding (legacy)")
+				.join("\n");
+
+			field.refresh();
+		}
 	},
 });

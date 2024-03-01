@@ -1,6 +1,7 @@
 # Copyright (c) 2015, DontManage and Contributors
 # License: MIT. See LICENSE
 import json
+from collections import defaultdict
 from typing import TYPE_CHECKING, Union
 
 import dontmanage
@@ -26,12 +27,10 @@ class WorkflowPermissionError(dontmanage.ValidationError):
 
 
 def get_workflow_name(doctype):
-	workflow_name = dontmanage.cache().hget("workflow", doctype)
+	workflow_name = dontmanage.cache.hget("workflow", doctype)
 	if workflow_name is None:
-		workflow_name = dontmanage.db.get_value(
-			"Workflow", {"document_type": doctype, "is_active": 1}, "name"
-		)
-		dontmanage.cache().hset("workflow", doctype, workflow_name or "")
+		workflow_name = dontmanage.db.get_value("Workflow", {"document_type": doctype, "is_active": 1}, "name")
+		dontmanage.cache.hset("workflow", doctype, workflow_name or "")
 
 	return workflow_name
 
@@ -93,15 +92,14 @@ def is_transition_condition_satisfied(transition, doc) -> bool:
 	if not transition.condition:
 		return True
 	else:
-		return dontmanage.safe_eval(
-			transition.condition, get_workflow_safe_globals(), dict(doc=doc.as_dict())
-		)
+		return dontmanage.safe_eval(transition.condition, get_workflow_safe_globals(), dict(doc=doc.as_dict()))
 
 
 @dontmanage.whitelist()
 def apply_workflow(doc, action):
 	"""Allow workflow action on the current doc"""
 	doc = dontmanage.get_doc(dontmanage.parse_json(doc))
+	doc.load_from_db()
 	workflow = get_workflow(doc.doctype)
 	transitions = get_transitions(doc, workflow)
 	user = dontmanage.session.user
@@ -122,7 +120,7 @@ def apply_workflow(doc, action):
 	doc.set(workflow.workflow_state_field, transition.next_state)
 
 	# find settings for the next state
-	next_state = [d for d in workflow.states if d.state == transition.next_state][0]
+	next_state = next(d for d in workflow.states if d.state == transition.next_state)
 
 	# update any additional field
 	if next_state.update_field:
@@ -148,12 +146,13 @@ def apply_workflow(doc, action):
 @dontmanage.whitelist()
 def can_cancel_document(doctype):
 	workflow = get_workflow(doctype)
-	for state_doc in workflow.states:
-		if state_doc.doc_status == "2":
-			for transition in workflow.transitions:
-				if transition.next_state == state_doc.state:
-					return False
-			return True
+	cancelling_states = [s.state for s in workflow.states if s.doc_status == "2"]
+	if not cancelling_states:
+		return True
+
+	for transition in workflow.transitions:
+		if transition.next_state in cancelling_states:
+			return False
 	return True
 
 
@@ -209,13 +208,11 @@ def validate_workflow(doc):
 
 
 def get_workflow(doctype) -> "Workflow":
-	return dontmanage.get_doc("Workflow", get_workflow_name(doctype))
+	return dontmanage.get_cached_doc("Workflow", get_workflow_name(doctype))
 
 
 def has_approval_access(user, doc, transition):
-	return (
-		user == "Administrator" or transition.get("allow_self_approval") or user != doc.get("owner")
-	)
+	return user == "Administrator" or transition.get("allow_self_approval") or user != doc.get("owner")
 
 
 def get_workflow_state_field(workflow_name):
@@ -227,27 +224,35 @@ def send_email_alert(workflow_name):
 
 
 def get_workflow_field_value(workflow_name, field):
-	value = dontmanage.cache().hget("workflow_" + workflow_name, field)
-	if value is None:
-		value = dontmanage.db.get_value("Workflow", workflow_name, field)
-		dontmanage.cache().hset("workflow_" + workflow_name, field, value)
-	return value
+	return dontmanage.get_cached_value("Workflow", workflow_name, field)
 
 
 @dontmanage.whitelist()
 def bulk_workflow_approval(docnames, doctype, action):
-	from collections import defaultdict
+	docnames = json.loads(docnames)
+	if len(docnames) < 20:
+		_bulk_workflow_action(docnames, doctype, action)
+	elif len(docnames) <= 500:
+		dontmanage.msgprint(_("Bulk {0} is enqueued in background.").format(action), alert=True)
+		dontmanage.enqueue(
+			_bulk_workflow_action,
+			docnames=docnames,
+			doctype=doctype,
+			action=action,
+			queue="short",
+			timeout=1000,
+		)
+	else:
+		dontmanage.throw(_("Bulk approval only support up to 500 documents."), title=_("Too Many Documents"))
 
+
+def _bulk_workflow_action(docnames, doctype, action):
 	# dictionaries for logging
 	failed_transactions = defaultdict(list)
 	successful_transactions = defaultdict(list)
 
-	# WARN: message log is cleared
-	print("Clearing dontmanage.message_log...")
 	dontmanage.clear_messages()
-
-	docnames = json.loads(docnames)
-	for (idx, docname) in enumerate(docnames, 1):
+	for idx, docname in enumerate(docnames, 1):
 		message_dict = {}
 		try:
 			show_progress(docnames, _("Applying: {0}").format(action), idx, docname)
@@ -311,7 +316,9 @@ def print_workflow_log(messages, title, doctype, indicator):
 				html = f"<div>{doc}</div>"
 			msg += html
 
-		dontmanage.msgprint(msg, title=_("Workflow Status"), indicator=indicator, is_minimizable=True)
+		dontmanage.msgprint(
+			msg, title=_("Workflow Status"), indicator=indicator, is_minimizable=True, realtime=True
+		)
 
 
 @dontmanage.whitelist()
@@ -320,7 +327,7 @@ def get_common_transition_actions(docs, doctype):
 	if isinstance(docs, str):
 		docs = json.loads(docs)
 	try:
-		for (i, doc) in enumerate(docs, 1):
+		for i, doc in enumerate(docs, 1):
 			if not doc.get("doctype"):
 				doc["doctype"] = doctype
 			actions = [

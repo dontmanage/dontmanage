@@ -6,6 +6,7 @@ from unittest.mock import Mock, patch
 
 import dontmanage
 from dontmanage.app import make_form_dict
+from dontmanage.core.doctype.doctype.test_doctype import new_doctype
 from dontmanage.desk.doctype.note.note import Note
 from dontmanage.model.naming import make_autoname, parse_naming_series, revert_series_if_last
 from dontmanage.tests.utils import DontManageTestCase
@@ -17,6 +18,11 @@ from . import update_system_settings
 
 class CustomTestNote(Note):
 	@property
+	def age(self):
+		return now_datetime() - self.creation
+
+
+class CustomNoteWithoutProperty(Note):
 	def age(self):
 		return now_datetime() - self.creation
 
@@ -58,6 +64,20 @@ class TestDocument(DontManageTestCase):
 		self.assertEqual(d.send_reminder, 1)
 		return d
 
+	def test_website_route_default(self):
+		default = dontmanage.generate_hash()
+		child_table = new_doctype(default=default, istable=1).insert().name
+		parent = (
+			new_doctype(fields=[{"fieldtype": "Table", "options": child_table, "fieldname": "child_table"}])
+			.insert()
+			.name
+		)
+
+		doc = dontmanage.get_doc({"doctype": parent, "child_table": [{"some_fieldname": "xasd"}]}).insert()
+		doc.append("child_table", {})
+		doc.save()
+		self.assertEqual(doc.child_table[-1].some_fieldname, default)
+
 	def test_insert_with_child(self):
 		d = dontmanage.get_doc(
 			{
@@ -81,8 +101,13 @@ class TestDocument(DontManageTestCase):
 	def test_value_changed(self):
 		d = self.test_insert()
 		d.subject = "subject changed again"
-		d.save()
+		d.load_doc_before_save()
+		d.update_modified()
+
 		self.assertTrue(d.has_value_changed("subject"))
+		self.assertTrue(d.has_value_changed("modified"))
+
+		self.assertFalse(d.has_value_changed("creation"))
 		self.assertFalse(d.has_value_changed("event_type"))
 
 	def test_mandatory(self):
@@ -103,9 +128,7 @@ class TestDocument(DontManageTestCase):
 
 	def test_text_editor_field(self):
 		try:
-			dontmanage.get_doc(
-				doctype="Activity Log", subject="test", message='<img src="test.png" />'
-			).insert()
+			dontmanage.get_doc(doctype="Activity Log", subject="test", message='<img src="test.png" />').insert()
 		except dontmanage.MandatoryError:
 			self.fail("Text Editor false positive mandatory error")
 
@@ -168,6 +191,10 @@ class TestDocument(DontManageTestCase):
 		user.db_set("user_type", "Magical Wizard")
 		with self.assertQueryCount(0):
 			user.db_set("user_type", "Magical Wizard")
+
+	def test_new_doc_with_fields(self):
+		user = dontmanage.new_doc("User", first_name="wizard")
+		self.assertEqual(user.first_name, "wizard")
 
 	def test_update_after_submit(self):
 		d = self.test_insert()
@@ -299,13 +326,15 @@ class TestDocument(DontManageTestCase):
 		note.title = dontmanage.generate_hash(length=20)
 		note.insert()
 
-		def patch_note():
-			return patch("dontmanage.controllers", new={dontmanage.local.site: {"Note": CustomTestNote}})
+		def patch_note(class_=None):
+			return patch("dontmanage.controllers", new={dontmanage.local.site: {"Note": class_ or CustomTestNote}})
 
 		@contextmanager
 		def customize_note(with_options=False):
 			options = (
-				"dontmanage.utils.now_datetime() - dontmanage.utils.get_datetime(doc.creation)" if with_options else ""
+				"dontmanage.utils.now_datetime() - dontmanage.utils.get_datetime(doc.creation)"
+				if with_options
+				else ""
 			)
 			custom_field = dontmanage.get_doc(
 				{
@@ -340,6 +369,14 @@ class TestDocument(DontManageTestCase):
 			self.assertIsInstance(doc.age, timedelta)
 			self.assertIsInstance(doc.as_dict().get("age"), timedelta)
 			self.assertIsInstance(doc.get_valid_dict().get("age"), timedelta)
+
+		# has virtual field, but age method is not a property
+		with customize_note(), patch_note(class_=CustomNoteWithoutProperty):
+			doc = dontmanage.get_last_doc("Note")
+			self.assertIsInstance(doc, CustomNoteWithoutProperty)
+			self.assertNotIsInstance(type(doc).age, property)
+			self.assertIsNone(doc.as_dict().get("age"))
+			self.assertIsNone(doc.get_valid_dict().get("age"))
 
 		with customize_note(with_options=True):
 			doc = dontmanage.get_last_doc("Note")
@@ -424,6 +461,37 @@ class TestDocument(DontManageTestCase):
 
 		self.assertRaises(dontmanage.DoesNotExistError, doc.save)
 
+	def test_validate_from_to_dates(self):
+		doc = dontmanage.new_doc("Web Page")
+		doc.start_date = None
+		doc.end_date = None
+		doc.validate_from_to_dates("start_date", "end_date")
+
+		doc.start_date = "2020-01-01"
+		doc.end_date = None
+		doc.validate_from_to_dates("start_date", "end_date")
+
+		doc.start_date = None
+		doc.end_date = "2020-12-31"
+		doc.validate_from_to_dates("start_date", "end_date")
+
+		doc.start_date = "2020-01-01"
+		doc.end_date = "2020-12-31"
+		doc.validate_from_to_dates("start_date", "end_date")
+
+		doc.end_date = "2020-01-01"
+		doc.start_date = "2020-12-31"
+		self.assertRaises(
+			dontmanage.exceptions.InvalidDates, doc.validate_from_to_dates, "start_date", "end_date"
+		)
+
+	def test_db_set_singles(self):
+		c = dontmanage.get_doc("Contact Us Settings")
+		key, val = "email_id", "admin1@example.com"
+		c.db_set(key, val)
+		changed_val = dontmanage.db.get_single_value(c.doctype, key)
+		self.assertEqual(val, changed_val)
+
 
 class TestDocumentWebView(DontManageTestCase):
 	def get(self, path, user="Guest"):
@@ -469,3 +537,38 @@ class TestDocumentWebView(DontManageTestCase):
 
 		# Logged-in user can access the page without key
 		self.assertEqual(self.get(url_without_key, "Administrator").status, "200 OK")
+
+	def test_bulk_inserts(self):
+		from dontmanage.model.document import bulk_insert
+
+		doctype = "Role Profile"
+		child_field = "roles"
+		child_doctype = dontmanage.get_meta(doctype).get_field(child_field).options
+
+		sent_docs = set()
+		sent_child_docs = set()
+
+		def doc_generator():
+			for _ in range(21):
+				doc = dontmanage.new_doc(doctype)
+				doc.role_profile = dontmanage.generate_hash()
+				doc.append("roles", {"role": "System Manager"})
+
+				doc.set_new_name()
+				doc.set_parent_in_children()
+
+				sent_docs.add(doc.name)
+				sent_child_docs.add(doc.roles[0].name)
+
+				yield doc
+
+		bulk_insert(doctype, doc_generator(), chunk_size=5)
+
+		all_docs = set(dontmanage.get_all(doctype, pluck="name"))
+		all_child_docs = set(
+			dontmanage.get_all(
+				child_doctype, filters={"parenttype": doctype, "parentfield": child_field}, pluck="name"
+			)
+		)
+		self.assertEqual(sent_docs - all_docs, set(), "All docs should be inserted")
+		self.assertEqual(sent_child_docs - all_child_docs, set(), "All child docs should be inserted")

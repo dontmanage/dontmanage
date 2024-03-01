@@ -7,6 +7,16 @@ from dontmanage.model.document import Document
 
 
 class Domain(Document):
+	# begin: auto-generated types
+	# This code is auto-generated. Do not modify anything in this block.
+
+	from typing import TYPE_CHECKING
+
+	if TYPE_CHECKING:
+		from dontmanage.types import DF
+
+		domain: DF.Data
+	# end: auto-generated types
 	"""Domain documents are created automatically when DocTypes
 	with "Restricted" domains are imported during
 	installation or migration"""
@@ -112,9 +122,7 @@ class Domain(Document):
 			# enable
 			dontmanage.db.sql(
 				"""update `tabPortal Menu Item` set enabled=1
-				where route in ({})""".format(
-					", ".join(f'"{d}"' for d in self.data.allow_sidebar_items)
-				)
+				where route in ({})""".format(", ".join(f'"{d}"' for d in self.data.allow_sidebar_items))
 			)
 
 		if self.data.remove_sidebar_items:
@@ -124,7 +132,5 @@ class Domain(Document):
 			# enable
 			dontmanage.db.sql(
 				"""update `tabPortal Menu Item` set enabled=0
-				where route in ({})""".format(
-					", ".join(f'"{d}"' for d in self.data.remove_sidebar_items)
-				)
+				where route in ({})""".format(", ".join(f'"{d}"' for d in self.data.remove_sidebar_items))
 			)

@@ -28,3 +28,5 @@ def execute():
 	# clean up
 	dontmanage.db.delete("Feedback")
 	dontmanage.db.commit()
+
+	dontmanage.delete_doc("DocType", "Feedback")

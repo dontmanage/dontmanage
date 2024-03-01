@@ -9,8 +9,11 @@ dontmanage.ui.form.Layout = class Layout {
 		this.tabs = [];
 		this.sections = [];
 		this.page_breaks = [];
+		this.sections_dict = {};
 		this.fields_list = [];
 		this.fields_dict = {};
+		this.section_count = 0;
+		this.column_count = 0;
 
 		$.extend(this, opts);
 	}
@@ -32,6 +35,7 @@ dontmanage.ui.form.Layout = class Layout {
 		}
 
 		this.setup_tab_events();
+		this.frm && this.setup_tooltip_events();
 		this.render();
 	}
 
@@ -41,7 +45,7 @@ dontmanage.ui.form.Layout = class Layout {
 				<ul class="nav form-tabs" id="form-tabs" role="tablist"></ul>
 			</div>
 		`).appendTo(this.page);
-		this.tabs_list = this.page.find(".form-tabs");
+		this.tab_link_container = this.page.find(".form-tabs");
 		this.tabs_content = $(`<div class="form-tab-content tab-content"></div>`).appendTo(
 			this.page
 		);
@@ -98,6 +102,7 @@ dontmanage.ui.form.Layout = class Layout {
 			// remove previous color
 			this.message.removeClass(this.message_color);
 		}
+		let close_message = $(`<div class="close-message">${dontmanage.utils.icon("close")}</div>`);
 		this.message_color =
 			color && ["yellow", "blue", "red", "green", "orange"].includes(color) ? color : "blue";
 		if (html) {
@@ -107,6 +112,8 @@ dontmanage.ui.form.Layout = class Layout {
 			}
 			this.message.removeClass("hidden").addClass(this.message_color);
 			$(html).appendTo(this.message);
+			close_message.appendTo(this.message);
+			close_message.on("click", () => this.message.empty().addClass("hidden"));
 		} else {
 			this.message.empty().addClass("hidden");
 		}
@@ -187,12 +194,14 @@ dontmanage.ui.form.Layout = class Layout {
 	replace_field(fieldname, df, render) {
 		df.fieldname = fieldname; // change of fieldname is avoided
 		if (this.fields_dict[fieldname] && this.fields_dict[fieldname].df) {
-			const fieldobj = this.init_field(df, render);
-			this.fields_dict[fieldname].$wrapper.remove();
-			this.fields_list.splice(this.fields_dict[fieldname], 1, fieldobj);
+			const prev_fieldobj = this.fields_dict[fieldname];
+			const fieldobj = this.init_field(df, prev_fieldobj.parent, render);
+			prev_fieldobj.$wrapper.replaceWith(fieldobj.$wrapper);
+			const idx = this.fields_list.findIndex((e) => e == prev_fieldobj);
+			this.fields_list.splice(idx, 1, fieldobj);
 			this.fields_dict[fieldname] = fieldobj;
-			this.section.fields_list.splice(this.section.fields_dict[fieldname], 1, fieldobj);
-			this.section.fields_dict[fieldname] = fieldobj;
+			this.sections.forEach((section) => section.replace_field(fieldname, fieldobj));
+			prev_fieldobj.tab?.replace_field(fieldobj);
 			this.refresh_fields([df]);
 		}
 	}
@@ -201,26 +210,24 @@ dontmanage.ui.form.Layout = class Layout {
 		!this.section && this.make_section();
 		!this.column && this.make_column();
 
-		const fieldobj = this.init_field(df, render);
+		const parent = this.column.form.get(0);
+		const fieldobj = this.init_field(df, parent, render);
 		this.fields_list.push(fieldobj);
 		this.fields_dict[df.fieldname] = fieldobj;
 
-		this.section.fields_list.push(fieldobj);
-		this.section.fields_dict[df.fieldname] = fieldobj;
-		fieldobj.section = this.section;
+		this.section.add_field(fieldobj);
+		this.column.add_field(fieldobj);
 
 		if (this.current_tab) {
-			fieldobj.tab = this.current_tab;
-			this.current_tab.fields_list.push(fieldobj);
-			this.current_tab.fields_dict[df.fieldname] = fieldobj;
+			this.current_tab.add_field(fieldobj);
 		}
 	}
 
-	init_field(df, render = false) {
+	init_field(df, parent, render = false) {
 		const fieldobj = dontmanage.ui.form.make_control({
 			df: df,
 			doctype: this.doctype,
-			parent: this.column.wrapper.get(0),
+			parent: parent,
 			frm: this.frm,
 			render_input: render,
 			doc: this.doc,
@@ -236,7 +243,6 @@ dontmanage.ui.form.Layout = class Layout {
 	}
 
 	make_page(df) {
-		// eslint-disable-line no-unused-vars
 		let me = this;
 		let head = $(`
 			<div class="form-clickable-section text-center">
@@ -270,13 +276,21 @@ dontmanage.ui.form.Layout = class Layout {
 		this.fold_btn.trigger("click");
 	}
 
-	make_section(df) {
+	make_section(df = {}) {
+		this.section_count++;
+		if (!df.fieldname) {
+			df.fieldname = `__section_${this.section_count}`;
+			df.fieldtype = "Section Break";
+		}
+
 		this.section = new Section(
 			this.current_tab ? this.current_tab.wrapper : this.page,
 			df,
 			this.card_layout,
 			this
 		);
+		this.sections.push(this.section);
+		this.sections_dict[df.fieldname] = this.section;
 
 		// append to layout fields
 		if (df) {
@@ -287,7 +301,13 @@ dontmanage.ui.form.Layout = class Layout {
 		this.column = null;
 	}
 
-	make_column(df) {
+	make_column(df = {}) {
+		this.column_count++;
+		if (!df.fieldname) {
+			df.fieldname = `__column_${this.section_count}`;
+			df.fieldtype = "Column Break";
+		}
+
 		this.column = new Column(this.section, df);
 		if (df && df.fieldname) {
 			this.fields_list.push(this.column);
@@ -296,7 +316,7 @@ dontmanage.ui.form.Layout = class Layout {
 
 	make_tab(df) {
 		this.section = null;
-		let tab = new Tab(this, df, this.frm, this.tabs_list, this.tabs_content);
+		let tab = new Tab(this, df, this.frm, this.tab_link_container, this.tabs_content);
 		this.current_tab = tab;
 		this.make_section({ fieldtype: "Section Break" });
 		this.tabs.push(tab);
@@ -347,7 +367,10 @@ dontmanage.ui.form.Layout = class Layout {
 			const section = $(this).removeClass("empty-section visible-section");
 			if (section.find(".dontmanage-control:not(.hide-control)").length) {
 				section.addClass("visible-section");
-			} else {
+			} else if (
+				section.parent().hasClass("tab-pane") ||
+				section.parent().hasClass("form-page")
+			) {
 				// nothing visible, hide the section
 				section.addClass("empty-section");
 			}
@@ -364,9 +387,21 @@ dontmanage.ui.form.Layout = class Layout {
 
 		const visible_tabs = this.tabs.filter((tab) => !tab.hidden);
 		if (visible_tabs && visible_tabs.length == 1) {
-			visible_tabs[0].parent.toggleClass("hide show");
+			visible_tabs[0].tab_link.toggleClass("hide show");
 		}
 		this.set_tab_as_active();
+	}
+
+	select_tab(label_or_fieldname) {
+		for (let tab of this.tabs) {
+			if (
+				tab.label.toLowerCase() === label_or_fieldname.toLowerCase() ||
+				tab.df.fieldname?.toLowerCase() === label_or_fieldname.toLowerCase()
+			) {
+				tab.set_active();
+				return;
+			}
+		}
 	}
 
 	set_tab_as_active() {
@@ -464,7 +499,7 @@ dontmanage.ui.form.Layout = class Layout {
 			}, 500)
 		);
 
-		this.tabs_list.off("click").on("click", ".nav-link", (e) => {
+		this.tab_link_container.off("click").on("click", ".nav-link", (e) => {
 			e.preventDefault();
 			e.stopImmediatePropagation();
 			$(e.currentTarget).tab("show");
@@ -490,6 +525,25 @@ dontmanage.ui.form.Layout = class Layout {
 				}
 			}
 		});
+	}
+
+	setup_tooltip_events() {
+		$(document).on("keydown", (e) => {
+			if (e.altKey) {
+				this.wrapper.addClass("show-tooltip");
+			}
+		});
+		$(document).on("keyup", (e) => {
+			if (!e.altKey) {
+				this.wrapper.removeClass("show-tooltip");
+			}
+		});
+		this.frm.page &&
+			dontmanage.ui.keys.add_shortcut({
+				shortcut: "alt+hover",
+				page: this.frm.page,
+				description: __("Show Fieldname (click to copy on clipboard)"),
+			});
 	}
 
 	handle_tab(doctype, fieldname, shift) {
@@ -567,7 +621,7 @@ dontmanage.ui.form.Layout = class Layout {
 					// show grid row (if exists)
 					field.grid.grid_rows[0].show_form();
 					return true;
-				} else if (!in_list(dontmanage.model.no_value_type, field.df.fieldtype)) {
+				} else if (!dontmanage.model.no_value_type.includes(field.df.fieldtype)) {
 					this.set_focus(field);
 					return true;
 				}

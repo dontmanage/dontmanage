@@ -62,20 +62,18 @@ dontmanage.ui.Page = class Page {
 	}
 
 	get_empty_state(title, message, primary_action) {
-		let $empty_state = $(`<div class="page-card-container">
-			<div class="page-card">
-				<div class="page-card-head">
-					<span class="indicator blue">
-						${title}</span>
-				</div>
-				<p>${message}</p>
-				<div>
-					<button class="btn btn-primary btn-sm">${primary_action}</button>
-				</div>
-			</div>
-		</div>`);
-
-		return $empty_state;
+		return $(`<div class="page-card-container">
+  			<div class="page-card">
+  				<div class="page-card-head">
+  					<span class="indicator blue">
+  						${title}</span>
+  				</div>
+  				<p>${message}</p>
+  				<div>
+  					<button class="btn btn-primary btn-sm">${primary_action}</button>
+  				</div>
+  			</div>
+  		</div>`);
 	}
 
 	load_lib(callback) {
@@ -163,15 +161,39 @@ dontmanage.ui.Page = class Page {
 		dontmanage.ui.keys
 			.get_shortcut_group(this.page_actions[0])
 			.add(action_btn, action_btn.find(".actions-btn-group-label"));
+
+		// https://axesslab.com/skip-links
+		this.skip_link_to_main = $("<button>")
+			.addClass("sr-only sr-only-focusable btn btn-primary-light my-2")
+			.text(__("Navigate to main content"))
+			.attr({ tabindex: 0, role: "link" })
+			.on("click", (e) => {
+				e.preventDefault();
+				const main = this.main.get(0);
+				main.setAttribute("tabindex", -1);
+				main.focus();
+				main.addEventListener(
+					"blur",
+					() => {
+						main.removeAttribute("tabindex");
+					},
+					{ once: true }
+				);
+			})
+			.appendTo(this.sidebar);
 	}
 
 	setup_sidebar_toggle() {
 		let sidebar_toggle = $(".page-head").find(".sidebar-toggle-btn");
 		let sidebar_wrapper = this.wrapper.find(".layout-side-section");
 		if (this.disable_sidebar_toggle || !sidebar_wrapper.length) {
-			sidebar_toggle.remove();
+			sidebar_toggle.last().remove();
 		} else {
-			sidebar_toggle.attr("title", __("Toggle Sidebar")).tooltip({
+			if (!dontmanage.is_mobile()) {
+				sidebar_toggle.attr("title", __("Toggle Sidebar"));
+			}
+			sidebar_toggle.attr("aria-label", __("Toggle Sidebar"));
+			sidebar_toggle.tooltip({
 				delay: { show: 600, hide: 100 },
 				trigger: "hover",
 			});
@@ -213,7 +235,10 @@ dontmanage.ui.Page = class Page {
 		let sidebar_wrapper = this.wrapper.find(".layout-side-section");
 		let is_sidebar_visible = $(sidebar_wrapper).is(":visible");
 		sidebar_toggle_icon.html(
-			dontmanage.utils.icon(is_sidebar_visible ? "sidebar-collapse" : "sidebar-expand", "md")
+			dontmanage.utils.icon(
+				is_sidebar_visible ? "es-line-sidebar-collapse" : "es-line-sidebar-expand",
+				"md"
+			)
 		);
 	}
 
@@ -227,18 +252,29 @@ dontmanage.ui.Page = class Page {
 				${dontmanage.utils.icon(icon)}
 			</button>
 		`);
+		// ideally, we should pass tooltip_label this is just safe gaurd.
+		if (!tooltip_label) {
+			if (icon.startsWith("es-")) {
+				icon = icon.replace("es-line-", "");
+				icon = icon.replace("es-solid-", "");
+				icon = icon.replace("es-small-", "");
+			}
+			tooltip_label = dontmanage.unscrub(icon);
+		}
 
 		button.appendTo(this.icon_group.removeClass("hide"));
 		button.click(click);
 		button
-			.attr("title", __(tooltip_label || dontmanage.unscrub(icon)))
+			.attr("title", __(tooltip_label))
 			.tooltip({ delay: { show: 600, hide: 100 }, trigger: "hover" });
 
 		return button;
 	}
 
 	clear_indicator() {
-		return this.indicator.removeClass().addClass("indicator-pill whitespace-nowrap hide");
+		return this.indicator
+			.removeClass()
+			.addClass("indicator-pill no-indicator-dot whitespace-nowrap hide");
 	}
 
 	get_icon_label(icon, label) {
@@ -256,14 +292,15 @@ dontmanage.ui.Page = class Page {
 	set_action(btn, opts) {
 		let me = this;
 		if (opts.icon) {
-			opts.label = this.get_icon_label(opts.icon, opts.label);
+			opts.iconHTML = this.get_icon_label(opts.icon, opts.label);
 		}
 
 		this.clear_action_of(btn);
 
 		btn.removeClass("hide")
 			.prop("disabled", false)
-			.html(opts.label)
+			.html(opts.iconHTML || opts.label)
+			.attr("data-label", opts.label)
 			.on("click", function () {
 				let response = opts.click.apply(this, [btn]);
 				me.btn_disable_enable(btn, response);
@@ -720,7 +757,7 @@ dontmanage.ui.Page = class Page {
 		return this.$title_area;
 	}
 
-	set_title(title, icon = null, strip = true, tab_title = "") {
+	set_title(title, icon = null, strip = true, tab_title = "", tooltip_label = "") {
 		if (!title) title = "";
 		if (strip) {
 			title = strip_html(title);
@@ -732,7 +769,11 @@ dontmanage.ui.Page = class Page {
 		}
 		let title_wrapper = this.$title_area.find(".title-text");
 		title_wrapper.html(title);
-		title_wrapper.attr("title", this.title);
+		title_wrapper.attr("title", tooltip_label || this.title);
+
+		if (tooltip_label) {
+			title_wrapper.tooltip({ delay: { show: 600, hide: 100 }, trigger: "hover" });
+		}
 	}
 
 	set_title_sub(txt) {
@@ -850,7 +891,7 @@ dontmanage.ui.Page = class Page {
 		f.refresh();
 		$(f.wrapper)
 			.addClass("col-md-2")
-			.attr("title", __(df.label))
+			.attr("title", __(df.label, null, df.parent))
 			.tooltip({
 				delay: { show: 600, hide: 100 },
 				trigger: "hover",
@@ -864,7 +905,7 @@ dontmanage.ui.Page = class Page {
 		// hidden fields dont have $input
 		if (!f.$input) f.make_input();
 
-		f.$input.attr("placeholder", __(df.label));
+		f.$input.attr("placeholder", __(df.label, null, df.parent));
 
 		if (df.fieldtype === "Check") {
 			$(f.wrapper).find(":first-child").removeClass("col-md-offset-4 col-md-8");

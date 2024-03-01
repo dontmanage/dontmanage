@@ -74,7 +74,7 @@ class TestNewsletterMixin:
 				).insert(ignore_if_duplicate=True)
 			except Exception:
 				dontmanage.db.rollback(save_point=savepoint)
-				dontmanage.db.update(doctype, email_filters, "unsubscribed", 0)
+				dontmanage.db.set_value(doctype, email_filters, "unsubscribed", 0)
 
 			dontmanage.db.release_savepoint(savepoint)
 
@@ -95,6 +95,8 @@ class TestNewsletterMixin:
 		else:
 			newsletter.send_emails()
 			return newsletter.name
+
+		return newsletter
 
 	@staticmethod
 	def get_newsletter(**kwargs) -> "Newsletter":
@@ -145,11 +147,9 @@ class TestNewsletter(TestNewsletterMixin, DontManageTestCase):
 	def test_unsubscribe(self):
 		name = self.send_newsletter()
 		to_unsubscribe = choice(emails)
-		group = dontmanage.get_all(
-			"Newsletter Email Group", filters={"parent": name}, fields=["email_group"]
-		)
+		group = dontmanage.get_all("Newsletter Email Group", filters={"parent": name}, fields=["email_group"])
 
-		flush(from_test=True)
+		flush()
 		confirmed_unsubscribe(to_unsubscribe, group[0].email_group)
 
 		name = self.send_newsletter()
@@ -162,7 +162,9 @@ class TestNewsletter(TestNewsletterMixin, DontManageTestCase):
 				self.assertTrue(email in recipients)
 
 	def test_schedule_send(self):
-		self.send_newsletter(schedule_send=add_days(getdate(), -1))
+		newsletter = self.send_newsletter(schedule_send=add_days(getdate(), 1))
+		newsletter.db_set("schedule_send", add_days(getdate(), -1))  # Set date in past
+		send_scheduled_email()
 
 		email_queue_list = [dontmanage.get_doc("Email Queue", e.name) for e in dontmanage.get_all("Email Queue")]
 		self.assertEqual(len(email_queue_list), 4)
@@ -236,13 +238,15 @@ class TestNewsletter(TestNewsletterMixin, DontManageTestCase):
 		email_queue_list = [dontmanage.get_doc("Email Queue", e.name) for e in dontmanage.get_all("Email Queue")]
 		self.assertEqual(len(email_queue_list), 4)
 
-		# emulate partial send
-		email_queue_list[0].status = "Error"
-		email_queue_list[0].recipients[0].status = "Error"
-		email_queue_list[0].save()
+		# delete a queue document to emulate partial send
+		queue_recipient_name = email_queue_list[0].recipients[0].recipient
+		email_queue_list[0].delete()
 		newsletter.email_sent = False
+
+		# make sure the pending recipient is only the one which has been deleted
+		self.assertEqual(newsletter.get_pending_recipients(), [queue_recipient_name])
 
 		# retry
 		newsletter.send_emails()
-		email_queue_list = [dontmanage.get_doc("Email Queue", e.name) for e in dontmanage.get_all("Email Queue")]
-		self.assertEqual(len(email_queue_list), 5)
+		self.assertEqual(dontmanage.db.count("Email Queue"), 4)
+		self.assertTrue(newsletter.email_sent)

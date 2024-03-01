@@ -23,23 +23,22 @@ dontmanage.ready(function() {
 		}
 
 		$("#contact-alert").toggle(false);
-		dontmanage.send_message({
-			subject: $('[name="subject"]').val(),
-			sender: email,
-			message: message,
+		dontmanage.call({
+			type: "POST",
+			method: "dontmanage.www.contact.send_message",
+			args: {
+				subject: $('[name="subject"]').val(),
+				sender: email,
+				message: message,
+			},
 			callback: function(r) {
-				if(r.message==="okay") {
+				if (!r.exc) {
 					dontmanage.msgprint('{{ _("Thank you for your message") }}');
-				} else {
-					dontmanage.msgprint('{{ _("There were errors") }}');
-					console.log(r.exc);
 				}
 				$(':input').val('');
-			}
-		}, this);
-		return false;
+			},
+		});
 	});
-
 });
 
 var msgprint = function(txt) {

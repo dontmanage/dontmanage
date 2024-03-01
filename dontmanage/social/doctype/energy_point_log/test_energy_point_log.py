@@ -6,9 +6,8 @@ from dontmanage.desk.page.user_profile.user_profile import get_energy_points_hea
 from dontmanage.tests.utils import DontManageTestCase
 from dontmanage.utils.testutils import add_custom_field, clear_custom_fields
 
-from .energy_point_log import create_review_points_log
+from .energy_point_log import create_review_points_log, review
 from .energy_point_log import get_energy_points as _get_energy_points
-from .energy_point_log import review
 
 
 class TestEnergyPointLog(DontManageTestCase):
@@ -26,13 +25,13 @@ class TestEnergyPointLog(DontManageTestCase):
 		settings.save()
 
 	def setUp(self):
-		dontmanage.cache().delete_value("energy_point_rule_map")
+		dontmanage.cache.delete_value("energy_point_rule_map")
 
 	def tearDown(self):
 		dontmanage.set_user("Administrator")
 		dontmanage.db.delete("Energy Point Log")
 		dontmanage.db.delete("Energy Point Rule")
-		dontmanage.cache().delete_value("energy_point_rule_map")
+		dontmanage.cache.delete_value("energy_point_rule_map")
 
 	def test_user_energy_point(self):
 		dontmanage.set_user("test@example.com")
@@ -191,9 +190,7 @@ class TestEnergyPointLog(DontManageTestCase):
 		created_todo.docstatus = 2
 		created_todo.save()
 
-		energy_point_logs = dontmanage.get_all(
-			"Energy Point Log", fields=["reference_name", "type", "reverted"]
-		)
+		energy_point_logs = dontmanage.get_all("Energy Point Log", fields=["reference_name", "type", "reverted"])
 
 		self.assertListEqual(
 			energy_point_logs,
@@ -211,9 +208,7 @@ class TestEnergyPointLog(DontManageTestCase):
 		create_a_todo()
 		points_after_todo_creation = get_points("test@example.com")
 
-		self.assertEqual(
-			points_after_todo_creation, points_before_todo_creation + todo_point_rule.points
-		)
+		self.assertEqual(points_after_todo_creation, points_before_todo_creation + todo_point_rule.points)
 
 	def test_point_allocation_for_assigned_users(self):
 		todo = create_a_todo()
@@ -240,9 +235,7 @@ class TestEnergyPointLog(DontManageTestCase):
 		self.assertIsInstance(get_energy_points_heatmap_data(user="test@example.com", date=None), dict)
 
 	def test_points_on_field_value_change(self):
-		rule = create_energy_point_rule_for_todo(
-			for_doc_event="Value Change", field_to_check="description"
-		)
+		rule = create_energy_point_rule_for_todo(for_doc_event="Value Change", field_to_check="description")
 
 		dontmanage.set_user("test@example.com")
 		points_before_todo_creation = get_points("test@example.com")
@@ -255,9 +248,7 @@ class TestEnergyPointLog(DontManageTestCase):
 		todo.description = "This is new todo"
 		todo.save()
 		points_after_changing_todo_description = get_points("test@example.com")
-		self.assertEqual(
-			points_after_changing_todo_description, points_before_todo_creation + rule.points
-		)
+		self.assertEqual(points_after_changing_todo_description, points_before_todo_creation + rule.points)
 
 	def test_apply_only_once(self):
 		dontmanage.set_user("test@example.com")
@@ -271,9 +262,7 @@ class TestEnergyPointLog(DontManageTestCase):
 
 		first_user_points_after_closing_todo = get_points("test@example.com")
 
-		self.assertEqual(
-			first_user_points_after_closing_todo, first_user_points + todo_point_rule.points
-		)
+		self.assertEqual(first_user_points_after_closing_todo, first_user_points + todo_point_rule.points)
 
 		dontmanage.set_user("test2@example.com")
 		second_user_points = get_points("test2@example.com")
@@ -322,8 +311,9 @@ class TestEnergyPointLog(DontManageTestCase):
 		# do not update energy points for disabled user
 		self.assertEqual(points_after_closing_todo, energy_point_of_user)
 
-		user.enabled = 1
-		user.save()
+		with self.set_user("Administrator"):
+			user.enabled = 1
+			user.save()
 
 		created_todo.save()
 		points_after_re_saving_todo = get_points("test@example.com")

@@ -30,19 +30,21 @@ dontmanage.ui.form.on("Dashboard Chart", {
 			frm.disable_form();
 		}
 
-		frm.add_custom_button("Add Chart to Dashboard", () => {
-			const dialog = dontmanage.dashboard_utils.get_add_to_dashboard_dialog(
-				frm.doc.name,
-				"Dashboard Chart",
-				"dontmanage.desk.doctype.dashboard_chart.dashboard_chart.add_chart_to_dashboard"
-			);
+		if (!frm.is_new()) {
+			frm.add_custom_button("Add Chart to Dashboard", () => {
+				const dialog = dontmanage.dashboard_utils.get_add_to_dashboard_dialog(
+					frm.doc.name,
+					"Dashboard Chart",
+					"dontmanage.desk.doctype.dashboard_chart.dashboard_chart.add_chart_to_dashboard"
+				);
 
-			if (!frm.doc.chart_name) {
-				dontmanage.msgprint(__("Please create chart first"));
-			} else {
-				dialog.show();
-			}
-		});
+				if (!frm.doc.chart_name) {
+					dontmanage.msgprint(__("Please create chart first"));
+				} else {
+					dialog.show();
+				}
+			});
+		}
 
 		frm.set_df_property("filters_section", "hidden", 1);
 		frm.set_df_property("dynamic_filters_section", "hidden", 1);
@@ -107,6 +109,8 @@ dontmanage.ui.form.on("Dashboard Chart", {
 		// set timeseries based on chart type
 		if (["Count", "Average", "Sum"].includes(frm.doc.chart_type)) {
 			frm.set_value("timeseries", 1);
+		} else if (frm.doc.chart_type == "Custom") {
+			return;
 		} else {
 			frm.set_value("timeseries", 0);
 		}

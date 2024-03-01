@@ -2,6 +2,7 @@
 // MIT License. See license.txt
 import "./linked_with";
 import "./form_viewers";
+import { ReminderManager } from "./reminders";
 
 dontmanage.ui.form.Toolbar = class Toolbar {
 	constructor(opts) {
@@ -12,7 +13,6 @@ dontmanage.ui.form.Toolbar = class Toolbar {
 	}
 	refresh() {
 		this.make_menu();
-		this.make_viewers();
 		this.set_title();
 		this.page.clear_user_actions();
 		this.show_title_as_dirty();
@@ -31,11 +31,12 @@ dontmanage.ui.form.Toolbar = class Toolbar {
 		}
 	}
 	set_title() {
+		let title;
 		if (this.frm.is_new()) {
-			var title = __("New {0}", [__(this.frm.meta.name)]);
+			title = __("New {0}", [__(this.frm.meta.name)]);
 		} else if (this.frm.meta.title_field) {
 			let title_field = (this.frm.doc[this.frm.meta.title_field] || "").toString().trim();
-			var title = strip_html(title_field || this.frm.docname);
+			title = strip_html(title_field || this.frm.docname);
 			if (
 				this.frm.doc.__islocal ||
 				title === this.frm.docname ||
@@ -51,7 +52,7 @@ dontmanage.ui.form.Toolbar = class Toolbar {
 				});
 			}
 		} else {
-			var title = this.frm.docname;
+			title = this.frm.docname;
 		}
 
 		var me = this;
@@ -97,6 +98,10 @@ dontmanage.ui.form.Toolbar = class Toolbar {
 		const docname = this.frm.doc.name;
 		const title_field = this.frm.meta.title_field || "";
 		const doctype = this.frm.doctype;
+		let queue;
+		if (this.frm.__rename_queue) {
+			queue = this.frm.__rename_queue;
+		}
 
 		if (input_name) {
 			const warning = __("This cannot be undone");
@@ -108,6 +113,7 @@ dontmanage.ui.form.Toolbar = class Toolbar {
 		}
 
 		let rename_document = () => {
+			if (input_name != docname) dontmanage.realtime.doctype_subscribe(doctype, input_name);
 			return dontmanage
 				.xcall("dontmanage.model.rename_doc.update_document_title", {
 					doctype,
@@ -118,6 +124,7 @@ dontmanage.ui.form.Toolbar = class Toolbar {
 					merge,
 					freeze: true,
 					freeze_message: __("Updating related fields..."),
+					queue,
 				})
 				.then((new_docname) => {
 					const reload_form = (input_name) => {
@@ -128,9 +135,8 @@ dontmanage.ui.form.Toolbar = class Toolbar {
 					};
 
 					// handle document renaming queued action
-					if (input_name && new_docname == docname) {
-						dontmanage.socketio.doc_subscribe(doctype, input_name);
-						dontmanage.realtime.on("doc_update", (data) => {
+					if (input_name != docname) {
+						dontmanage.realtime.on("list_update", (data) => {
 							if (data.doctype == doctype && data.name == input_name) {
 								reload_form(input_name);
 								dontmanage.show_alert({
@@ -271,23 +277,11 @@ dontmanage.ui.form.Toolbar = class Toolbar {
 		}
 	}
 
-	make_viewers() {
-		if (this.frm.viewers) {
-			return;
-		}
-		this.frm.viewers = new dontmanage.ui.form.FormViewers({
-			frm: this.frm,
-			parent: $('<div class="form-viewers d-flex"></div>').prependTo(
-				this.frm.page.page_actions
-			),
-		});
-	}
-
 	make_navigation() {
 		// Navigate
 		if (!this.frm.is_new() && !this.frm.meta.issingle) {
 			this.page.add_action_icon(
-				"left",
+				"es-line-left-chevron",
 				() => {
 					this.frm.navigate_records(1);
 				},
@@ -295,7 +289,7 @@ dontmanage.ui.form.Toolbar = class Toolbar {
 				__("Previous Document")
 			);
 			this.page.add_action_icon(
-				"right",
+				"es-line-right-chevron",
 				() => {
 					this.frm.navigate_records(0);
 				},
@@ -378,13 +372,14 @@ dontmanage.ui.form.Toolbar = class Toolbar {
 		}
 
 		// duplicate
-		if (in_list(dontmanage.boot.user.can_create, me.frm.doctype) && !me.frm.meta.allow_copy) {
+		if (dontmanage.boot.user.can_create.includes(me.frm.doctype) && !me.frm.meta.allow_copy) {
 			this.page.add_menu_item(
 				__("Duplicate"),
 				function () {
 					me.frm.copy_doc();
 				},
-				true
+				true,
+				"Shift+D"
 			);
 		}
 
@@ -421,6 +416,7 @@ dontmanage.ui.form.Toolbar = class Toolbar {
 		if (
 			cint(me.frm.doc.docstatus) != 1 &&
 			!me.frm.doc.__islocal &&
+			!dontmanage.model.is_single(me.frm.doctype) &&
 			dontmanage.model.can_delete(me.frm.doctype)
 		) {
 			this.page.add_menu_item(
@@ -435,6 +431,45 @@ dontmanage.ui.form.Toolbar = class Toolbar {
 				}
 			);
 		}
+
+		this.page.add_menu_item(
+			__("Remind Me"),
+			() => {
+				let reminder_maanger = new ReminderManager({ frm: this.frm });
+				reminder_maanger.show();
+			},
+			true,
+			{
+				shortcut: "Shift+R",
+				condition: () => !this.frm.is_new(),
+			}
+		);
+		//
+		// Undo and redo
+		this.page.add_menu_item(
+			__("Undo"),
+			() => {
+				this.frm.undo_manager.undo();
+			},
+			true,
+			{
+				shortcut: "ctrl+z",
+				condition: () => !this.frm.is_form_builder(),
+				description: __("Undo last action"),
+			}
+		);
+		this.page.add_menu_item(
+			__("Redo"),
+			() => {
+				this.frm.undo_manager.redo();
+			},
+			true,
+			{
+				shortcut: "ctrl+y",
+				condition: () => !this.frm.is_form_builder(),
+				description: __("Redo last action"),
+			}
+		);
 
 		this.make_customize_buttons();
 

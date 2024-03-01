@@ -166,7 +166,7 @@ dontmanage.ui.form.ControlTableMultiSelect = class ControlTableMultiSelect exten
 		let me = this;
 
 		awesomplete.filter = function (item) {
-			if (in_list(me._rows_list, item.value)) {
+			if (me._rows_list.includes(item.value)) {
 				return false;
 			}
 

@@ -10,34 +10,28 @@ import dontmanage
 import dontmanage.desk.reportview
 from dontmanage import _
 from dontmanage.core.utils import ljust_list
+from dontmanage.desk.reportview import clean_params, parse_json
 from dontmanage.model.utils import render_include
 from dontmanage.modules import get_module_path, scrub
 from dontmanage.monitor import add_data_to_monitor
 from dontmanage.permissions import get_role_permissions
-from dontmanage.utils import (
-	cint,
-	cstr,
-	flt,
-	format_duration,
-	get_html_format,
-	get_url_to_form,
-	gzip_decompress,
-)
+from dontmanage.utils import cint, cstr, flt, format_duration, get_html_format, sbool
 
 
 def get_report_doc(report_name):
 	doc = dontmanage.get_doc("Report", report_name)
 	doc.custom_columns = []
+	doc.custom_filters = []
 
 	if doc.report_type == "Custom Report":
 		custom_report_doc = doc
-		reference_report = custom_report_doc.reference_report
-		doc = dontmanage.get_doc("Report", reference_report)
+		doc = get_reference_report(doc)
 		doc.custom_report = report_name
 		if custom_report_doc.json:
 			data = json.loads(custom_report_doc.json)
 			if data:
-				doc.custom_columns = data["columns"]
+				doc.custom_columns = data.get("columns")
+				doc.custom_filters = data.get("filters")
 		doc.is_custom_report = True
 
 	if not doc.is_permitted():
@@ -89,8 +83,8 @@ def generate_report_result(
 	columns, result, message, chart, report_summary, skip_total_row = ljust_list(res, 6)
 	columns = [get_column_as_dict(col) for col in (columns or [])]
 	report_column_names = [col["fieldname"] for col in columns]
-
 	# convert to list of dicts
+
 	result = normalize_result(result, columns)
 
 	if report.custom_columns:
@@ -103,9 +97,7 @@ def generate_report_result(
 			columns.insert(custom_column["insert_after_index"] + 1, custom_column)
 
 	# all columns which are not in original report
-	report_custom_columns = [
-		column for column in columns if column["fieldname"] not in report_column_names
-	]
+	report_custom_columns = [column for column in columns if column["fieldname"] not in report_column_names]
 
 	if report_custom_columns:
 		result = add_custom_column_data(report_custom_columns, result)
@@ -124,7 +116,7 @@ def generate_report_result(
 		"report_summary": report_summary,
 		"skip_total_row": skip_total_row or 0,
 		"status": None,
-		"execution_time": dontmanage.cache().hget("report_execution_time", report.name) or 0,
+		"execution_time": dontmanage.cache.hget("report_execution_time", report.name) or 0,
 	}
 
 
@@ -132,7 +124,7 @@ def normalize_result(result, columns):
 	# Converts to list of dicts from list of lists/tuples
 	data = []
 	column_names = [column["fieldname"] for column in columns]
-	if result and isinstance(result[0], (list, tuple)):
+	if result and isinstance(result[0], list | tuple):
 		for row in result:
 			row_obj = {}
 			for idx, column_name in enumerate(column_names):
@@ -142,37 +134,6 @@ def normalize_result(result, columns):
 		data = result
 
 	return data
-
-
-@dontmanage.whitelist()
-def background_enqueue_run(report_name, filters=None, user=None):
-	"""run reports in background"""
-	from dontmanage.core.doctype.prepared_report.prepared_report import (
-		process_filters_for_prepared_report,
-	)
-
-	if not user:
-		user = dontmanage.session.user
-	report = get_report_doc(report_name)
-	track_instance = dontmanage.get_doc(
-		{
-			"doctype": "Prepared Report",
-			"report_name": report_name,
-			"filters": process_filters_for_prepared_report(filters),
-			"ref_report_doctype": report_name,
-			"report_type": report.report_type,
-			"query": report.query,
-			"module": report.module,
-		}
-	)
-	track_instance.insert(ignore_permissions=True)
-	dontmanage.db.commit()
-	track_instance.enqueue_report()
-
-	return {
-		"name": track_instance.name,
-		"redirect_url": get_url_to_form("Prepared Report", track_instance.name),
-	}
 
 
 @dontmanage.whitelist()
@@ -206,8 +167,17 @@ def get_script(report_name):
 	return {
 		"script": render_include(script),
 		"html_format": html_format,
-		"execution_time": dontmanage.cache().hget("report_execution_time", report_name) or 0,
+		"execution_time": dontmanage.cache.hget("report_execution_time", report_name) or 0,
+		"filters": report.filters,
+		"custom_report_name": report.name if report.get("is_custom_report") else None,
 	}
+
+
+def get_reference_report(report):
+	if report.report_type != "Custom Report":
+		return report
+	reference_report = dontmanage.get_doc("Report", report.reference_report)
+	return get_reference_report(reference_report)
 
 
 @dontmanage.whitelist()
@@ -220,6 +190,7 @@ def run(
 	custom_columns=None,
 	is_tree=False,
 	parent_field=None,
+	are_default_filters=True,
 ):
 	report = get_report_doc(report_name)
 	if not user:
@@ -232,18 +203,15 @@ def run(
 
 	result = None
 
-	if (
-		report.prepared_report
-		and not report.disable_prepared_report
-		and not ignore_prepared_report
-		and not custom_columns
-	):
+	if sbool(are_default_filters) and report.custom_filters:
+		filters = report.custom_filters
+
+	if report.prepared_report and not sbool(ignore_prepared_report) and not custom_columns:
 		if filters:
 			if isinstance(filters, str):
 				filters = json.loads(filters)
 
-			dn = filters.get("prepared_report_name")
-			filters.pop("prepared_report_name", None)
+			dn = filters.pop("prepared_report_name", None)
 		else:
 			dn = ""
 		result = get_prepared_report_result(report, filters, dn, user)
@@ -253,127 +221,133 @@ def run(
 
 	result["add_total_row"] = report.add_total_row and not result.get("skip_total_row", False)
 
+	if sbool(are_default_filters) and report.custom_filters:
+		result["custom_filters"] = report.custom_filters
+
 	return result
 
 
 def add_custom_column_data(custom_columns, result):
-	custom_column_data = get_data_for_custom_report(custom_columns)
+	doctype_names_from_custom_field = []
+	for column in custom_columns:
+		if len(column["fieldname"].split("-")) > 1:
+			# length greater than 1, means that the column is a custom field with confilicting fieldname
+			doctype_name = dontmanage.unscrub(column["fieldname"].split("-")[1])
+			doctype_names_from_custom_field.append(doctype_name)
+		column["fieldname"] = column["fieldname"].split("-")[0]
+
+	custom_column_data = get_data_for_custom_report(custom_columns, result)
 
 	for column in custom_columns:
 		key = (column.get("doctype"), column.get("fieldname"))
 		if key in custom_column_data:
 			for row in result:
-				row_reference = row.get(column.get("link_field"))
+				link_field = column.get("link_field")
+
+				# backwards compatibile `link_field`
+				# old custom reports which use `str` should not break.
+				if isinstance(link_field, str):
+					link_field = dontmanage._dict({"fieldname": link_field, "names": []})
+
+				row_reference = row.get(link_field.get("fieldname"))
 				# possible if the row is empty
 				if not row_reference:
 					continue
+				if key[0] in doctype_names_from_custom_field:
+					column["fieldname"] = column.get("id")
 				row[column.get("fieldname")] = custom_column_data.get(key).get(row_reference)
 
 	return result
 
 
 def get_prepared_report_result(report, filters, dn="", user=None):
-	from dontmanage.core.doctype.prepared_report.prepared_report import (
-		process_filters_for_prepared_report,
-	)
+	from dontmanage.core.doctype.prepared_report.prepared_report import get_completed_prepared_report
 
-	latest_report_data = {}
-	doc = None
-	if dn:
-		# Get specified dn
-		doc = dontmanage.get_doc("Prepared Report", dn)
-	else:
-		# Only look for completed prepared reports with given filters.
-		doc_list = dontmanage.get_all(
-			"Prepared Report",
-			filters={
-				"status": "Completed",
-				"filters": process_filters_for_prepared_report(filters),
-				"owner": user,
-				"report_name": report.get("custom_report") or report.get("report_name"),
-			},
-			order_by="creation desc",
+	def get_report_data(doc, data):
+		# backwards compatibility - prepared report used to have a columns field,
+		# we now directly fetch it from the result file
+		if doc.get("columns") or isinstance(data, list):
+			columns = (doc.get("columns") and json.loads(doc.columns)) or data[0]
+			data = {"result": data}
+		else:
+			columns = data.get("columns")
+
+		for column in columns:
+			if isinstance(column, dict) and column.get("label"):
+				column["label"] = _(column["label"])
+
+		return data | {"columns": columns}
+
+	report_data = {}
+	if not dn:
+		dn = get_completed_prepared_report(
+			filters, user, report.get("custom_report") or report.get("report_name")
 		)
 
-		if doc_list:
-			# Get latest
-			doc = dontmanage.get_doc("Prepared Report", doc_list[0])
-
+	doc = dontmanage.get_doc("Prepared Report", dn) if dn else None
 	if doc:
 		try:
-			# Prepared Report data is stored in a GZip compressed JSON file
-			attached_file_name = dontmanage.db.get_value(
-				"File",
-				{"attached_to_doctype": doc.doctype, "attached_to_name": doc.name},
-				"name",
-			)
-			attached_file = dontmanage.get_doc("File", attached_file_name)
-			compressed_content = attached_file.get_content()
-			uncompressed_content = gzip_decompress(compressed_content)
-			data = json.loads(uncompressed_content.decode("utf-8"))
-			if data:
-				columns = json.loads(doc.columns) if doc.columns else data[0]
-
-				for column in columns:
-					if isinstance(column, dict) and column.get("label"):
-						column["label"] = _(column["label"])
-
-				latest_report_data = {"columns": columns, "result": data}
-		except Exception:
-			doc.log_error("Prepared report failed")
-			dontmanage.delete_doc("Prepared Report", doc.name)
-			dontmanage.db.commit()
+			if data := json.loads(doc.get_prepared_data().decode("utf-8")):
+				report_data = get_report_data(doc, data)
+		except Exception as e:
+			doc.log_error("Prepared report render failed")
+			dontmanage.msgprint(_("Prepared report render failed") + f": {e!s}")
 			doc = None
 
-	latest_report_data.update({"prepared_report": True, "doc": doc})
-
-	return latest_report_data
+	return report_data | {"prepared_report": True, "doc": doc}
 
 
 @dontmanage.whitelist()
 def export_query():
 	"""export from query reports"""
-	data = dontmanage._dict(dontmanage.local.form_dict)
-	data.pop("cmd", None)
-	data.pop("csrf_token", None)
+	from dontmanage.desk.utils import get_csv_bytes, pop_csv_params, provide_binary_file
 
-	if isinstance(data.get("filters"), str):
-		filters = json.loads(data["filters"])
+	form_params = dontmanage._dict(dontmanage.local.form_dict)
+	csv_params = pop_csv_params(form_params)
+	clean_params(form_params)
+	parse_json(form_params)
 
-	if data.get("report_name"):
-		report_name = data["report_name"]
-		dontmanage.permissions.can_export(
-			dontmanage.get_cached_value("Report", report_name, "ref_doctype"),
-			raise_exception=True,
-		)
+	report_name = form_params.report_name
+	dontmanage.permissions.can_export(
+		dontmanage.get_cached_value("Report", report_name, "ref_doctype"),
+		raise_exception=True,
+	)
 
-	file_format_type = data.get("file_format_type")
-	custom_columns = dontmanage.parse_json(data.get("custom_columns", "[]"))
-	include_indentation = data.get("include_indentation")
-	visible_idx = data.get("visible_idx")
+	file_format_type = form_params.file_format_type
+	custom_columns = dontmanage.parse_json(form_params.custom_columns or "[]")
+	include_indentation = form_params.include_indentation
+	include_filters = form_params.include_filters
+	visible_idx = form_params.visible_idx
 
 	if isinstance(visible_idx, str):
 		visible_idx = json.loads(visible_idx)
 
-	if file_format_type == "Excel":
-		data = run(report_name, filters, custom_columns=custom_columns)
-		data = dontmanage._dict(data)
-		if not data.columns:
-			dontmanage.respond_as_web_page(
-				_("No data to export"),
-				_("You can try changing the filters of your report."),
-			)
-			return
+	data = run(report_name, form_params.filters, custom_columns=custom_columns, are_default_filters=False)
+	data = dontmanage._dict(data)
+	data.filters = form_params.applied_filters
 
+	if not data.columns:
+		dontmanage.respond_as_web_page(
+			_("No data to export"),
+			_("You can try changing the filters of your report."),
+		)
+		return
+
+	format_duration_fields(data)
+	xlsx_data, column_widths = build_xlsx_data(
+		data, visible_idx, include_indentation, include_filters=include_filters
+	)
+
+	if file_format_type == "CSV":
+		content = get_csv_bytes(xlsx_data, csv_params)
+		file_extension = "csv"
+	elif file_format_type == "Excel":
 		from dontmanage.utils.xlsxutils import make_xlsx
 
-		format_duration_fields(data)
-		xlsx_data, column_widths = build_xlsx_data(data, visible_idx, include_indentation)
-		xlsx_file = make_xlsx(xlsx_data, "Query Report", column_widths=column_widths)
+		file_extension = "xlsx"
+		content = make_xlsx(xlsx_data, "Query Report", column_widths=column_widths).getvalue()
 
-		dontmanage.response["filename"] = report_name + ".xlsx"
-		dontmanage.response["filecontent"] = xlsx_file.getvalue()
-		dontmanage.response["type"] = "binary"
+	provide_binary_file(report_name, file_extension, content)
 
 
 def format_duration_fields(data: dontmanage._dict) -> None:
@@ -387,7 +361,7 @@ def format_duration_fields(data: dontmanage._dict) -> None:
 				row[index] = format_duration(row[index])
 
 
-def build_xlsx_data(data, visible_idx, include_indentation, ignore_visible_idx=False):
+def build_xlsx_data(data, visible_idx, include_indentation, include_filters=False, ignore_visible_idx=False):
 	EXCEL_TYPES = (
 		str,
 		bool,
@@ -400,17 +374,41 @@ def build_xlsx_data(data, visible_idx, include_indentation, ignore_visible_idx=F
 		datetime.timedelta,
 	)
 
-	result = [[]]
+	if len(visible_idx) == len(data.result):
+		# It's not possible to have same length and different content.
+		ignore_visible_idx = True
+	else:
+		# Note: converted for faster lookups
+		visible_idx = set(visible_idx)
+
+	result = []
 	column_widths = []
 
+	if cint(include_filters):
+		filter_data = []
+		filters = data.filters
+		for filter_name, filter_value in filters.items():
+			if not filter_value:
+				continue
+			filter_value = (
+				", ".join([cstr(x) for x in filter_value])
+				if isinstance(filter_value, list)
+				else cstr(filter_value)
+			)
+			filter_data.append([cstr(filter_name), filter_value])
+		filter_data.append([])
+		result += filter_data
+
+	column_data = []
 	for column in data.columns:
 		if column.get("hidden"):
 			continue
-		result[0].append(_(column.get("label")))
+		column_data.append(_(column.get("label")))
 		column_width = cint(column.get("width", 0))
 		# to convert into scale accepted by openpyxl
 		column_width /= 10
 		column_widths.append(column_width)
+	result.append(column_data)
 
 	# build table from result
 	for row_idx, row in enumerate(data.result):
@@ -503,30 +501,45 @@ def add_total_row(result, columns, meta=None, is_tree=False, parent_field=None):
 
 
 @dontmanage.whitelist()
-def get_data_for_custom_field(doctype, field):
-
+def get_data_for_custom_field(doctype, field, names=None):
 	if not dontmanage.has_permission(doctype, "read"):
-		dontmanage.throw(_("Not Permitted"), dontmanage.PermissionError)
+		dontmanage.throw(_("Not Permitted to read {0}").format(doctype), dontmanage.PermissionError)
 
-	value_map = dontmanage._dict(dontmanage.get_all(doctype, fields=["name", field], as_list=1))
+	filters = {}
+	if names:
+		if isinstance(names, str | bytearray):
+			names = dontmanage.json.loads(names)
+		filters.update({"name": ["in", names]})
 
-	return value_map
+	return dontmanage._dict(dontmanage.get_list(doctype, filters=filters, fields=["name", field], as_list=1))
 
 
-def get_data_for_custom_report(columns):
+def get_data_for_custom_report(columns, result):
 	doc_field_value_map = {}
 
 	for column in columns:
-		if column.get("link_field"):
+		if link_field := column.get("link_field"):
+			# backwards compatibile `link_field`
+			# old custom reports which use `str` should not break
+			if isinstance(link_field, str):
+				link_field = dontmanage._dict({"fieldname": link_field, "names": []})
+
 			fieldname = column.get("fieldname")
 			doctype = column.get("doctype")
-			doc_field_value_map[(doctype, fieldname)] = get_data_for_custom_field(doctype, fieldname)
 
+			row_key = link_field.get("fieldname")
+			names = []
+			for row in result:
+				if row.get(row_key):
+					names.append(row.get(row_key))
+			names = list(set(names))
+
+			doc_field_value_map[(doctype, fieldname)] = get_data_for_custom_field(doctype, fieldname, names)
 	return doc_field_value_map
 
 
 @dontmanage.whitelist()
-def save_report(reference_report, report_name, columns):
+def save_report(reference_report, report_name, columns, filters):
 	report_doc = get_report_doc(reference_report)
 
 	docname = dontmanage.db.exists(
@@ -542,6 +555,7 @@ def save_report(reference_report, report_name, columns):
 		report = dontmanage.get_doc("Report", docname)
 		existing_jd = json.loads(report.json)
 		existing_jd["columns"] = json.loads(columns)
+		existing_jd["filters"] = json.loads(filters)
 		report.update({"json": json.dumps(existing_jd, separators=(",", ":"))})
 		report.save()
 		dontmanage.msgprint(_("Report updated successfully"))
@@ -552,7 +566,7 @@ def save_report(reference_report, report_name, columns):
 			{
 				"doctype": "Report",
 				"report_name": report_name,
-				"json": f'{{"columns":{columns}}}',
+				"json": f'{{"columns":{columns},"filters":{filters}}}',
 				"ref_doctype": report_doc.ref_doctype,
 				"is_standard": "No",
 				"report_type": "Custom Report",
@@ -576,7 +590,11 @@ def get_filtered_data(ref_doctype, columns, data, user):
 	if match_filters_per_doctype:
 		for row in data:
 			# Why linked_doctypes.get(ref_doctype)? because if column is empty, linked_doctypes[ref_doctype] is removed
-			if linked_doctypes.get(ref_doctype) and shared and row[linked_doctypes[ref_doctype]] in shared:
+			if (
+				linked_doctypes.get(ref_doctype)
+				and shared
+				and row.get(linked_doctypes[ref_doctype]) in shared
+			):
 				result.append(row)
 
 			elif has_match(
@@ -641,7 +659,7 @@ def has_match(
 					cell_value = None
 					if isinstance(row, dict):
 						cell_value = row.get(idx)
-					elif isinstance(row, (list, tuple)):
+					elif isinstance(row, list | tuple):
 						cell_value = row[idx]
 
 					if (
@@ -673,10 +691,10 @@ def get_linked_doctypes(columns, data):
 
 	columns_dict = get_columns_dict(columns)
 
-	for idx, col in enumerate(columns):
+	for idx in range(len(columns)):
 		df = columns_dict[idx]
 		if df.get("fieldtype") == "Link":
-			if data and isinstance(data[0], (list, tuple)):
+			if data and isinstance(data[0], list | tuple):
 				linked_doctypes[df["options"]] = idx
 			else:
 				# dict
@@ -687,7 +705,7 @@ def get_linked_doctypes(columns, data):
 	for row in data:
 		if row:
 			if len(row) != len(columns_with_value):
-				if isinstance(row, (list, tuple)):
+				if isinstance(row, list | tuple):
 					row = enumerate(row)
 				elif isinstance(row, dict):
 					row = row.items()

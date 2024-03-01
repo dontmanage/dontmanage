@@ -8,6 +8,7 @@ import dontmanage
 import dontmanage.defaults
 import dontmanage.desk.desk_page
 from dontmanage.core.doctype.navbar_settings.navbar_settings import get_app_logo, get_navbar_settings
+from dontmanage.desk.doctype.form_tour.form_tour import get_onboarding_ui_tours
 from dontmanage.desk.doctype.route_history.route_history import frequently_visited_links
 from dontmanage.desk.form.load import get_meta_bundle
 from dontmanage.email.inbox import get_email_accounts
@@ -20,7 +21,6 @@ from dontmanage.social.doctype.energy_point_log.energy_point_log import get_ener
 from dontmanage.social.doctype.energy_point_settings.energy_point_settings import (
 	is_energy_point_enabled,
 )
-from dontmanage.translate import get_lang_dict, get_messages_for_boot, get_translated_doctypes
 from dontmanage.utils import add_user_info, cstr, get_system_timezone
 from dontmanage.utils.change_log import get_versions
 from dontmanage.website.doctype.web_page_view.web_page_view import is_tracking_enabled
@@ -28,6 +28,8 @@ from dontmanage.website.doctype.web_page_view.web_page_view import is_tracking_e
 
 def get_bootinfo():
 	"""build and return boot info"""
+	from dontmanage.translate import get_lang_dict, get_translated_doctypes
+
 	dontmanage.set_user_lang(dontmanage.session.user)
 	bootinfo = dontmanage._dict()
 	hooks = dontmanage.get_hooks()
@@ -68,6 +70,7 @@ def get_bootinfo():
 	bootinfo.home_folder = dontmanage.db.get_value("File", {"is_home_folder": 1})
 	bootinfo.navbar_settings = get_navbar_settings()
 	bootinfo.notification_settings = get_notification_settings()
+	bootinfo.onboarding_tours = get_onboarding_ui_tours()
 	set_time_zone(bootinfo)
 
 	# ipinfo
@@ -103,6 +106,7 @@ def get_bootinfo():
 	bootinfo.link_title_doctypes = get_link_title_doctypes()
 	bootinfo.translated_doctypes = get_translated_doctypes()
 	bootinfo.subscription_conf = add_subscription_conf()
+	bootinfo.marketplace_apps = get_marketplace_apps()
 
 	return bootinfo
 
@@ -118,19 +122,19 @@ def get_letter_heads():
 
 
 def load_conf_settings(bootinfo):
-	from dontmanage import conf
+	from dontmanage.core.api.file import get_max_file_size
 
-	bootinfo.max_file_size = conf.get("max_file_size") or 10485760
+	bootinfo.max_file_size = get_max_file_size()
 	for key in ("developer_mode", "socketio_port", "file_watcher_port"):
-		if key in conf:
-			bootinfo[key] = conf.get(key)
+		if key in dontmanage.conf:
+			bootinfo[key] = dontmanage.conf.get(key)
 
 
 def load_desktop_data(bootinfo):
 	from dontmanage.desk.desktop import get_workspace_sidebar_items
 
 	bootinfo.allowed_workspaces = get_workspace_sidebar_items().get("pages")
-	bootinfo.module_page_map = get_controller("Workspace").get_module_page_map()
+	bootinfo.module_wise_workspaces = get_controller("Workspace").get_module_wise_workspaces()
 	bootinfo.dashboards = dontmanage.get_all("Dashboard")
 
 
@@ -147,10 +151,8 @@ def get_allowed_report_names(cache=False) -> set[str]:
 
 
 def get_user_pages_or_reports(parent, cache=False):
-	_cache = dontmanage.cache()
-
 	if cache:
-		has_role = _cache.get_value("has_role:" + parent, user=dontmanage.session.user)
+		has_role = dontmanage.cache.get_value("has_role:" + parent, user=dontmanage.session.user)
 		if has_role:
 			return has_role
 
@@ -174,9 +176,7 @@ def get_user_pages_or_reports(parent, cache=False):
 		dontmanage.qb.from_(customRole)
 		.from_(hasRole)
 		.from_(parentTable)
-		.select(
-			customRole[parent.lower()].as_("name"), customRole.modified, customRole.ref_doctype, *columns
-		)
+		.select(customRole[parent.lower()].as_("name"), customRole.modified, customRole.ref_doctype, *columns)
 		.where(
 			(hasRole.parent == customRole.name)
 			& (parentTable.name == customRole[parent.lower()])
@@ -199,9 +199,7 @@ def get_user_pages_or_reports(parent, cache=False):
 		.from_(parentTable)
 		.select(parentTable.name.as_("name"), parentTable.modified, *columns)
 		.where(
-			(hasRole.role.isin(roles))
-			& (hasRole.parent == parentTable.name)
-			& (parentTable.name.notin(subq))
+			(hasRole.role.isin(roles)) & (hasRole.parent == parentTable.name) & (parentTable.name.notin(subq))
 		)
 		.distinct()
 	)
@@ -223,7 +221,6 @@ def get_user_pages_or_reports(parent, cache=False):
 
 	# pages with no role are allowed
 	if parent == "Page":
-
 		pages_with_no_roles = (
 			dontmanage.qb.from_(parentTable)
 			.select(parentTable.name, parentTable.modified, *columns)
@@ -252,11 +249,13 @@ def get_user_pages_or_reports(parent, cache=False):
 			has_role.pop(r, None)
 
 	# Expire every six hours
-	_cache.set_value("has_role:" + parent, has_role, dontmanage.session.user, 21600)
+	dontmanage.cache.set_value("has_role:" + parent, has_role, dontmanage.session.user, 21600)
 	return has_role
 
 
 def load_translations(bootinfo):
+	from dontmanage.translate import get_messages_for_boot
+
 	bootinfo["lang"] = dontmanage.lang
 	bootinfo["__messages"] = get_messages_for_boot()
 
@@ -291,8 +290,7 @@ def add_home_page(bootinfo, docs):
 		docs.append(page)
 		bootinfo["home_page"] = page.name
 	except (dontmanage.DoesNotExistError, dontmanage.PermissionError):
-		if dontmanage.message_log:
-			dontmanage.message_log.pop()
+		dontmanage.clear_last_message()
 		bootinfo["home_page"] = "Workspaces"
 
 
@@ -437,6 +435,32 @@ def load_currency_docs(bootinfo):
 	)
 
 	bootinfo.docs += currency_docs
+
+
+def get_marketplace_apps():
+	import requests
+
+	apps = []
+	cache_key = "dontmanage_marketplace_apps"
+
+	if dontmanage.conf.developer_mode:
+		return apps
+
+	def get_apps_from_fc():
+		remote_site = dontmanage.conf.dontmanagecloud_url or "dontmanagecloud.com"
+		request_url = f"https://{remote_site}/api/method/press.api.marketplace.get_marketplace_apps"
+		request = requests.get(request_url, timeout=2.0)
+		return request.json()["message"]
+
+	try:
+		apps = dontmanage.cache().get_value(cache_key, get_apps_from_fc, shared=True)
+		installed_apps = set(dontmanage.get_installed_apps())
+		apps = [app for app in apps if app["name"] not in installed_apps]
+	except Exception:
+		# Don't retry for a day
+		dontmanage.cache().set_value(cache_key, apps, shared=True, expires_in_sec=24 * 60 * 60)
+
+	return apps
 
 
 def add_subscription_conf():

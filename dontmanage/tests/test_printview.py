@@ -5,7 +5,6 @@ from dontmanage.www.printview import get_html_and_style
 
 class PrintViewTest(DontManageTestCase):
 	def test_print_view_without_errors(self):
-
 		user = dontmanage.get_last_doc("User")
 
 		messages_before = dontmanage.get_message_log()

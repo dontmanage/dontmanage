@@ -4,18 +4,16 @@
 import copy
 import json
 import os
-
-# imports - standard imports
 import re
 import shutil
 from typing import TYPE_CHECKING, Union
 
-# imports - module imports
 import dontmanage
 from dontmanage import _
 from dontmanage.cache_manager import clear_controller_cache, clear_user_cache
 from dontmanage.custom.doctype.custom_field.custom_field import create_custom_field
 from dontmanage.custom.doctype.property_setter.property_setter import make_property_setter
+from dontmanage.database import savepoint
 from dontmanage.database.schema import validate_column_length, validate_column_name
 from dontmanage.desk.notifications import delete_notification_count_for, get_filters_for
 from dontmanage.desk.utils import validate_route_conflict
@@ -32,8 +30,9 @@ from dontmanage.model.document import Document
 from dontmanage.model.meta import Meta
 from dontmanage.modules import get_doc_path, make_boilerplate
 from dontmanage.modules.import_file import get_file_path
+from dontmanage.permissions import ALL_USER_ROLE, AUTOMATIC_ROLES, SYSTEM_USER_ROLE
 from dontmanage.query_builder.functions import Concat
-from dontmanage.utils import cint, random_string
+from dontmanage.utils import cint, flt, is_a_property, random_string
 from dontmanage.website.utils import clear_cache
 
 if TYPE_CHECKING:
@@ -86,8 +85,95 @@ form_grid_templates = {"fields": "templates/form_grid/fields.html"}
 
 
 class DocType(Document):
-	def get_feed(self):
-		return self.name
+	# begin: auto-generated types
+	# This code is auto-generated. Do not modify anything in this block.
+
+	from typing import TYPE_CHECKING
+
+	if TYPE_CHECKING:
+		from dontmanage.core.doctype.docfield.docfield import DocField
+		from dontmanage.core.doctype.docperm.docperm import DocPerm
+		from dontmanage.core.doctype.doctype_action.doctype_action import DocTypeAction
+		from dontmanage.core.doctype.doctype_link.doctype_link import DocTypeLink
+		from dontmanage.core.doctype.doctype_state.doctype_state import DocTypeState
+		from dontmanage.types import DF
+
+		actions: DF.Table[DocTypeAction]
+		allow_auto_repeat: DF.Check
+		allow_copy: DF.Check
+		allow_events_in_timeline: DF.Check
+		allow_guest_to_view: DF.Check
+		allow_import: DF.Check
+		allow_rename: DF.Check
+		autoname: DF.Data | None
+		beta: DF.Check
+		color: DF.Data | None
+		custom: DF.Check
+		default_email_template: DF.Link | None
+		default_print_format: DF.Data | None
+		default_view: DF.Literal
+		description: DF.SmallText | None
+		document_type: DF.Literal["", "Document", "Setup", "System", "Other"]
+		documentation: DF.Data | None
+		editable_grid: DF.Check
+		email_append_to: DF.Check
+		engine: DF.Literal["InnoDB", "MyISAM"]
+		fields: DF.Table[DocField]
+		force_re_route_to_default_view: DF.Check
+		has_web_view: DF.Check
+		hide_toolbar: DF.Check
+		icon: DF.Data | None
+		image_field: DF.Data | None
+		in_create: DF.Check
+		index_web_pages_for_search: DF.Check
+		is_calendar_and_gantt: DF.Check
+		is_published_field: DF.Data | None
+		is_submittable: DF.Check
+		is_tree: DF.Check
+		is_virtual: DF.Check
+		issingle: DF.Check
+		istable: DF.Check
+		links: DF.Table[DocTypeLink]
+		make_attachments_public: DF.Check
+		max_attachments: DF.Int
+		migration_hash: DF.Data | None
+		module: DF.Link
+		naming_rule: DF.Literal[
+			"",
+			"Set by user",
+			"Autoincrement",
+			"By fieldname",
+			'By "Naming Series" field',
+			"Expression",
+			"Expression (old style)",
+			"Random",
+			"By script",
+		]
+		nsm_parent_field: DF.Data | None
+		permissions: DF.Table[DocPerm]
+		queue_in_background: DF.Check
+		quick_entry: DF.Check
+		read_only: DF.Check
+		restrict_to_domain: DF.Link | None
+		route: DF.Data | None
+		search_fields: DF.Data | None
+		sender_field: DF.Data | None
+		sender_name_field: DF.Data | None
+		show_name_in_global_search: DF.Check
+		show_preview_popup: DF.Check
+		show_title_field_in_link: DF.Check
+		sort_field: DF.Data | None
+		sort_order: DF.Literal["ASC", "DESC"]
+		states: DF.Table[DocTypeState]
+		subject_field: DF.Data | None
+		timeline_field: DF.Data | None
+		title_field: DF.Data | None
+		track_changes: DF.Check
+		track_seen: DF.Check
+		track_views: DF.Check
+		translated_doctype: DF.Check
+		website_search_field: DF.Data | None
+	# end: auto-generated types
 
 	def validate(self):
 		"""Validate DocType before saving.
@@ -113,7 +199,7 @@ class DocType(Document):
 		self.set("can_change_name_type", validate_autoincrement_autoname(self))
 		self.validate_document_type()
 		validate_fields(self)
-
+		self.check_indexing_for_dashboard_links()
 		if not self.istable:
 			validate_permissions(self)
 
@@ -122,6 +208,7 @@ class DocType(Document):
 		self.validate_nestedset()
 		self.validate_child_table()
 		self.validate_website()
+		self.validate_virtual_doctype_methods()
 		self.ensure_minimum_max_attachment_limit()
 		validate_links_table_fieldnames(self)
 
@@ -142,6 +229,7 @@ class DocType(Document):
 			"DocPerm",
 			"Custom Field",
 			"Customize Form Field",
+			"Web Form Field",
 			"DocField",
 		]
 
@@ -154,9 +242,7 @@ class DocType(Document):
 			controller = Document
 
 		available_objects = {x for x in dir(controller) if isinstance(x, str)}
-		property_set = {
-			x for x in available_objects if isinstance(getattr(controller, x, None), property)
-		}
+		property_set = {x for x in available_objects if is_a_property(getattr(controller, x, None))}
 		method_set = {
 			x for x in available_objects if x not in property_set and callable(getattr(controller, x, None))
 		}
@@ -202,7 +288,7 @@ class DocType(Document):
 		if not [d.fieldname for d in self.fields if d.in_list_view]:
 			cnt = 0
 			for d in self.fields:
-				if d.reqd and not d.hidden and not d.fieldtype in not_allowed_in_list_view:
+				if d.reqd and not d.hidden and d.fieldtype not in not_allowed_in_list_view:
 					d.in_list_view = 1
 					cnt += 1
 					if cnt == 4:
@@ -213,6 +299,25 @@ class DocType(Document):
 		for d in self.fields:
 			if d.translatable and not supports_translation(d.fieldtype):
 				d.translatable = 0
+
+	def check_indexing_for_dashboard_links(self):
+		"""Enable indexing for outgoing links used in dashboard"""
+		for d in self.fields:
+			if d.fieldtype == "Link" and not (d.unique or d.search_index):
+				referred_as_link = dontmanage.db.exists(
+					"DocType Link",
+					{"parent": d.options, "link_doctype": self.name, "link_fieldname": d.fieldname},
+				)
+				if not referred_as_link:
+					continue
+
+				dontmanage.msgprint(
+					_("{0} should be indexed because it's referred in dashboard connections").format(
+						_(d.label, context=d.parent)
+					),
+					alert=True,
+					indicator="orange",
+				)
 
 	def check_developer_mode(self):
 		"""Throw exception if not developer mode or via patch"""
@@ -226,9 +331,7 @@ class DocType(Document):
 			)
 
 		if self.is_virtual and self.custom:
-			dontmanage.throw(
-				_("Not allowed to create custom Virtual DocType."), CannotCreateStandardDoctypeError
-			)
+			dontmanage.throw(_("Not allowed to create custom Virtual DocType."), CannotCreateStandardDoctypeError)
 
 		if dontmanage.conf.get("developer_mode"):
 			self.owner = "Administrator"
@@ -246,10 +349,14 @@ class DocType(Document):
 
 		self.flags.update_fields_to_fetch_queries = []
 
-		if set(old_fields_to_fetch) != {df.fieldname for df in new_meta.get_fields_to_fetch()}:
-			for df in new_meta.get_fields_to_fetch():
+		new_fields_to_fetch = [df for df in new_meta.get_fields_to_fetch()]
+
+		if set(old_fields_to_fetch) != {df.fieldname for df in new_fields_to_fetch}:
+			for df in new_fields_to_fetch:
 				if df.fieldname not in old_fields_to_fetch:
 					link_fieldname, source_fieldname = df.fetch_from.split(".", 1)
+					if not source_fieldname:
+						continue  # Invalid expression
 					link_df = new_meta.get_field(link_fieldname)
 
 					if dontmanage.db.db_type == "postgres":
@@ -298,11 +405,19 @@ class DocType(Document):
 
 		if self.has_web_view:
 			# route field must be present
-			if not "route" in [d.fieldname for d in self.fields]:
+			if "route" not in [d.fieldname for d in self.fields]:
 				dontmanage.throw(_('Field "route" is mandatory for Web Views'), title="Missing Field")
 
 			# clear website cache
 			clear_cache()
+
+	def validate_virtual_doctype_methods(self):
+		if not self.get("is_virtual") or self.is_new():
+			return
+
+		from dontmanage.model.virtual_doctype import validate_controller
+
+		validate_controller(self.name)
 
 	def ensure_minimum_max_attachment_limit(self):
 		"""Ensure that max_attachments is *at least* bigger than number of attach fields."""
@@ -331,7 +446,7 @@ class DocType(Document):
 			"DocField", "parent", dict(fieldtype=["in", dontmanage.model.table_fields], options=self.name)
 		)
 		for p in parent_list:
-			dontmanage.db.update("DocType", p.parent, {}, for_update=False)
+			dontmanage.db.set_value("DocType", p.parent, {})
 
 	def scrub_field_names(self):
 		"""Sluggify fieldnames if not set from Label."""
@@ -339,6 +454,7 @@ class DocType(Document):
 			"name",
 			"parent",
 			"creation",
+			"owner",
 			"modified",
 			"modified_by",
 			"parentfield",
@@ -361,12 +477,16 @@ class DocType(Document):
 						elif d.fieldtype == "Tab Break":
 							d.fieldname = d.fieldname + "_tab"
 					elif d.fieldtype in ("Section Break", "Column Break", "Tab Break"):
-						d.fieldname = d.fieldtype.lower().replace(" ", "_") + "_" + str(random_string(5))
+						d.fieldname = d.fieldtype.lower().replace(" ", "_") + "_" + str(random_string(4))
 					else:
-						dontmanage.throw(_("Row #{}: Fieldname is required").format(d.idx), title="Missing Fieldname")
+						dontmanage.throw(
+							_("Row #{}: Fieldname is required").format(d.idx), title="Missing Fieldname"
+						)
 				else:
 					if d.fieldname in restricted:
-						dontmanage.throw(_("Fieldname {0} is restricted").format(d.fieldname), InvalidFieldNameError)
+						dontmanage.throw(
+							_("Fieldname {0} is restricted").format(d.fieldname), InvalidFieldNameError
+						)
 				d.fieldname = ILLEGAL_FIELDNAME_PATTERN.sub("", d.fieldname)
 
 				# fieldnames should be lowercase
@@ -402,6 +522,7 @@ class DocType(Document):
 			self.export_doc()
 			self.make_controller_template()
 			self.set_base_class_for_controller()
+			self.export_types_to_controller()
 
 		# update index
 		if not self.custom:
@@ -409,7 +530,9 @@ class DocType(Document):
 			if self.flags.in_insert:
 				self.run_module_method("after_doctype_insert")
 
+		self.sync_doctype_layouts()
 		delete_notification_count_for(doctype=self.name)
+
 		dontmanage.clear_cache(doctype=self.name)
 
 		# clear user cache so that on the next reload this doctype is included in boot
@@ -420,6 +543,17 @@ class DocType(Document):
 
 		clear_linked_doctype_cache()
 
+	@savepoint(catch=Exception)
+	def sync_doctype_layouts(self):
+		"""Sync Doctype Layout"""
+		doctype_layouts = dontmanage.get_all(
+			"DocType Layout", filters={"document_type": self.name}, pluck="name", ignore_ddl=True
+		)
+		for layout in doctype_layouts:
+			layout_doc = dontmanage.get_doc("DocType Layout", layout)
+			layout_doc.sync_fields()
+			layout_doc.save()
+
 	def setup_autoincrement_and_sequence(self):
 		"""Changes name type and makes sequence on change (if required)"""
 
@@ -427,7 +561,7 @@ class DocType(Document):
 
 		if self.autoname == "autoincrement":
 			name_type = "bigint"
-			dontmanage.db.create_sequence(self.name, check_not_exists=True, cache=dontmanage.db.SEQUENCE_CACHE)
+			dontmanage.db.create_sequence(self.name, check_not_exists=True)
 
 		change_name_column_type(self.name, name_type)
 
@@ -712,6 +846,18 @@ class DocType(Document):
 			make_boilerplate("templates/controller.html", self.as_dict())
 			make_boilerplate("templates/controller_row.html", self.as_dict())
 
+	def export_types_to_controller(self):
+		from dontmanage.modules.utils import get_module_app
+		from dontmanage.types.exporter import TypeExporter
+
+		try:
+			app = get_module_app(self.module)
+		except dontmanage.DoesNotExistError:
+			return
+
+		if any(dontmanage.get_hooks("export_python_type_annotations", app_name=app)):
+			TypeExporter(self).export_types()
+
 	def make_amendable(self):
 		"""If is_submittable is set, add amended_from docfields."""
 		if self.is_submittable:
@@ -729,6 +875,7 @@ class DocType(Document):
 						"read_only": 1,
 						"print_hide": 1,
 						"no_copy": 1,
+						"search_index": 1,
 					},
 				)
 
@@ -737,9 +884,7 @@ class DocType(Document):
 		if self.allow_auto_repeat:
 			if not dontmanage.db.exists(
 				"Custom Field", {"fieldname": "auto_repeat", "dt": self.name}
-			) and not dontmanage.db.exists(
-				"DocField", {"fieldname": "auto_repeat", "parent": self.name}
-			):
+			) and not dontmanage.db.exists("DocField", {"fieldname": "auto_repeat", "parent": self.name}):
 				insert_after = self.fields[len(self.fields) - 1].fieldname
 				df = dict(
 					fieldname="auto_repeat",
@@ -812,6 +957,7 @@ class DocType(Document):
 				"fieldtype": "Link",
 				"options": self.name,
 				"fieldname": parent_field_name,
+				"ignore_user_permissions": 1,
 			},
 		)
 		self.nsm_parent_field = parent_field_name
@@ -847,7 +993,8 @@ class DocType(Document):
 		if len(name) > max_length:
 			# length(tab + <Doctype Name>) should be equal to 64 characters hence doctype should be 61 characters
 			dontmanage.throw(
-				_("Doctype name is limited to {0} characters ({1})").format(max_length, name), dontmanage.NameError
+				_("Doctype name is limited to {0} characters ({1})").format(max_length, name),
+				dontmanage.NameError,
 			)
 
 		# a DocType name should not start or end with an empty space
@@ -906,7 +1053,6 @@ def validate_series(dt, autoname=None, name=None):
 		and (not autoname.startswith("naming_series:"))
 		and (not autoname.startswith("format:"))
 	):
-
 		prefix = autoname.split(".", 1)[0]
 		doctype = dontmanage.qb.DocType("DocType")
 		used_in = (
@@ -945,7 +1091,6 @@ def validate_autoincrement_autoname(dt: Union[DocType, "CustomizeForm"]) -> bool
 			and autoname_before_save != "autoincrement"
 			or (not is_autoname_autoincrement and autoname_before_save == "autoincrement")
 		):
-
 			if dt.doctype == "Customize Form":
 				dontmanage.throw(_("Cannot change to/from autoincrement autoname in Customize Form"))
 
@@ -1037,7 +1182,7 @@ def validate_fields_for_doctype(doctype):
 
 
 # this is separate because it is also called via custom field
-def validate_fields(meta):
+def validate_fields(meta: Meta):
 	"""Validate doctype fields. Checks
 	1. There are no illegal characters in fieldnames
 	2. If fieldnames are unique.
@@ -1095,7 +1240,7 @@ def validate_fields(meta):
 		if dontmanage.flags.in_patch or dontmanage.flags.in_fixtures:
 			return
 
-		if d.fieldtype in ("Link",) + table_fields:
+		if d.fieldtype in ("Link", *table_fields):
 			if not d.options:
 				dontmanage.throw(
 					_("{0}: Options required for Link or Table type field {1} in row {2}").format(
@@ -1183,7 +1328,9 @@ def validate_fields(meta):
 				)
 			elif d.default not in d.options.split("\n"):
 				dontmanage.throw(
-					_("Default value for {0} must be in the list of options.").format(dontmanage.bold(d.fieldname))
+					_("Default value for {0} must be in the list of options.").format(
+						dontmanage.bold(d.fieldname)
+					)
 				)
 
 	def check_precision(d):
@@ -1203,7 +1350,7 @@ def validate_fields(meta):
 			d.search_index = 0
 
 		if getattr(d, "unique", False):
-			if d.fieldtype not in ("Data", "Link", "Read Only"):
+			if d.fieldtype not in ("Data", "Link", "Read Only", "Int"):
 				dontmanage.throw(
 					_("{0}: Fieldtype {1} for {2} cannot be unique").format(docname, d.fieldtype, d.label),
 					NonUniqueError,
@@ -1211,11 +1358,9 @@ def validate_fields(meta):
 
 			if not d.get("__islocal") and dontmanage.db.has_column(d.parent, d.fieldname):
 				has_non_unique_values = dontmanage.db.sql(
-					"""select `{fieldname}`, count(*)
-					from `tab{doctype}` where ifnull(`{fieldname}`, '') != ''
-					group by `{fieldname}` having count(*) > 1 limit 1""".format(
-						doctype=d.parent, fieldname=d.fieldname
-					)
+					f"""select `{d.fieldname}`, count(*)
+					from `tab{d.parent}` where ifnull(`{d.fieldname}`, '') != ''
+					group by `{d.fieldname}` having count(*) > 1 limit 1"""
 				)
 
 				if has_non_unique_values and has_non_unique_values[0][0]:
@@ -1389,18 +1534,16 @@ def validate_fields(meta):
 			field.options = "\n".join(options_list)
 
 	def scrub_fetch_from(field):
-		if hasattr(field, "fetch_from") and getattr(field, "fetch_from"):
+		if hasattr(field, "fetch_from") and field.fetch_from:
 			field.fetch_from = field.fetch_from.strip("\n").strip()
 
 	def validate_data_field_type(docfield):
 		if docfield.get("is_virtual"):
 			return
 
-		if docfield.fieldtype == "Data" and not (
-			docfield.oldfieldtype and docfield.oldfieldtype != "Data"
-		):
+		if docfield.fieldtype == "Data" and not (docfield.oldfieldtype and docfield.oldfieldtype != "Data"):
 			if docfield.options and (docfield.options not in data_field_options):
-				df_str = dontmanage.bold(_(docfield.label))
+				df_str = dontmanage.bold(_(docfield.label, context=docfield.parent))
 				text_str = (
 					_("{0} is an invalid Data field.").format(df_str)
 					+ "<br>" * 2
@@ -1418,11 +1561,20 @@ def validate_fields(meta):
 			return
 
 		doctype = docfield.options
-		meta = dontmanage.get_meta(doctype)
+		child_doctype_meta = dontmanage.get_meta(doctype)
 
-		if not meta.istable:
+		if not child_doctype_meta.istable:
 			dontmanage.throw(
 				_("Option {0} for field {1} is not a child table").format(
+					dontmanage.bold(doctype), dontmanage.bold(docfield.fieldname)
+				),
+				title=_("Invalid Option"),
+			)
+
+		if not (meta.is_virtual == child_doctype_meta.is_virtual):
+			error_msg = " should be virtual." if meta.is_virtual else " cannot be virtual."
+			dontmanage.throw(
+				_("Child Table {0} for field {1}" + error_msg).format(
 					dontmanage.bold(doctype), dontmanage.bold(docfield.fieldname)
 				),
 				title=_("Invalid Option"),
@@ -1436,6 +1588,47 @@ def validate_fields(meta):
 		if docfield.fieldtype == "Rating":
 			if docfield.options and (int(docfield.options) > 10 or int(docfield.options) < 3):
 				dontmanage.throw(_("Options for Rating field can range from 3 to 10"))
+
+	def check_fetch_from(docfield):
+		if not dontmanage.request:
+			return
+
+		fetch_from = docfield.fetch_from
+		fieldname = docfield.fieldname
+		if not fetch_from:
+			return
+
+		if "." not in fetch_from:
+			dontmanage.throw(
+				_("Fetch From syntax for field {0} is invalid. `.` dot missing: {1}").format(
+					dontmanage.bold(fieldname), dontmanage.bold(fetch_from)
+				)
+			)
+		link_fieldname, source_fieldname = docfield.fetch_from.split(".", 1)
+		if not link_fieldname or not source_fieldname:
+			dontmanage.throw(
+				_(
+					"Fetch From syntax for field {0} is invalid: {1}. Fetch From should be in form of 'link_fieldname.source_fieldname'"
+				).format(dontmanage.bold(fieldname), dontmanage.bold(fetch_from))
+			)
+
+		link_df = meta.get("fields", {"fieldname": link_fieldname, "fieldtype": "Link"})
+		if not link_df:
+			dontmanage.throw(
+				_("Fetch From for field {0} is invalid: {1}. Link field {2} not found.").format(
+					dontmanage.bold(fieldname), dontmanage.bold(fetch_from), dontmanage.bold(link_fieldname)
+				)
+			)
+
+		doctype = link_df[0].options
+		fetch_from_doctype = dontmanage.get_meta(doctype)
+
+		if not fetch_from_doctype.get_field(source_fieldname):
+			dontmanage.throw(
+				_("Fetch From for field {0} is invalid: {1} does not have a field {2}").format(
+					dontmanage.bold(fieldname), dontmanage.bold(doctype), dontmanage.bold(source_fieldname)
+				)
+			)
 
 	fields = meta.get("fields")
 	fieldname_list = [d.fieldname for d in fields]
@@ -1452,7 +1645,6 @@ def validate_fields(meta):
 
 		check_illegal_characters(d.fieldname)
 		check_invalid_fieldnames(meta.get("name"), d.fieldname)
-		check_unique_fieldname(meta.get("name"), d.fieldname)
 		check_fieldname_length(d.fieldname)
 		check_hidden_and_mandatory(meta.get("name"), d)
 		check_unique_and_text(meta.get("name"), d)
@@ -1462,6 +1654,7 @@ def validate_fields(meta):
 		validate_data_field_type(d)
 
 		if not dontmanage.flags.in_migrate:
+			check_unique_fieldname(meta.get("name"), d.fieldname)
 			check_link_table_options(meta.get("name"), d)
 			check_illegal_mandatory(meta.get("name"), d)
 			check_dynamic_link_options(d)
@@ -1472,6 +1665,7 @@ def validate_fields(meta):
 			check_child_table_option(d)
 			check_max_height(d)
 			check_no_of_ratings(d)
+			check_fetch_from(d)
 
 	if not dontmanage.flags.in_migrate:
 		check_fold(fields)
@@ -1489,6 +1683,7 @@ def get_fields_not_allowed_in_list_view(meta) -> list[str]:
 	not_allowed_in_list_view.append("Attach Image")
 	if meta.istable:
 		not_allowed_in_list_view.remove("Button")
+		not_allowed_in_list_view.remove("HTML")
 	return not_allowed_in_list_view
 
 
@@ -1505,22 +1700,12 @@ def validate_permissions_for_doctype(doctype, for_remove=False, alert=False):
 
 
 def clear_permissions_cache(doctype):
+	from dontmanage.cache_manager import clear_user_cache
+
 	dontmanage.clear_cache(doctype=doctype)
 	delete_notification_count_for(doctype)
-	for user in dontmanage.db.sql_list(
-		"""
-		SELECT
-			DISTINCT `tabHas Role`.`parent`
-		FROM
-			`tabHas Role`,
-			`tabDocPerm`
-		WHERE `tabDocPerm`.`parent` = %s
-			AND `tabDocPerm`.`role` = `tabHas Role`.`role`
-			AND `tabHas Role`.`parenttype` = 'User'
-		""",
-		doctype,
-	):
-		dontmanage.clear_cache(user=user)
+
+	clear_user_cache()
 
 
 def validate_permissions(doctype, for_remove=False, alert=False):
@@ -1538,9 +1723,7 @@ def validate_permissions(doctype, for_remove=False, alert=False):
 		return _("For {0} at level {1} in {2} in row {3}").format(d.role, d.permlevel, d.parent, d.idx)
 
 	def check_atleast_one_set(d):
-		if (
-			not d.select and not d.read and not d.write and not d.submit and not d.cancel and not d.create
-		):
+		if not d.select and not d.read and not d.write and not d.submit and not d.cancel and not d.create:
 			dontmanage.throw(_("{0}: No basic permissions set").format(get_txt(d)))
 
 	def check_double(d):
@@ -1561,7 +1744,7 @@ def validate_permissions(doctype, for_remove=False, alert=False):
 			)
 
 	def check_level_zero_is_set(d):
-		if cint(d.permlevel) > 0 and d.role != "All":
+		if cint(d.permlevel) > 0 and d.role not in (ALL_USER_ROLE, SYSTEM_USER_ROLE):
 			has_zero_perm = False
 			for p in permissions:
 				if p.role == d.role and (p.permlevel or 0) == 0 and p != d:
@@ -1570,7 +1753,9 @@ def validate_permissions(doctype, for_remove=False, alert=False):
 
 			if not has_zero_perm:
 				dontmanage.throw(
-					_("{0}: Permission at level 0 must be set before higher levels are set").format(get_txt(d))
+					_("{0}: Permission at level 0 must be set before higher levels are set").format(
+						get_txt(d)
+					)
 				)
 
 			for invalid in ("create", "submit", "cancel", "amend"):
@@ -1598,11 +1783,6 @@ def validate_permissions(doctype, for_remove=False, alert=False):
 			d.set("import", 0)
 			d.set("export", 0)
 
-		for ptype, label in [["set_user_permissions", _("Set User Permissions")]]:
-			if d.get(ptype):
-				d.set(ptype, 0)
-				dontmanage.msgprint(_("{0} cannot be set for Single types").format(label))
-
 	def check_if_submittable(d):
 		if d.submit and not issubmittable:
 			dontmanage.throw(_("{0}: Cannot set Assign Submit if not Submittable").format(get_txt(d)))
@@ -1618,11 +1798,11 @@ def validate_permissions(doctype, for_remove=False, alert=False):
 			return
 
 		if doctype.custom:
-			if d.role == "All":
+			if d.role in AUTOMATIC_ROLES:
 				dontmanage.throw(
-					_("Row # {0}: Non administrator user can not set the role {1} to the custom doctype").format(
-						d.idx, dontmanage.bold(_("All"))
-					),
+					_(
+						"Row # {0}: Non administrator user can not set the role {1} to the custom doctype"
+					).format(d.idx, dontmanage.bold(_(d.role))),
 					title=_("Permissions Error"),
 				)
 
@@ -1630,9 +1810,9 @@ def validate_permissions(doctype, for_remove=False, alert=False):
 
 			if d.role in roles:
 				dontmanage.throw(
-					_("Row # {0}: Non administrator user can not set the role {1} to the custom doctype").format(
-						d.idx, dontmanage.bold(_(d.role))
-					),
+					_(
+						"Row # {0}: Non administrator user can not set the role {1} to the custom doctype"
+					).format(d.idx, dontmanage.bold(_(d.role))),
 					title=_("Permissions Error"),
 				)
 
@@ -1672,15 +1852,16 @@ def make_module_and_roles(doc, perm_fieldname="permissions"):
 				m.custom = 1
 			m.insert()
 
-		default_roles = ["Administrator", "Guest", "All"]
-		roles = [p.role for p in doc.get("permissions") or []] + default_roles
+		roles = [p.role for p in doc.get("permissions") or []] + list(AUTOMATIC_ROLES)
 
 		for role in list(set(roles)):
 			if dontmanage.db.table_exists("Role", cached=False) and not dontmanage.db.exists("Role", role):
-				r = dontmanage.get_doc(dict(doctype="Role", role_name=role, desk_access=1))
+				r = dontmanage.new_doc("Role")
+				r.role_name = role
+				r.desk_access = 1
 				r.flags.ignore_mandatory = r.flags.ignore_permissions = True
 				r.insert()
-	except dontmanage.DoesNotExistError as e:
+	except dontmanage.DoesNotExistError:
 		pass
 	except dontmanage.db.ProgrammingError as e:
 		if dontmanage.db.is_table_missing(e):
@@ -1693,12 +1874,8 @@ def check_fieldname_conflicts(docfield):
 	"""Checks if fieldname conflicts with methods or properties"""
 	doc = dontmanage.get_doc({"doctype": docfield.dt})
 	available_objects = [x for x in dir(doc) if isinstance(x, str)]
-	property_list = [
-		x for x in available_objects if isinstance(getattr(type(doc), x, None), property)
-	]
-	method_list = [
-		x for x in available_objects if x not in property_list and callable(getattr(doc, x))
-	]
+	property_list = [x for x in available_objects if is_a_property(getattr(type(doc), x, None))]
+	method_list = [x for x in available_objects if x not in property_list and callable(getattr(doc, x))]
 	msg = _("Fieldname {0} conflicting with meta object").format(docfield.fieldname)
 
 	if docfield.fieldname in method_list + property_list:
@@ -1706,7 +1883,7 @@ def check_fieldname_conflicts(docfield):
 
 
 def clear_linked_doctype_cache():
-	dontmanage.cache().delete_value("linked_doctypes_without_ignore_user_permissions_enabled")
+	dontmanage.cache.delete_value("linked_doctypes_without_ignore_user_permissions_enabled")
 
 
 def check_email_append_to(doc):
@@ -1747,3 +1924,14 @@ def get_field(doc, fieldname):
 	for field in doc.fields:
 		if field.fieldname == fieldname:
 			return field
+
+
+@dontmanage.whitelist()
+def get_row_size_utilization(doctype: str) -> float:
+	"""Get row size utilization in percentage"""
+
+	dontmanage.has_permission("DocType", throw=True)
+	try:
+		return flt(dontmanage.db.get_row_size(doctype) / dontmanage.db.MAX_ROW_SIZE_LIMIT * 100, 2)
+	except Exception:
+		return 0.0

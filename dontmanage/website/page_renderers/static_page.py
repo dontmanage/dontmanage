@@ -8,7 +8,18 @@ import dontmanage
 from dontmanage.website.page_renderers.base_renderer import BaseRenderer
 from dontmanage.website.utils import is_binary_file
 
-UNSUPPORTED_STATIC_PAGE_TYPES = ("html", "md", "js", "xml", "css", "txt", "py", "json")
+UNSUPPORTED_STATIC_PAGE_TYPES = (
+	"css",
+	"html",
+	"js",
+	"json",
+	"md",
+	"py",
+	"pyc",
+	"pyo",
+	"txt",
+	"xml",
+)
 
 
 class StaticPage(BaseRenderer):

@@ -1,17 +1,22 @@
 # Copyright (c) 2015, DontManage and Contributors
 # License: MIT. See LICENSE
+import base64
+import contextlib
 import io
+import mimetypes
 import os
 import re
 import subprocess
-from distutils.version import LooseVersion
+from urllib.parse import parse_qs, urlparse
 
 import pdfkit
 from bs4 import BeautifulSoup
-from PyPDF2 import PdfReader, PdfWriter
+from packaging.version import Version
+from pypdf import PdfReader, PdfWriter
 
 import dontmanage
 from dontmanage import _
+from dontmanage.core.doctype.file.utils import find_file_by_url
 from dontmanage.utils import scrub_urls
 from dontmanage.utils.jinja_globals import bundled_asset, is_rtl
 
@@ -23,6 +28,52 @@ PDF_CONTENT_ERRORS = [
 ]
 
 
+def pdf_header_html(soup, head, content, styles, html_id, css):
+	return dontmanage.render_template(
+		"templates/print_formats/pdf_header_footer.html",
+		{
+			"head": head,
+			"content": content,
+			"styles": styles,
+			"html_id": html_id,
+			"css": css,
+			"lang": dontmanage.local.lang,
+			"layout_direction": "rtl" if is_rtl() else "ltr",
+		},
+	)
+
+
+def pdf_body_html(template, args, **kwargs):
+	try:
+		return template.render(args, filters={"len": len})
+	except Exception as e:
+		# Guess line number ?
+		dontmanage.throw(
+			_("Error in print format on line {0}: {1}").format(
+				_guess_template_error_line_number(template), e
+			),
+			exc=dontmanage.PrintFormatError,
+			title=_("Print Format Error"),
+		)
+
+
+def _guess_template_error_line_number(template) -> int | None:
+	"""Guess line on which exception occured from current traceback."""
+	with contextlib.suppress(Exception):
+		import sys
+		import traceback
+
+		_, _, tb = sys.exc_info()
+
+		for frame in reversed(traceback.extract_tb(tb)):
+			if template.filename in frame.filename:
+				return frame.lineno
+
+
+def pdf_footer_html(soup, head, content, styles, html_id, css):
+	return pdf_header_html(soup=soup, head=head, content=content, styles=styles, html_id=html_id, css=css)
+
+
 def get_pdf(html, options=None, output: PdfWriter | None = None):
 	html = scrub_urls(html)
 	html, options = prepare_options(html, options)
@@ -30,7 +81,7 @@ def get_pdf(html, options=None, output: PdfWriter | None = None):
 	options.update({"disable-javascript": "", "disable-local-file-access": ""})
 
 	filedata = ""
-	if LooseVersion(get_wkhtmltopdf_version()) > LooseVersion("0.12.3"):
+	if Version(get_wkhtmltopdf_version()) > Version("0.12.3"):
 		options.update({"disable-smart-shrinking": ""})
 
 	try:
@@ -72,7 +123,6 @@ def get_pdf(html, options=None, output: PdfWriter | None = None):
 
 
 def get_file_data_from_writer(writer_obj):
-
 	# https://docs.python.org/3/library/io.html
 	stream = io.BytesIO()
 	writer_obj.write(stream)
@@ -111,6 +161,7 @@ def prepare_options(html, options):
 
 	# cookies
 	options.update(get_cookie_options())
+	html = inline_private_images(html)
 
 	# page size
 	pdf_page_size = (
@@ -178,7 +229,35 @@ def read_options_from_html(html):
 	return str(soup), options
 
 
-def prepare_header_footer(soup):
+def inline_private_images(html) -> str:
+	soup = BeautifulSoup(html, "html.parser")
+	for img in soup.find_all("img"):
+		if b64 := _get_base64_image(img["src"]):
+			img["src"] = b64
+	return str(soup)
+
+
+def _get_base64_image(src):
+	"""Return base64 version of image if user has permission to view it"""
+	try:
+		parsed_url = urlparse(src)
+		path = parsed_url.path
+		query = parse_qs(parsed_url.query)
+		mime_type = mimetypes.guess_type(path)[0]
+		if not mime_type.startswith("image/"):
+			return
+		filename = query.get("fid") and query["fid"][0] or None
+		file = find_file_by_url(path, name=filename)
+		if not file or not file.is_private:
+			return
+
+		b64_encoded_image = base64.b64encode(file.get_content()).decode()
+		return f"data:{mime_type};base64,{b64_encoded_image}"
+	except Exception:
+		dontmanage.logger("pdf").error("Failed to convert inline images to base64", exc_info=True)
+
+
+def prepare_header_footer(soup: BeautifulSoup):
 	options = {}
 
 	head = soup.find("head").contents
@@ -189,24 +268,24 @@ def prepare_header_footer(soup):
 
 	# extract header and footer
 	for html_id in ("header-html", "footer-html"):
-		content = soup.find(id=html_id)
-		if content:
-			# there could be multiple instances of header-html/footer-html
+		if content := soup.find(id=html_id):
+			content = content.extract()
+			# `header/footer-html` are extracted, rendered as html
+			# and passed in wkhtmltopdf options (as '--header/footer-html')
+			# Remove instances of them from main content for render_template
 			for tag in soup.find_all(id=html_id):
 				tag.extract()
 
 			toggle_visible_pdf(content)
-			html = dontmanage.render_template(
-				"templates/print_formats/pdf_header_footer.html",
-				{
-					"head": head,
-					"content": content,
-					"styles": styles,
-					"html_id": html_id,
-					"css": css,
-					"lang": dontmanage.local.lang,
-					"layout_direction": "rtl" if is_rtl() else "ltr",
-				},
+			id_map = {"header-html": "pdf_header_html", "footer-html": "pdf_footer_html"}
+			hook_func = dontmanage.get_hooks(id_map.get(html_id))
+			html = dontmanage.get_attr(hook_func[-1])(
+				soup=soup,
+				head=head,
+				content=content,
+				styles=styles,
+				html_id=html_id,
+				css=css,
 			)
 
 			# create temp file
@@ -242,13 +321,13 @@ def toggle_visible_pdf(soup):
 
 
 def get_wkhtmltopdf_version():
-	wkhtmltopdf_version = dontmanage.cache().hget("wkhtmltopdf_version", None)
+	wkhtmltopdf_version = dontmanage.cache.hget("wkhtmltopdf_version", None)
 
 	if not wkhtmltopdf_version:
 		try:
 			res = subprocess.check_output(["wkhtmltopdf", "--version"])
 			wkhtmltopdf_version = res.decode("utf-8").split(" ")[1]
-			dontmanage.cache().hset("wkhtmltopdf_version", None, wkhtmltopdf_version)
+			dontmanage.cache.hset("wkhtmltopdf_version", None, wkhtmltopdf_version)
 		except Exception:
 			pass
 

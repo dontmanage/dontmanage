@@ -5,18 +5,40 @@ import json
 
 import dontmanage
 from dontmanage.model.document import Document
+from dontmanage.permissions import AUTOMATIC_ROLES
 from dontmanage.utils import get_fullname, parse_addr
 
 exclude_from_linked_with = True
 
 
 class ToDo(Document):
+	# begin: auto-generated types
+	# This code is auto-generated. Do not modify anything in this block.
+
+	from typing import TYPE_CHECKING
+
+	if TYPE_CHECKING:
+		from dontmanage.types import DF
+
+		allocated_to: DF.Link | None
+		assigned_by: DF.Link | None
+		assigned_by_full_name: DF.ReadOnly | None
+		assignment_rule: DF.Link | None
+		color: DF.Color | None
+		date: DF.Date | None
+		description: DF.TextEditor
+		priority: DF.Literal["High", "Medium", "Low"]
+		reference_name: DF.DynamicLink | None
+		reference_type: DF.Link | None
+		role: DF.Link | None
+		sender: DF.Data | None
+		status: DF.Literal["Open", "Closed", "Cancelled"]
+	# end: auto-generated types
 	DocType = "ToDo"
 
 	def validate(self):
 		self._assignment = None
 		if self.is_new():
-
 			if self.assigned_by == self.allocated_to:
 				assignment_message = dontmanage._("{0} self assigned this task: {1}").format(
 					get_fullname(self.assigned_by), self.description
@@ -60,9 +82,7 @@ class ToDo(Document):
 
 	def delete_communication_links(self):
 		# unlink todo from linked comments
-		return dontmanage.db.delete(
-			"Communication Link", {"link_doctype": self.doctype, "link_name": self.name}
-		)
+		return dontmanage.db.delete("Communication Link", {"link_doctype": self.doctype, "link_name": self.name})
 
 	def update_in_reference(self):
 		if not (self.reference_type and self.reference_name):
@@ -74,20 +94,28 @@ class ToDo(Document):
 				filters={
 					"reference_type": self.reference_type,
 					"reference_name": self.reference_name,
-					"status": ("!=", "Cancelled"),
+					"status": ("not in", ("Cancelled", "Closed")),
 					"allocated_to": ("is", "set"),
 				},
 				pluck="allocated_to",
 			)
 			assignments.reverse()
 
-			dontmanage.db.set_value(
-				self.reference_type,
-				self.reference_name,
-				"_assign",
-				json.dumps(assignments),
-				update_modified=False,
-			)
+			if dontmanage.get_meta(self.reference_type).issingle:
+				dontmanage.db.set_single_value(
+					self.reference_type,
+					"_assign",
+					json.dumps(assignments),
+					update_modified=False,
+				)
+			else:
+				dontmanage.db.set_value(
+					self.reference_type,
+					self.reference_name,
+					"_assign",
+					json.dumps(assignments),
+					update_modified=False,
+				)
 
 		except Exception as e:
 			if dontmanage.db.is_table_missing(e) and dontmanage.flags.in_install:
@@ -120,8 +148,7 @@ def get_permission_query_conditions(user):
 		user = dontmanage.session.user
 
 	todo_roles = dontmanage.permissions.get_doctype_roles("ToDo")
-	if "All" in todo_roles:
-		todo_roles.remove("All")
+	todo_roles = set(todo_roles) - set(AUTOMATIC_ROLES)
 
 	if any(check in todo_roles for check in dontmanage.get_roles(user)):
 		return None
@@ -134,8 +161,7 @@ def get_permission_query_conditions(user):
 def has_permission(doc, ptype="read", user=None):
 	user = user or dontmanage.session.user
 	todo_roles = dontmanage.permissions.get_doctype_roles("ToDo", ptype)
-	if "All" in todo_roles:
-		todo_roles.remove("All")
+	todo_roles = set(todo_roles) - set(AUTOMATIC_ROLES)
 
 	if any(check in todo_roles for check in dontmanage.get_roles(user)):
 		return True

@@ -6,11 +6,11 @@ import subprocess
 import sys
 import time
 import urllib.request
-from functools import lru_cache
+from functools import cache
 from urllib.error import HTTPError
 
 
-@lru_cache(maxsize=None)
+@cache
 def fetch_pr_data(pr_number, repo, endpoint=""):
 	api_url = f"https://api.github.com/repos/{repo}/pulls/{pr_number}"
 
@@ -82,9 +82,7 @@ def is_ci(file):
 
 
 def is_frontend_code(file):
-	return file.lower().endswith(
-		(".css", ".scss", ".less", ".sass", ".styl", ".js", ".ts", ".vue", ".html")
-	)
+	return file.lower().endswith((".css", ".scss", ".less", ".sass", ".styl", ".js", ".ts", ".vue", ".html"))
 
 
 def is_docs(file):
@@ -100,8 +98,7 @@ if __name__ == "__main__":
 
 	# this is a push build, run all builds
 	if not pr_number:
-		os.system('echo "::set-output name=build::strawberry"')
-		os.system('echo "::set-output name=build-server::strawberry"')
+		os.system('echo "build=strawberry" >> $GITHUB_OUTPUT')
 		sys.exit(0)
 
 	files_list = files_list or get_files_list(pr_number=pr_number, repo=repo)
@@ -144,4 +141,4 @@ if __name__ == "__main__":
 		print("Only Python code was updated, stopping Cypress build process.")
 		sys.exit(0)
 
-	os.system('echo "::set-output name=build::strawberry"')
+	os.system('echo "build=strawberry" >> $GITHUB_OUTPUT')

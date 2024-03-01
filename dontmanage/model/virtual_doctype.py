@@ -1,8 +1,12 @@
-from typing import Protocol
+import inspect
+from typing import Protocol, runtime_checkable
 
 import dontmanage
+from dontmanage import _
+from dontmanage.model.base_document import get_controller
 
 
+@runtime_checkable
 class VirtualDoctype(Protocol):
 	"""This class documents requirements that must be met by a doctype controller to function as virtual doctype
 
@@ -50,3 +54,40 @@ class VirtualDoctype(Protocol):
 	def delete(self, *args, **kwargs) -> None:
 		"""Delete the current document from backend"""
 		...
+
+
+def validate_controller(doctype: str) -> None:
+	try:
+		controller = get_controller(doctype)
+	except ImportError:
+		dontmanage.msgprint(_("Failed to import virtual doctype {}, is controller file present?").format(doctype))
+		return
+
+	def _as_str(method):
+		if hasattr(method, "__module__"):
+			return f"{method.__module__}.{method.__qualname__}"
+		return "None"
+
+	expected_static_method = ["get_list", "get_count", "get_stats"]
+	for m in expected_static_method:
+		method = inspect.getattr_static(controller, m, None)
+		if not isinstance(method, staticmethod):
+			dontmanage.msgprint(
+				_("Virtual DocType {} requires a static method called {} found {}").format(
+					dontmanage.bold(doctype), dontmanage.bold(m), dontmanage.bold(_as_str(method))
+				),
+				title=_("Incomplete Virtual Doctype Implementation"),
+			)
+
+	expected_instance_methods = ["db_insert", "db_update", "load_from_db", "delete"]
+	parent_class = controller.mro()[1]
+	for m in expected_instance_methods:
+		method = getattr(controller, m, None)
+		original_method = getattr(parent_class, m, None)
+		if method == original_method:
+			dontmanage.msgprint(
+				_("Virtual DocType {} requires overriding an instance method called {} found {}").format(
+					dontmanage.bold(doctype), dontmanage.bold(m), dontmanage.bold(_as_str(method))
+				),
+				title=_("Incomplete Virtual Doctype Implementation"),
+			)

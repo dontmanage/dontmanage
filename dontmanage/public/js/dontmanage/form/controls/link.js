@@ -87,10 +87,10 @@ dontmanage.ui.form.ControlLink = class ControlLink extends dontmanage.ui.form.Co
 		return this.is_translatable() ? __(value) : value;
 	}
 	is_translatable() {
-		return in_list(dontmanage.boot?.translated_doctypes || [], this.get_options());
+		return (dontmanage.boot?.translated_doctypes || []).includes(this.get_options());
 	}
 	is_title_link() {
-		return in_list(dontmanage.boot?.link_title_doctypes || [], this.get_options());
+		return (dontmanage.boot?.link_title_doctypes || []).includes(this.get_options());
 	}
 	async set_link_title(value) {
 		const doctype = this.get_options();
@@ -184,6 +184,7 @@ dontmanage.ui.form.ControlLink = class ControlLink extends dontmanage.ui.form.Co
 		this.$input.cache = {};
 
 		this.awesomplete = new Awesomplete(me.input, {
+			tabSelect: true,
 			minChars: 0,
 			maxItems: 99,
 			autoFirst: true,
@@ -221,7 +222,7 @@ dontmanage.ui.form.ControlLink = class ControlLink extends dontmanage.ui.form.Co
 				return $("<li></li>")
 					.data("item.autocomplete", d)
 					.prop("aria-selected", "false")
-					.html(`<a><p title="${_label}">${html}</p></a>`)
+					.html(`<a><p title="${dontmanage.utils.escape_html(_label)}">${html}</p></a>`)
 					.get(0);
 			},
 			sort: function () {
@@ -251,6 +252,7 @@ dontmanage.ui.form.ControlLink = class ControlLink extends dontmanage.ui.form.Co
 					doctype: doctype,
 					ignore_user_permissions: me.df.ignore_user_permissions,
 					reference_doctype: me.get_reference_doctype() || "",
+					page_length: cint(dontmanage.boot.sysdefaults.link_field_results_limit) || 10,
 				};
 
 				me.set_custom_query(args);
@@ -264,26 +266,28 @@ dontmanage.ui.form.ControlLink = class ControlLink extends dontmanage.ui.form.Co
 						if (!window.Cypress && !me.$input.is(":focus")) {
 							return;
 						}
-						r.results = me.merge_duplicates(r.results);
+						r.message = me.merge_duplicates(r.message);
 
 						// show filter description in awesomplete
-						if (args.filters) {
-							let filter_string = me.get_filter_description(args.filters);
-							if (filter_string) {
-								r.results.push({
-									html: `<span class="text-muted" style="line-height: 1.5">${filter_string}</span>`,
-									value: "",
-									action: () => {},
-								});
-							}
+						let filter_string = me.df.filter_description
+							? me.df.filter_description
+							: args.filters
+							? me.get_filter_description(args.filters)
+							: null;
+						if (filter_string) {
+							r.message.push({
+								html: `<span class="text-muted" style="line-height: 1.5">${filter_string}</span>`,
+								value: "",
+								action: () => {},
+							});
 						}
 
 						if (!me.df.only_select) {
 							if (dontmanage.model.can_create(doctype)) {
 								// new item
-								r.results.push({
+								r.message.push({
 									html:
-										"<span class='text-primary link-option'>" +
+										"<span class='link-option'>" +
 										"<i class='fa fa-plus' style='margin-right: 5px;'></i> " +
 										__("Create a new {0}", [__(me.get_options())]) +
 										"</span>",
@@ -299,15 +303,15 @@ dontmanage.ui.form.ControlLink = class ControlLink extends dontmanage.ui.form.Co
 								dontmanage.ui.form.ControlLink.link_options(me);
 
 							if (custom__link_options) {
-								r.results = r.results.concat(custom__link_options);
+								r.message = r.message.concat(custom__link_options);
 							}
 
 							// advanced search
 							if (locals && locals["DocType"]) {
 								// not applicable in web forms
-								r.results.push({
+								r.message.push({
 									html:
-										"<span class='text-primary link-option'>" +
+										"<span class='link-option'>" +
 										"<i class='fa fa-search' style='margin-right: 5px;'></i> " +
 										__("Advanced Search") +
 										"</span>",
@@ -317,7 +321,7 @@ dontmanage.ui.form.ControlLink = class ControlLink extends dontmanage.ui.form.Co
 								});
 							}
 						}
-						me.$input.cache[doctype][term] = r.results;
+						me.$input.cache[doctype][term] = r.message;
 						me.awesomplete.list = me.$input.cache[doctype][term];
 						me.toggle_href(doctype);
 					},
@@ -473,9 +477,10 @@ dontmanage.ui.form.ControlLink = class ControlLink extends dontmanage.ui.form.Co
 				filter[3].push("...");
 			}
 
-			let value = filter[3] == null || filter[3] === "" ? __("empty") : String(filter[3]);
+			let value =
+				filter[3] == null || filter[3] === "" ? __("empty") : String(__(filter[3]));
 
-			return [__(label).bold(), filter[2], value.bold()].join(" ");
+			return [__(label).bold(), __(filter[2]), value.bold()].join(" ");
 		}
 
 		let filter_string = filter_array.map(get_filter_description).join(", ");

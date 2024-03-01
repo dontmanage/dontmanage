@@ -3,14 +3,14 @@ dontmanage.RoleEditor = class {
 		this.frm = frm;
 		this.wrapper = wrapper;
 		this.disable = disable;
-		let user_roles = this.frm.doc.roles.map((a) => a.role);
+		let user_roles = this.frm.doc.roles ? this.frm.doc.roles.map((a) => a.role) : [];
 		this.multicheck = dontmanage.ui.form.make_control({
 			parent: wrapper,
 			df: {
 				fieldname: "roles",
 				fieldtype: "MultiCheck",
 				select_all: true,
-				columns: 3,
+				columns: "15rem",
 				get_data: () => {
 					return dontmanage
 						.xcall("dontmanage.core.doctype.user.user.get_all_roles")
@@ -59,7 +59,7 @@ dontmanage.RoleEditor = class {
 				const $body = $(this.perm_dialog.body);
 				if (!permissions.length) {
 					$body.append(`<div class="text-muted text-center padding">
-						${__("{0} role does not have permission on any doctype", [role])}
+						${__("{0} role does not have permission on any doctype", [__(role)])}
 					</div>`);
 				} else {
 					$body.append(`
@@ -68,7 +68,7 @@ dontmanage.RoleEditor = class {
 								<tr>
 									<th> ${__("Document Type")} </th>
 									<th> ${__("Level")} </th>
-									${dontmanage.perm.rights.map((p) => `<th> ${dontmanage.unscrub(p)}</th>`).join("")}
+									${dontmanage.perm.rights.map((p) => `<th> ${__(dontmanage.unscrub(p))}</th>`).join("")}
 								</tr>
 							</thead>
 							<tbody></tbody>
@@ -77,7 +77,7 @@ dontmanage.RoleEditor = class {
 					permissions.forEach((perm) => {
 						$body.find("tbody").append(`
 							<tr>
-								<td>${perm.parent}</td>
+								<td>${__(perm.parent)}</td>
 								<td>${perm.permlevel}</td>
 								${dontmanage.perm.rights
 									.map(
@@ -91,7 +91,7 @@ dontmanage.RoleEditor = class {
 						`);
 					});
 				}
-				this.perm_dialog.set_title(role);
+				this.perm_dialog.set_title(__(role));
 				this.perm_dialog.show();
 			});
 	}
@@ -102,8 +102,10 @@ dontmanage.RoleEditor = class {
 
 		this.perm_dialog.$wrapper
 			.find(".modal-dialog")
-			.css("width", "1200px")
-			.css("max-width", "80vw");
+			.css("width", "auto")
+			.css("max-width", "1200px");
+
+		this.perm_dialog.$wrapper.find(".modal-body").css("overflow", "overlay");
 	}
 	show() {
 		this.reset();

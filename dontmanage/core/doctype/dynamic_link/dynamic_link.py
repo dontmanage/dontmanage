@@ -6,6 +6,21 @@ from dontmanage.model.document import Document
 
 
 class DynamicLink(Document):
+	# begin: auto-generated types
+	# This code is auto-generated. Do not modify anything in this block.
+
+	from typing import TYPE_CHECKING
+
+	if TYPE_CHECKING:
+		from dontmanage.types import DF
+
+		link_doctype: DF.Link
+		link_name: DF.DynamicLink
+		link_title: DF.ReadOnly | None
+		parent: DF.Data
+		parentfield: DF.Data
+		parenttype: DF.Data
+	# end: auto-generated types
 	pass
 
 
@@ -17,7 +32,7 @@ def deduplicate_dynamic_links(doc):
 	links, duplicate = [], False
 	for l in doc.links or []:
 		t = (l.link_doctype, l.link_name)
-		if not t in links:
+		if t not in links:
 			links.append(t)
 		else:
 			duplicate = True

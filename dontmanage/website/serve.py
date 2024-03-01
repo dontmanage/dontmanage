@@ -13,7 +13,7 @@ def get_response(path=None, http_status_code=200):
 	endpoint = path
 
 	try:
-		path_resolver = PathResolver(path)
+		path_resolver = PathResolver(path, http_status_code)
 		endpoint, renderer_instance = path_resolver.resolve()
 		response = renderer_instance.render()
 	except dontmanage.Redirect:
@@ -23,7 +23,6 @@ def get_response(path=None, http_status_code=200):
 	except dontmanage.PageDoesNotExistError:
 		response = NotFoundPage(endpoint, http_status_code).render()
 	except Exception as e:
-		dontmanage.log_error(f"{path} failed")
 		response = ErrorPage(exception=e).render()
 
 	return response

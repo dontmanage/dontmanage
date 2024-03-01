@@ -3,11 +3,14 @@
 import hashlib
 import json
 import time
+from collections.abc import Generator, Iterable
+from typing import TYPE_CHECKING, Any, Optional
 
 from werkzeug.exceptions import NotFound
 
 import dontmanage
 from dontmanage import _, is_whitelisted, msgprint
+from dontmanage.core.doctype.file.utils import relink_mismatched_files
 from dontmanage.core.doctype.server_script.server_script_utils import run_server_script_for_doc_event
 from dontmanage.desk.form.document_follow import follow_document
 from dontmanage.integrations.doctype.webhook import run_webhooks
@@ -17,9 +20,13 @@ from dontmanage.model.docstatus import DocStatus
 from dontmanage.model.naming import set_new_name, validate_name
 from dontmanage.model.utils import is_virtual_doctype
 from dontmanage.model.workflow import set_workflow_state_on_action, validate_workflow
-from dontmanage.utils import cstr, date_diff, file_lock, flt, get_datetime_str, now
-from dontmanage.utils.data import get_absolute_url
+from dontmanage.types import DF
+from dontmanage.utils import compare, cstr, date_diff, file_lock, flt, get_datetime_str, now
+from dontmanage.utils.data import get_absolute_url, get_datetime, get_timedelta, getdate
 from dontmanage.utils.global_search import update_global_search
+
+if TYPE_CHECKING:
+	from dontmanage.core.doctype.docfield.docfield import DocField
 
 
 def get_doc(*args, **kwargs):
@@ -79,6 +86,15 @@ def get_doc(*args, **kwargs):
 class Document(BaseDocument):
 	"""All controllers inherit from `Document`."""
 
+	doctype: DF.Data
+	name: DF.Data | None
+	flags: dontmanage._dict[str, Any]
+	owner: DF.Link
+	creation: DF.Datetime
+	modified: DF.Datetime
+	modified_by: DF.Link
+	idx: DF.Int
+
 	def __init__(self, *args, **kwargs):
 		"""Constructor.
 
@@ -120,11 +136,9 @@ class Document(BaseDocument):
 			# incorrect arguments. let's not proceed.
 			raise ValueError("Illegal arguments")
 
-	@staticmethod
-	def whitelist(fn):
-		"""Decorator: Whitelist method to be called remotely via REST API."""
-		dontmanage.whitelist()(fn)
-		return fn
+	@property
+	def is_locked(self):
+		return file_lock.lock_exists(self.get_signature())
 
 	def load_from_db(self):
 		"""Load document and children from database and create properties
@@ -142,9 +156,14 @@ class Document(BaseDocument):
 			self._fix_numeric_types()
 
 		else:
+			get_value_kwargs = {"for_update": self.flags.for_update, "as_dict": True}
+			if not isinstance(self.name, dict | list):
+				get_value_kwargs["order_by"] = None
+
 			d = dontmanage.db.get_value(
-				self.doctype, self.name, "*", as_dict=1, for_update=self.flags.for_update
+				doctype=self.doctype, filters=self.name, fieldname="*", **get_value_kwargs
 			)
+
 			if not d:
 				dontmanage.throw(
 					_("{0} {1} not found").format(_(self.doctype), self.name), dontmanage.DoesNotExistError
@@ -192,14 +211,13 @@ class Document(BaseDocument):
 	def check_permission(self, permtype="read", permlevel=None):
 		"""Raise `dontmanage.PermissionError` if not permitted"""
 		if not self.has_permission(permtype):
-			self.raise_no_permission_to(permlevel or permtype)
+			self.raise_no_permission_to(permtype)
 
-	def has_permission(self, permtype="read", verbose=False) -> bool:
+	def has_permission(self, permtype="read", *, debug=False, user=None) -> bool:
 		"""
 		Call `dontmanage.permissions.has_permission` if `ignore_permissions` flag isn't truthy
 
 		:param permtype: `read`, `write`, `submit`, `cancel`, `delete`, etc.
-		:param verbose: DEPRECATED, will be removed in a future release.
 		"""
 
 		if self.flags.ignore_permissions:
@@ -207,11 +225,13 @@ class Document(BaseDocument):
 
 		import dontmanage.permissions
 
-		return dontmanage.permissions.has_permission(self.doctype, permtype, self)
+		return dontmanage.permissions.has_permission(self.doctype, permtype, self, debug=debug, user=user)
 
 	def raise_no_permission_to(self, perm_type):
 		"""Raise `dontmanage.PermissionError`."""
-		dontmanage.flags.error_message = _("Insufficient Permission for {0}").format(self.doctype)
+		dontmanage.flags.error_message = (
+			_("Insufficient Permission for {0}").format(self.doctype) + f" ({dontmanage.bold(_(perm_type))})"
+		)
 		raise dontmanage.PermissionError
 
 	def insert(
@@ -227,9 +247,15 @@ class Document(BaseDocument):
 		This will check for user permissions and execute `before_insert`,
 		`validate`, `on_update`, `after_insert` methods if they are written.
 
-		:param ignore_permissions: Do not check permissions if True."""
+		:param ignore_permissions: Do not check permissions if True.
+		:param ignore_links: Do not check validity of links if True.
+		:param ignore_if_duplicate: Do not raise error if a duplicate entry exists.
+		:param ignore_mandatory: Do not check missing mandatory fields if True.
+		:param set_name: Name to set for the document, if valid.
+		:param set_child_names: Whether to set names for the child documents.
+		"""
 		if self.flags.in_print:
-			return
+			return self
 
 		self.flags.notifications_executed = []
 
@@ -279,9 +305,7 @@ class Document(BaseDocument):
 		if self.get("amended_from"):
 			self.copy_attachments_from_amended_from()
 
-		# flag to prevent creation of event update log for create and update both
-		# during document creation
-		self.flags.update_log_for_doc_creation = True
+		relink_mismatched_files(self)
 		self.run_post_save_methods()
 		self.flags.in_insert = False
 
@@ -293,12 +317,14 @@ class Document(BaseDocument):
 		if hasattr(self, "__unsaved"):
 			delattr(self, "__unsaved")
 
-		if not (
-			dontmanage.flags.in_migrate or dontmanage.local.flags.in_install or dontmanage.flags.in_setup_wizard
-		):
+		if not (dontmanage.flags.in_migrate or dontmanage.local.flags.in_install or dontmanage.flags.in_setup_wizard):
 			if dontmanage.get_cached_value("User", dontmanage.session.user, "follow_created_documents"):
 				follow_document(self.doctype, self.name, dontmanage.session.user)
 		return self
+
+	def check_if_locked(self):
+		if self.creation and self.is_locked:
+			raise dontmanage.DocumentLockedError
 
 	def save(self, *args, **kwargs):
 		"""Wrapper for _save"""
@@ -326,6 +352,8 @@ class Document(BaseDocument):
 		if self.get("__islocal") or not self.get("name"):
 			return self.insert()
 
+		self.check_if_locked()
+		self._set_defaults()
 		self.check_permission("write", "save")
 
 		self.set_user_and_timestamp()
@@ -367,7 +395,6 @@ class Document(BaseDocument):
 
 		# loop through attachments
 		for attach_item in get_attachments(self.doctype, self.amended_from):
-
 			# save attachments to new doc
 			_file = dontmanage.get_doc(
 				{
@@ -377,6 +404,7 @@ class Document(BaseDocument):
 					"attached_to_name": self.name,
 					"attached_to_doctype": self.doctype,
 					"folder": "Home/Attachments",
+					"is_private": attach_item.is_private,
 				}
 			)
 			_file.save()
@@ -386,51 +414,61 @@ class Document(BaseDocument):
 		for df in self.meta.get_table_fields():
 			self.update_child_table(df.fieldname, df)
 
-	def update_child_table(self, fieldname, df=None):
+	def update_child_table(self, fieldname: str, df: Optional["DocField"] = None):
 		"""sync child table for given fieldname"""
-		rows = []
-		if not df:
-			df = self.meta.get_field(fieldname)
+		df: "DocField" = df or self.meta.get_field(fieldname)
+		all_rows = self.get(df.fieldname)
 
-		for d in self.get(df.fieldname):
-			d.db_update()
-			rows.append(d.name)
-
-		if (
-			df.options in (self.flags.ignore_children_type or [])
+		# delete rows that do not match the ones in the document
+		# if the doctype isn't in ignore_children_type flag and isn't virtual
+		if not (
+			df.options in (self.flags.ignore_children_type or ())
 			or dontmanage.get_meta(df.options).is_virtual == 1
 		):
-			# do not delete rows for this because of flags
-			# hack for docperm :(
-			return
+			existing_row_names = [row.name for row in all_rows if row.name and not row.is_new()]
 
-		if rows:
-			# select rows that do not match the ones in the document
-			deleted_rows = dontmanage.db.sql(
-				"""select name from `tab{}` where parent=%s
-				and parenttype=%s and parentfield=%s
-				and name not in ({})""".format(
-					df.options, ",".join(["%s"] * len(rows))
-				),
-				[self.name, self.doctype, fieldname] + rows,
-			)
-			if len(deleted_rows) > 0:
-				# delete rows that do not match the ones in the document
-				dontmanage.db.delete(df.options, {"name": ("in", tuple(row[0] for row in deleted_rows))})
-
-		else:
-			# no rows found, delete all rows
-			dontmanage.db.delete(
-				df.options, {"parent": self.name, "parenttype": self.doctype, "parentfield": fieldname}
+			tbl = dontmanage.qb.DocType(df.options)
+			qry = (
+				dontmanage.qb.from_(tbl)
+				.where(tbl.parent == self.name)
+				.where(tbl.parenttype == self.doctype)
+				.where(tbl.parentfield == fieldname)
+				.delete()
 			)
 
-	def get_doc_before_save(self):
+			if existing_row_names:
+				qry = qry.where(tbl.name.notin(existing_row_names))
+
+			qry.run()
+
+		# update / insert
+		for d in all_rows:
+			d: Document
+			d.db_update()
+
+	def get_doc_before_save(self) -> "Document":
 		return getattr(self, "_doc_before_save", None)
 
 	def has_value_changed(self, fieldname):
-		"""Returns true if value is changed before and after saving"""
+		"""Return True if value has changed before and after saving."""
+		from datetime import date, datetime, timedelta
+
 		previous = self.get_doc_before_save()
-		return previous.get(fieldname) != self.get(fieldname) if previous else True
+
+		if not previous:
+			return True
+
+		previous_value = previous.get(fieldname)
+		current_value = self.get(fieldname)
+
+		if isinstance(previous_value, datetime):
+			current_value = get_datetime(current_value)
+		elif isinstance(previous_value, date):
+			current_value = getdate(current_value)
+		elif isinstance(previous_value, timedelta):
+			current_value = get_timedelta(current_value)
+
+		return previous_value != current_value
 
 	def set_new_name(self, force=False, set_name=None, set_child_names=True):
 		"""Calls `dontmanage.naming.set_new_name` for parent and child docs."""
@@ -438,8 +476,10 @@ class Document(BaseDocument):
 		if self.flags.name_set and not force:
 			return
 
+		autoname = self.meta.autoname or ""
+
 		# If autoname has set as Prompt (name)
-		if self.get("__newname"):
+		if self.get("__newname") and autoname.lower() == "prompt":
 			self.name = validate_name(self.doctype, self.get("__newname"))
 			self.flags.name_set = True
 			return
@@ -530,6 +570,7 @@ class Document(BaseDocument):
 		self._validate_selects()
 		self._validate_non_negative()
 		self._validate_length()
+		self._fix_rating_value()
 		self._validate_code_fields()
 		self._sync_autoname_field()
 		self._extract_images_from_text_editor()
@@ -562,20 +603,28 @@ class Document(BaseDocument):
 					_("Row"),
 					self.idx,
 					_("Value cannot be negative for"),
-					dontmanage.bold(_(df.label)),
+					dontmanage.bold(_(df.label, context=df.parent)),
 				)
 			else:
 				return _("Value cannot be negative for {0}: {1}").format(
-					_(df.parent), dontmanage.bold(_(df.label))
+					_(df.parent), dontmanage.bold(_(df.label, context=df.parent))
 				)
 
 		for df in self.meta.get(
 			"fields", {"non_negative": ("=", 1), "fieldtype": ("in", ["Int", "Float", "Currency"])}
 		):
-
 			if flt(self.get(df.fieldname)) < 0:
 				msg = get_msg(df)
 				dontmanage.throw(msg, dontmanage.NonNegativeError, title=_("Negative Value"))
+
+	def _fix_rating_value(self):
+		for field in self.meta.get("fields", {"fieldtype": "Rating"}):
+			value = self.get(field.fieldname)
+			if not isinstance(value, float):
+				value = flt(value)
+
+			# Make sure rating is between 0 and 1
+			self.set(field.fieldname, max(0, min(value, 1)))
 
 	def validate_workflow(self):
 		"""Validate if the workflow transition is valid"""
@@ -641,23 +690,15 @@ class Document(BaseDocument):
 		return same
 
 	def apply_fieldlevel_read_permissions(self):
-		"""Remove values the user is not allowed to read (called when loading in desk)"""
-
+		"""Remove values the user is not allowed to read."""
 		if dontmanage.session.user == "Administrator":
 			return
-
-		has_higher_permlevel = False
 
 		all_fields = self.meta.fields.copy()
 		for table_field in self.meta.get_table_fields():
 			all_fields += dontmanage.get_meta(table_field.options).fields or []
 
-		for df in all_fields:
-			if df.permlevel > 0:
-				has_higher_permlevel = True
-				break
-
-		if not has_higher_permlevel:
+		if all(df.permlevel == 0 for df in all_fields):
 			return
 
 		has_access_to = self.get_permlevel_access("read")
@@ -707,9 +748,7 @@ class Document(BaseDocument):
 		roles = dontmanage.get_roles()
 
 		for perm in self.get_permissions():
-			if (
-				perm.role in roles and perm.get(permission_type) and perm.permlevel not in allowed_permlevels
-			):
+			if perm.role in roles and perm.get(permission_type) and perm.permlevel not in allowed_permlevels:
 				allowed_permlevels.append(perm.permlevel)
 
 		return allowed_permlevels
@@ -733,16 +772,18 @@ class Document(BaseDocument):
 		if dontmanage.flags.in_import:
 			return
 
-		new_doc = dontmanage.new_doc(self.doctype, as_dict=True)
-		self.update_if_missing(new_doc)
+		if self.is_new():
+			new_doc = dontmanage.new_doc(self.doctype, as_dict=True)
+			self.update_if_missing(new_doc)
 
 		# children
 		for df in self.meta.get_table_fields():
-			new_doc = dontmanage.new_doc(df.options, as_dict=True)
+			new_doc = dontmanage.new_doc(df.options, parent_doc=self, parentfield=df.fieldname, as_dict=True)
 			value = self.get(df.fieldname)
 			if isinstance(value, list):
 				for d in value:
-					d.update_if_missing(new_doc)
+					if d.is_new():
+						d.update_if_missing(new_doc)
 
 	def check_if_latest(self):
 		"""Checks if `modified` timestamp provided by document being updated is same as the
@@ -854,7 +895,7 @@ class Document(BaseDocument):
 		if not missing:
 			return
 
-		for fieldname, msg in missing:
+		for idx, msg in missing:  # noqa: B007
 			msgprint(msg)
 
 		if dontmanage.flags.print_messages:
@@ -947,17 +988,17 @@ class Document(BaseDocument):
 					filters={"enabled": 1, "document_type": self.doctype},
 				)
 
-			self.flags.notifications = dontmanage.cache().hget(
-				"notifications", self.doctype, _get_notifications
-			)
+			self.flags.notifications = dontmanage.cache.hget("notifications", self.doctype, _get_notifications)
 
 		if not self.flags.notifications:
 			return
 
 		def _evaluate_alert(alert):
-			if not alert.name in self.flags.notifications_executed:
-				evaluate_alert(self, alert.name, alert.event)
-				self.flags.notifications_executed.append(alert.name)
+			if alert.name in self.flags.notifications_executed:
+				return
+
+			evaluate_alert(self, alert.name, alert.event)
+			self.flags.notifications_executed.append(alert.name)
 
 		event_map = {
 			"on_update": "Save",
@@ -977,49 +1018,47 @@ class Document(BaseDocument):
 			elif alert.event == "Method" and method == alert.method:
 				_evaluate_alert(alert)
 
-	@whitelist.__func__
 	def _submit(self):
 		"""Submit the document. Sets `docstatus` = 1, then saves."""
 		self.docstatus = DocStatus.submitted()
 		return self.save()
 
-	@whitelist.__func__
 	def _cancel(self):
 		"""Cancel the document. Sets `docstatus` = 2, then saves."""
 		self.docstatus = DocStatus.cancelled()
 		return self.save()
 
-	@whitelist.__func__
-	def _rename(
-		self, name: str, merge: bool = False, force: bool = False, validate_rename: bool = True
-	):
+	def _rename(self, name: str, merge: bool = False, force: bool = False, validate_rename: bool = True):
 		"""Rename the document. Triggers dontmanage.rename_doc, then reloads."""
 		from dontmanage.model.rename_doc import rename_doc
 
 		self.name = rename_doc(doc=self, new=name, merge=merge, force=force, validate=validate_rename)
 		self.reload()
 
-	@whitelist.__func__
+	@dontmanage.whitelist()
 	def submit(self):
 		"""Submit the document. Sets `docstatus` = 1, then saves."""
 		return self._submit()
 
-	@whitelist.__func__
+	@dontmanage.whitelist()
 	def cancel(self):
 		"""Cancel the document. Sets `docstatus` = 2, then saves."""
 		return self._cancel()
 
-	@whitelist.__func__
-	def rename(
-		self, name: str, merge: bool = False, force: bool = False, validate_rename: bool = True
-	):
+	@dontmanage.whitelist()
+	def rename(self, name: str, merge=False, force=False, validate_rename=True):
 		"""Rename the document to `name`. This transforms the current object."""
 		return self._rename(name=name, merge=merge, force=force, validate_rename=validate_rename)
 
-	def delete(self, ignore_permissions=False):
+	def delete(self, ignore_permissions=False, force=False, *, delete_permanently=False):
 		"""Delete document."""
 		return dontmanage.delete_doc(
-			self.doctype, self.name, ignore_permissions=ignore_permissions, flags=self.flags
+			self.doctype,
+			self.name,
+			ignore_permissions=ignore_permissions,
+			flags=self.flags,
+			force=force,
+			delete_permanently=delete_permanently,
 		)
 
 	def run_before_save_methods(self):
@@ -1108,7 +1147,11 @@ class Document(BaseDocument):
 
 	def reset_seen(self):
 		"""Clear _seen property and set current user as seen"""
-		if getattr(self.meta, "track_seen", False):
+		if (
+			getattr(self.meta, "track_seen", False)
+			and not getattr(self.meta, "issingle", False)
+			and not self.is_new()
+		):
 			dontmanage.db.set_value(
 				self.doctype, self.name, "_seen", json.dumps([dontmanage.session.user]), update_modified=False
 			)
@@ -1126,11 +1169,7 @@ class Document(BaseDocument):
 			after_commit=True,
 		)
 
-		if (
-			not self.meta.get("read_only")
-			and not self.meta.get("issingle")
-			and not self.meta.get("istable")
-		):
+		if not self.meta.get("read_only") and not self.meta.get("issingle") and not self.meta.get("istable"):
 			data = {"doctype": self.doctype, "name": self.name, "user": dontmanage.session.user}
 			dontmanage.publish_realtime("list_update", data, after_commit=True)
 
@@ -1167,22 +1206,31 @@ class Document(BaseDocument):
 		if self.name is None:
 			return
 
-		dontmanage.db.set_value(
-			self.doctype,
-			self.name,
-			fieldname,
-			value,
-			self.modified,
-			self.modified_by,
-			update_modified=update_modified,
-		)
+		if self.meta.issingle:
+			dontmanage.db.set_single_value(
+				self.doctype,
+				fieldname,
+				value,
+				modified=self.modified,
+				modified_by=self.modified_by,
+				update_modified=update_modified,
+			)
+		else:
+			dontmanage.db.set_value(
+				self.doctype,
+				self.name,
+				fieldname,
+				value,
+				self.modified,
+				self.modified_by,
+				update_modified=update_modified,
+			)
 
 		self.run_method("on_change")
 
 		if notify:
 			self.notify_update()
 
-		self.clear_cache()
 		if commit:
 			dontmanage.db.commit()
 
@@ -1211,9 +1259,12 @@ class Document(BaseDocument):
 		):
 			return
 
-		version = dontmanage.new_doc("Version")
+		doc_to_compare = self._doc_before_save
+		if not doc_to_compare and (amended_from := self.get("amended_from")):
+			doc_to_compare = dontmanage.get_doc(self.doctype, amended_from)
 
-		if is_useful_diff := version.update_version_info(self._doc_before_save, self):
+		version = dontmanage.new_doc("Version")
+		if version.update_version_info(doc_to_compare, self):
 			version.insert(ignore_permissions=True)
 
 			if not dontmanage.flags.in_migrate:
@@ -1289,7 +1340,7 @@ class Document(BaseDocument):
 		df = doc.meta.get_field(fieldname)
 		val2 = doc.cast(val2, df)
 
-		if not dontmanage.compare(val1, condition, val2):
+		if not compare(val1, condition, val2):
 			label = doc.meta.get_label(fieldname)
 			condition_str = error_condition_map.get(condition, condition)
 			if doc.get("parentfield"):
@@ -1333,15 +1384,13 @@ class Document(BaseDocument):
 		comment_type="Comment",
 		text=None,
 		comment_email=None,
-		link_doctype=None,
-		link_name=None,
 		comment_by=None,
 	):
 		"""Add a comment to this document.
 
 		:param comment_type: e.g. `Comment`. See Communication for more info."""
 
-		out = dontmanage.get_doc(
+		return dontmanage.get_doc(
 			{
 				"doctype": "Comment",
 				"comment_type": comment_type,
@@ -1350,36 +1399,40 @@ class Document(BaseDocument):
 				"reference_doctype": self.doctype,
 				"reference_name": self.name,
 				"content": text or comment_type,
-				"link_doctype": link_doctype,
-				"link_name": link_name,
 			}
 		).insert(ignore_permissions=True)
-		return out
 
 	def add_seen(self, user=None):
 		"""add the given/current user to list of users who have seen this document (_seen)"""
 		if not user:
 			user = dontmanage.session.user
 
-		if self.meta.track_seen and not dontmanage.flags.read_only:
+		if self.meta.track_seen and not dontmanage.flags.read_only and not self.meta.issingle:
 			_seen = self.get("_seen") or []
 			_seen = dontmanage.parse_json(_seen)
 
 			if user not in _seen:
 				_seen.append(user)
-				dontmanage.db.set_value(self.doctype, self.name, "_seen", json.dumps(_seen), update_modified=False)
+				dontmanage.db.set_value(
+					self.doctype, self.name, "_seen", json.dumps(_seen), update_modified=False
+				)
 				dontmanage.local.flags.commit = True
 
-	def add_viewed(self, user=None):
+	def add_viewed(self, user=None, force=False, unique_views=False):
 		"""add log to communication when a user views a document"""
 		if not user:
 			user = dontmanage.session.user
 
-		if hasattr(self.meta, "track_views") and self.meta.track_views:
+		if unique_views and dontmanage.db.exists(
+			"View Log", {"reference_doctype": self.doctype, "reference_name": self.name, "viewed_by": user}
+		):
+			return
+
+		if (hasattr(self.meta, "track_views") and self.meta.track_views) or force:
 			view_log = dontmanage.get_doc(
 				{
 					"doctype": "View Log",
-					"viewed_by": dontmanage.session.user,
+					"viewed_by": user,
 					"reference_doctype": self.doctype,
 					"reference_name": self.name,
 				}
@@ -1389,6 +1442,8 @@ class Document(BaseDocument):
 			else:
 				view_log.insert(ignore_permissions=True)
 				dontmanage.local.flags.commit = True
+
+			return view_log
 
 	def log_error(self, title=None, message=None):
 		"""Helper function to create an Error Log"""
@@ -1478,7 +1533,7 @@ class Document(BaseDocument):
 		if file_lock.lock_exists(signature):
 			lock_exists = True
 			if timeout:
-				for i in range(timeout):
+				for _ in range(timeout):
 					time.sleep(1)
 					if not file_lock.lock_exists(signature):
 						lock_exists = False
@@ -1494,16 +1549,18 @@ class Document(BaseDocument):
 		if self in dontmanage.local.locked_documents:
 			dontmanage.local.locked_documents.remove(self)
 
-	# validation helpers
-	def validate_from_to_dates(self, from_date_field, to_date_field):
-		"""
-		Generic validation to verify date sequence
-		"""
-		if date_diff(self.get(to_date_field), self.get(from_date_field)) < 0:
+	def validate_from_to_dates(self, from_date_field: str, to_date_field: str) -> None:
+		"""Validate that the value of `from_date_field` is not later than the value of `to_date_field`."""
+		from_date = self.get(from_date_field)
+		to_date = self.get(to_date_field)
+		if not (from_date and to_date):
+			return
+
+		if date_diff(to_date, from_date) < 0:
 			dontmanage.throw(
 				_("{0} must be after {1}").format(
-					dontmanage.bold(self.meta.get_label(to_date_field)),
-					dontmanage.bold(self.meta.get_label(from_date_field)),
+					dontmanage.bold(_(self.meta.get_label(to_date_field))),
+					dontmanage.bold(_(self.meta.get_label(from_date_field))),
 				),
 				dontmanage.exceptions.InvalidDates,
 			)
@@ -1520,8 +1577,7 @@ class Document(BaseDocument):
 			pluck="allocated_to",
 		)
 
-		users = set(assigned_users)
-		return users
+		return set(assigned_users)
 
 	def add_tag(self, tag):
 		"""Add a Tag to this document"""
@@ -1575,10 +1631,67 @@ def execute_action(__doctype, __name, __action, **kwargs):
 		dontmanage.db.rollback()
 
 		# add a comment (?)
-		if dontmanage.local.message_log:
-			msg = json.loads(dontmanage.local.message_log[-1]).get("message")
+		if dontmanage.message_log:
+			msg = dontmanage.message_log[-1].get("message")
 		else:
 			msg = "<pre><code>" + dontmanage.get_traceback() + "</pre></code>"
 
 		doc.add_comment("Comment", _("Action Failed") + "<br><br>" + msg)
 	doc.notify_update()
+
+
+def bulk_insert(
+	doctype: str,
+	documents: Iterable["Document"],
+	ignore_duplicates: bool = False,
+	chunk_size=10_000,
+):
+	"""Insert simple Documents objects to database in bulk.
+
+	Warning/Info:
+	        - All documents are inserted without triggering ANY hooks.
+	        - This function assumes you've done the due dilligence and inserts in similar fashion as db_insert
+	        - Documents can be any iterable / generator containing Document objects
+	"""
+
+	doctype_meta = dontmanage.get_meta(doctype)
+	documents = list(documents)
+
+	valid_column_map = {
+		doctype: doctype_meta.get_valid_columns(),
+	}
+	values_map = {
+		doctype: _document_values_generator(documents, valid_column_map[doctype]),
+	}
+
+	for child_table in doctype_meta.get_table_fields():
+		valid_column_map[child_table.options] = dontmanage.get_meta(child_table.options).get_valid_columns()
+		values_map[child_table.options] = _document_values_generator(
+			(
+				ch_doc
+				for ch_doc in (
+					child_docs for doc in documents for child_docs in doc.get(child_table.fieldname)
+				)
+			),
+			valid_column_map[child_table.options],
+		)
+
+	for dt, docs in values_map.items():
+		dontmanage.db.bulk_insert(
+			dt, valid_column_map[dt], docs, ignore_duplicates=ignore_duplicates, chunk_size=chunk_size
+		)
+
+
+def _document_values_generator(
+	documents: Iterable["Document"],
+	columns: list[str],
+) -> Generator[tuple[Any], None, None]:
+	for doc in documents:
+		doc.creation = doc.modified = now()
+		doc.owner = doc.modified_by = dontmanage.session.user
+		doc_values = doc.get_valid_dict(
+			convert_dates_to_str=True,
+			ignore_nulls=True,
+			ignore_virtual=True,
+		)
+		yield tuple(doc_values.get(col) for col in columns)

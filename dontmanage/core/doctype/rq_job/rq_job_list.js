@@ -14,11 +14,6 @@ dontmanage.listview_settings["RQ Job"] = {
 			__("Actions")
 		);
 
-		if (listview.list_view_settings) {
-			listview.list_view_settings.disable_count = 1;
-			listview.list_view_settings.disable_sidebar_stats = 1;
-		}
-
 		dontmanage.xcall("dontmanage.utils.scheduler.get_scheduler_status").then(({ status }) => {
 			if (status === "active") {
 				listview.page.set_indicator(__("Scheduler: Active"), "green");
@@ -47,9 +42,16 @@ dontmanage.listview_settings["RQ Job"] = {
 		});
 
 		setInterval(() => {
-			if (!listview.list_view_settings.disable_auto_refresh) {
-				listview.refresh();
+			if (listview.list_view_settings.disable_auto_refresh) {
+				return;
 			}
-		}, 5000);
+
+			const route = dontmanage.get_route() || [];
+			if (route[0] != "List" || "RQ Job" != route[1]) {
+				return;
+			}
+
+			listview.refresh();
+		}, 15000);
 	},
 };

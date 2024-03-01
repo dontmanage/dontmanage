@@ -12,16 +12,33 @@ from dontmanage.utils import cstr
 
 
 class UserPermission(Document):
+	# begin: auto-generated types
+	# This code is auto-generated. Do not modify anything in this block.
+
+	from typing import TYPE_CHECKING
+
+	if TYPE_CHECKING:
+		from dontmanage.types import DF
+
+		allow: DF.Link
+		applicable_for: DF.Link | None
+		apply_to_all_doctypes: DF.Check
+		for_value: DF.DynamicLink
+		hide_descendants: DF.Check
+		is_default: DF.Check
+		user: DF.Link
+
+	# end: auto-generated types
 	def validate(self):
 		self.validate_user_permission()
 		self.validate_default_permission()
 
 	def on_update(self):
-		dontmanage.cache().hdel("user_permissions", self.user)
+		dontmanage.cache.hdel("user_permissions", self.user)
 		dontmanage.publish_realtime("update_user_permissions", user=self.user, after_commit=True)
 
 	def on_trash(self):
-		dontmanage.cache().hdel("user_permissions", self.user)
+		dontmanage.cache.hdel("user_permissions", self.user)
 		dontmanage.publish_realtime("update_user_permissions", user=self.user, after_commit=True)
 
 	def validate_user_permission(self):
@@ -60,6 +77,10 @@ class UserPermission(Document):
 			dontmanage.throw(_("{0} has already assigned default value for {1}.").format(ref_link, self.allow))
 
 
+def send_user_permissions(bootinfo):
+	bootinfo.user["user_permissions"] = get_user_permissions()
+
+
 @dontmanage.whitelist()
 def get_user_permissions(user=None):
 	"""Get all users permissions for the user as a dict of doctype"""
@@ -74,7 +95,7 @@ def get_user_permissions(user=None):
 	if not user or user in ("Administrator", "Guest"):
 		return {}
 
-	cached_user_permissions = dontmanage.cache().hget("user_permissions", user)
+	cached_user_permissions = dontmanage.cache.hget("user_permissions", user)
 
 	if cached_user_permissions is not None:
 		return cached_user_permissions
@@ -100,7 +121,6 @@ def get_user_permissions(user=None):
 			fields=["allow", "for_value", "applicable_for", "is_default", "hide_descendants"],
 			filters=dict(user=user),
 		):
-
 			meta = dontmanage.get_meta(perm.allow)
 			add_doc_to_perm(perm, perm.for_value, perm.is_default)
 
@@ -110,7 +130,7 @@ def get_user_permissions(user=None):
 					add_doc_to_perm(perm, doc, False)
 
 		out = dontmanage._dict(out)
-		dontmanage.cache().hset("user_permissions", user, out)
+		dontmanage.cache.hset("user_permissions", user, out)
 	except dontmanage.db.SQLError as e:
 		if dontmanage.db.is_table_missing(e):
 			# called from patch
@@ -124,12 +144,10 @@ def user_permission_exists(user, allow, for_value, applicable_for=None):
 	user_permissions = get_user_permissions(user).get(allow, [])
 	if not user_permissions:
 		return None
-	has_same_user_permission = find(
+	return find(
 		user_permissions,
 		lambda perm: perm["doc"] == for_value and perm.get("applicable_for") == applicable_for,
 	)
-
-	return has_same_user_permission
 
 
 @dontmanage.whitelist()
@@ -151,11 +169,7 @@ def get_applicable_for_doctype_list(doctype, txt, searchfield, start, page_len, 
 
 	linked_doctypes.sort()
 
-	return_list = []
-	for doctype in linked_doctypes[start:page_len]:
-		return_list.append([doctype])
-
-	return return_list
+	return [[doctype] for doctype in linked_doctypes[start:page_len]]
 
 
 def get_permitted_documents(doctype):
@@ -245,9 +259,7 @@ def add_user_permissions(data):
 		return 1
 	elif len(data.applicable_doctypes) > 0 and data.apply_to_all_doctypes != 1:
 		remove_apply_to_all(data.user, data.doctype, data.docname)
-		update_applicable(
-			perm_applied_docs, data.applicable_doctypes, data.user, data.doctype, data.docname
-		)
+		update_applicable(perm_applied_docs, data.applicable_doctypes, data.user, data.doctype, data.docname)
 		for applicable in data.applicable_doctypes:
 			if applicable not in perm_applied_docs:
 				insert_user_perm(

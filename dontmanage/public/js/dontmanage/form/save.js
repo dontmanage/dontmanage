@@ -64,7 +64,10 @@ dontmanage.ui.form.save = function (frm, action, callback, btn) {
 
 			const is_empty_row = function (cells) {
 				for (let i = 0; i < cells.length; i++) {
-					if (locals[doc.doctype][doc.name][cells[i].fieldname]) {
+					if (
+						locals[doc.doctype][doc.name] &&
+						locals[doc.doctype][doc.name][cells[i].fieldname]
+					) {
 						return false;
 					}
 				}
@@ -132,7 +135,7 @@ dontmanage.ui.form.save = function (frm, action, callback, btn) {
 						!dontmanage.model.has_value(doc.doctype, doc.name, df.fieldname)
 					) {
 						has_errors = true;
-						error_fields[error_fields.length] = __(df.label);
+						error_fields[error_fields.length] = __(df.label, null, df.parent);
 						// scroll to field
 						if (!frm.scroll_set) {
 							scroll_to(doc.parentfield || df.fieldname);
@@ -153,6 +156,7 @@ dontmanage.ui.form.save = function (frm, action, callback, btn) {
 
 			if (error_fields.length) {
 				let meta = dontmanage.get_meta(doc.doctype);
+				let message;
 				if (meta.istable) {
 					const table_field = dontmanage.meta.docfield_map[doc.parenttype][doc.parentfield];
 
@@ -160,12 +164,12 @@ dontmanage.ui.form.save = function (frm, action, callback, btn) {
 						table_field.label || dontmanage.unscrub(table_field.fieldname)
 					).bold();
 
-					var message = __("Mandatory fields required in table {0}, Row {1}", [
+					message = __("Mandatory fields required in table {0}, Row {1}", [
 						table_label,
 						doc.idx,
 					]);
 				} else {
-					var message = __("Mandatory fields required in {0}", [__(doc.doctype)]);
+					message = __("Mandatory fields required in {0}", [__(doc.doctype)]);
 				}
 				message = message + "<br><br><ul><li>" + error_fields.join("</li><li>") + "</ul>";
 				dontmanage.msgprint({

@@ -24,6 +24,15 @@ STANDARD_EXCLUSIONS = [
 	"*/patches/*",
 ]
 
+# tested via commands' test suite
+TESTED_VIA_CLI = [
+	"*/dontmanage/installer.py",
+	"*/dontmanage/build.py",
+	"*/dontmanage/database/__init__.py",
+	"*/dontmanage/database/db_manager.py",
+	"*/dontmanage/database/**/setup_db.py",
+]
+
 DONTMANAGE_EXCLUSIONS = [
 	"*/tests/*",
 	"*/commands/*",
@@ -33,6 +42,7 @@ DONTMANAGE_EXCLUSIONS = [
 	"*dontmanage/setup.py",
 	"*/doctype/*/*_dashboard.py",
 	"*/patches/*",
+	*TESTED_VIA_CLI,
 ]
 
 
@@ -64,3 +74,4 @@ class CodeCoverage:
 			self.coverage.stop()
 			self.coverage.save()
 			self.coverage.xml_report()
+			print("Saved Coverage")

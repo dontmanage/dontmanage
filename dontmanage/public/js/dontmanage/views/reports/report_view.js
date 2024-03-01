@@ -1,7 +1,7 @@
 /**
  * dontmanage.views.ReportView
  */
-import DataTable from "frappe-datatable";
+import DataTable from "dontmanage-datatable";
 
 window.DataTable = DataTable;
 dontmanage.provide("dontmanage.views");
@@ -33,7 +33,7 @@ dontmanage.views.ReportView = class ReportView extends dontmanage.views.ListView
 				this.filters = this.report_doc.json.filters;
 				this.order_by = this.report_doc.json.order_by;
 				this.add_totals_row = this.report_doc.json.add_totals_row;
-				this.page_title = this.report_name;
+				this.page_title = __(this.report_name);
 				this.page_length = this.report_doc.json.page_length || 20;
 				this.order_by = this.report_doc.json.order_by || "modified desc";
 				this.chart_args = this.report_doc.json.chart_args;
@@ -56,7 +56,7 @@ dontmanage.views.ReportView = class ReportView extends dontmanage.views.ListView
 		if (this.list_view_settings?.disable_auto_refresh) {
 			return;
 		}
-		dontmanage.socketio.doctype_subscribe(this.doctype);
+		dontmanage.realtime.doctype_subscribe(this.doctype);
 		dontmanage.realtime.on("list_update", (data) => this.on_update(data));
 	}
 
@@ -76,6 +76,7 @@ dontmanage.views.ReportView = class ReportView extends dontmanage.views.ListView
 		this.setup_charts_area();
 		this.$datatable_wrapper = $('<div class="datatable-wrapper">');
 		this.$result.append(this.$datatable_wrapper);
+		this.settings.onload && this.settings.onload(this);
 	}
 
 	setup_charts_area() {
@@ -334,7 +335,7 @@ dontmanage.views.ReportView = class ReportView extends dontmanage.views.ListView
 						columns_in_picker = columns[this.doctype]
 							.filter((df) => !this.is_column_added(df))
 							.map((df) => ({
-								label: __(df.label),
+								label: __(df.label, null, df.parent),
 								value: df.fieldname,
 							}));
 
@@ -344,7 +345,7 @@ dontmanage.views.ReportView = class ReportView extends dontmanage.views.ListView
 							columns[cdt]
 								.filter((df) => !this.is_column_added(df))
 								.map((df) => ({
-									label: __(df.label) + ` (${cdt})`,
+									label: __(df.label, null, df.parent) + ` (${cdt})`,
 									value: df.fieldname + "," + cdt,
 								}))
 								.forEach((df) => columns_in_picker.push(df));
@@ -889,14 +890,16 @@ dontmanage.views.ReportView = class ReportView extends dontmanage.views.ListView
 	get_columns_for_picker() {
 		let out = {};
 
-		const standard_fields_filter = (df) => !in_list(dontmanage.model.no_value_type, df.fieldtype);
+		const standard_fields_filter = (df) => !dontmanage.model.no_value_type.includes(df.fieldtype);
 
 		let doctype_fields = dontmanage.meta
 			.get_docfields(this.doctype)
 			.filter(standard_fields_filter);
 
 		// filter out docstatus field from picker
-		let std_fields = dontmanage.model.std_fields.filter((df) => df.fieldname !== "docstatus");
+		let std_fields = dontmanage.model.std_fields.filter(
+			(df) => !["docstatus", "_comments"].includes(df.fieldname)
+		);
 
 		// add status field derived from docstatus, if status is not a standard field
 		let has_status_values = false;
@@ -961,7 +964,7 @@ dontmanage.views.ReportView = class ReportView extends dontmanage.views.ListView
 					return !df.hidden && df.fieldname !== "name";
 				})
 				.map((df) => ({
-					label: __(df.label),
+					label: __(df.label, null, df.parent),
 					value: df.fieldname,
 					checked: this.fields.find(
 						(f) => f[0] === df.fieldname && f[1] === this.doctype
@@ -977,7 +980,7 @@ dontmanage.views.ReportView = class ReportView extends dontmanage.views.ListView
 			const cdt = df.options;
 
 			dialog_fields.push({
-				label: __(df.label) + ` (${__(cdt)})`,
+				label: __(df.label, null, df.parent) + ` (${__(cdt)})`,
 				fieldname: df.options,
 				fieldtype: "MultiCheck",
 				columns: 2,
@@ -986,7 +989,7 @@ dontmanage.views.ReportView = class ReportView extends dontmanage.views.ListView
 						return !df.hidden;
 					})
 					.map((df) => ({
-						label: __(df.label),
+						label: __(df.label, null, df.parent),
 						value: df.fieldname,
 						checked: this.fields.find((f) => f[0] === df.fieldname && f[1] === cdt),
 					})),
@@ -1075,7 +1078,7 @@ dontmanage.views.ReportView = class ReportView extends dontmanage.views.ListView
 		}
 		if (!docfield || docfield.report_hide) return;
 
-		let title = __(docfield.label);
+		let title = __(docfield.label, null, docfield.parent);
 		if (doctype !== this.doctype) {
 			title += ` (${__(doctype)})`;
 		}
@@ -1253,6 +1256,10 @@ dontmanage.views.ReportView = class ReportView extends dontmanage.views.ListView
 		return items;
 	}
 
+	clear_checked_items() {
+		this.datatable.rowmanager.checkAll(false);
+	}
+
 	save_report(save_type) {
 		const _save_report = (name) => {
 			// callback
@@ -1345,15 +1352,81 @@ dontmanage.views.ReportView = class ReportView extends dontmanage.views.ListView
 	get_filters_html_for_print() {
 		const filters = this.filter_area.get();
 
-		return filters
-			.map((f) => {
-				const [doctype, fieldname, condition, value] = f;
-				if (condition !== "=") return "";
-
-				const label = dontmanage.meta.get_label(doctype, fieldname);
-				return `<h6>${__(label)}: ${value}</h6>`;
-			})
-			.join("");
+		return (
+			`<h5>${__("Filters:")}</h5>` +
+			filters
+				.map((f) => {
+					const [doctype, fieldname, condition, value] = f;
+					const docfield = dontmanage.meta.get_docfield(doctype, fieldname);
+					const label = `<b>${__(dontmanage.meta.get_label(doctype, fieldname))}</b>`;
+					switch (condition) {
+						case "=":
+							return __("{0} is equal to {1}", [
+								label,
+								dontmanage.format(value, docfield),
+							]);
+						case "!=":
+							return __("{0} is not equal to {1}", [
+								__(label),
+								dontmanage.format(value, docfield),
+							]);
+						case ">":
+							return __("{0} is greater than {1}", [
+								__(label),
+								dontmanage.format(value, docfield),
+							]);
+						case "<":
+							return __("{0} is less than {1}", [
+								__(label),
+								dontmanage.format(value, docfield),
+							]);
+						case ">=":
+							return __("{0} is greater than or equal to {1}", [
+								__(label),
+								dontmanage.format(value, docfield),
+							]);
+						case "<=":
+							return __("{0} is less than or equal to {1}", [
+								__(label),
+								dontmanage.format(value, docfield),
+							]);
+						case "Between":
+							return __("{0} is between {1} and {2}", [
+								__(label),
+								dontmanage.format(value[0], docfield),
+								dontmanage.format(value[1], docfield),
+							]);
+						case "Timespan":
+							return __("{0} is within {1}", [__(label), __(value)]);
+						case "in":
+							return __("{0} is one of {1}", [
+								__(label),
+								dontmanage.utils.comma_or(
+									value.map((v) => dontmanage.format(v, docfield))
+								),
+							]);
+						case "not in":
+							return __("{0} is not one of {1}", [
+								__(label),
+								dontmanage.utils.comma_or(
+									value.map((v) => dontmanage.format(v, docfield))
+								),
+							]);
+						case "like":
+							return __("{0} is like {1}", [__(label), value]);
+						case "not like":
+							return __("{0} is not like {1}", [__(label), value]);
+						case "is":
+							return value === "set"
+								? __("{0} is set", [__(label)])
+								: __("{0} is not set", [__(label)]);
+						default:
+							return null;
+					}
+				})
+				.filter(Boolean)
+				.join("<br>")
+		);
 	}
 
 	get_columns_totals(data) {
@@ -1416,6 +1489,7 @@ dontmanage.views.ReportView = class ReportView extends dontmanage.views.ListView
 							print_settings: print_settings,
 							columns: this.columns,
 							data: rows_in_order,
+							can_use_smaller_font: 1,
 						});
 					});
 				},
@@ -1482,32 +1556,30 @@ dontmanage.views.ReportView = class ReportView extends dontmanage.views.ListView
 				action: () => {
 					const args = this.get_args();
 					const selected_items = this.get_checked_items(true);
-					let fields = [
-						{
-							fieldtype: "Select",
-							label: __("Select File Type"),
-							fieldname: "file_format_type",
-							options: ["Excel", "CSV"],
-							default: "Excel",
-						},
-					];
 
-					if (this.total_count > this.count_without_children || args.page_length) {
-						fields.push({
-							fieldtype: "Check",
-							fieldname: "export_all_rows",
-							label: __("Export All {0} rows?", [(this.total_count + "").bold()]),
-						});
+					let extra_fields = null;
+					if (this.total_count > (this.count_without_children || args.page_length)) {
+						extra_fields = [
+							{
+								fieldtype: "Check",
+								fieldname: "export_all_rows",
+								label: __("Export All {0} rows?", [`<b>${this.total_count}</b>`]),
+							},
+						];
 					}
 
-					const d = new dontmanage.ui.Dialog({
-						title: __("Export Report: {0}", [__(this.doctype)]),
-						fields: fields,
-						primary_action_label: __("Download"),
-						primary_action: (data) => {
+					const d = dontmanage.report_utils.get_export_dialog(
+						__(this.doctype),
+						extra_fields,
+						(data) => {
 							args.cmd = "dontmanage.desk.reportview.export_query";
-							args.file_format_type = data.file_format_type;
+							args.file_format_type = data.file_format;
 							args.title = this.report_name || this.doctype;
+
+							if (data.file_format == "CSV") {
+								args.csv_delimiter = data.csv_delimiter;
+								args.csv_quoting = data.csv_quoting;
+							}
 
 							if (this.add_totals_row) {
 								args.add_totals_row = 1;
@@ -1528,8 +1600,8 @@ dontmanage.views.ReportView = class ReportView extends dontmanage.views.ListView
 							open_url_post(dontmanage.request.url, args);
 
 							d.hide();
-						},
-					});
+						}
+					);
 
 					d.show();
 				},
@@ -1583,7 +1655,7 @@ dontmanage.views.ReportView = class ReportView extends dontmanage.views.ListView
 		}
 
 		// user permissions
-		if (this.report_name && dontmanage.model.can_set_user_permissions("Report")) {
+		if (this.report_name && dontmanage.user.has_role("System Manager")) {
 			items.push({
 				label: __("User Permissions"),
 				action: () => {
@@ -1603,5 +1675,35 @@ dontmanage.views.ReportView = class ReportView extends dontmanage.views.ListView
 		}
 
 		return items.map((i) => Object.assign(i, { standard: true }));
+	}
+
+	get_search_params() {
+		let search_params = super.get_search_params();
+		let config = this.group_by_control.get_settings();
+		if (config) {
+			search_params.append(
+				"_group_by",
+				JSON.stringify([config.group_by, config.aggregate_on, config.aggregate_function])
+			);
+		}
+		return search_params;
+	}
+
+	parse_filters_from_route_options() {
+		if (dontmanage.route_options?._group_by) {
+			try {
+				let config = JSON.parse(dontmanage.route_options._group_by);
+				this.group_by_control.apply_settings({
+					group_by: config[0],
+					aggregate_on: config[1],
+					aggregate_function: config[2],
+				});
+				delete dontmanage.route_options["_group_by"];
+			} catch (e) {
+				console.warn("Failed to parse group by from URL", e);
+			}
+		}
+
+		return super.parse_filters_from_route_options();
 	}
 };

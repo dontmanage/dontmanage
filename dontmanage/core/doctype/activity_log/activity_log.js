@@ -2,5 +2,8 @@
 // For license information, please see license.txt
 
 dontmanage.ui.form.on("Activity Log", {
-	refresh: function () {},
+	refresh: function (frm) {
+		// Nothing in this form is supposed to be editable.
+		frm.disable_form();
+	},
 });

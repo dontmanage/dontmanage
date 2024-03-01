@@ -13,8 +13,6 @@ dontmanage.listview_settings["Communication"] = {
 		"communication_date",
 	],
 
-	filters: [["status", "=", "Open"]],
-
 	onload: function (list_view) {
 		let method = "dontmanage.email.inbox.create_email_flag_queue";
 

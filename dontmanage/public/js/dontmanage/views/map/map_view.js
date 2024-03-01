@@ -1,7 +1,7 @@
 /**
  * dontmanage.views.MapView
  */
-dontmanage.provide("dontmanage.utils.utils");
+dontmanage.provide("dontmanage.utils");
 dontmanage.provide("dontmanage.views");
 
 dontmanage.views.MapView = class MapView extends dontmanage.views.ListView {
@@ -32,7 +32,7 @@ dontmanage.views.MapView = class MapView extends dontmanage.views.ListView {
 
 		this.$result.html(`<div id="${this.map_id}" class="map-view-container"></div>`);
 
-		L.Icon.Default.imagePath = "/assets/dontmanage/images/leaflet/";
+		L.Icon.Default.imagePath = dontmanage.utils.map_defaults.image_path;
 		this.map = L.map(this.map_id).setView(
 			dontmanage.utils.map_defaults.center,
 			dontmanage.utils.map_defaults.zoom

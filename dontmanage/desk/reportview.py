@@ -4,24 +4,23 @@
 """build query for doclistview and return results"""
 
 import json
-from io import StringIO
 
 import dontmanage
 import dontmanage.permissions
 from dontmanage import _
 from dontmanage.core.doctype.access_log.access_log import make_access_log
-from dontmanage.model import child_table_fields, default_fields, optional_fields
+from dontmanage.model import child_table_fields, default_fields, get_permitted_fields, optional_fields
 from dontmanage.model.base_document import get_controller
 from dontmanage.model.db_query import DatabaseQuery
 from dontmanage.model.utils import is_virtual_doctype
-from dontmanage.utils import add_user_info, cstr, format_duration
+from dontmanage.utils import add_user_info, format_duration
 
 
 @dontmanage.whitelist()
 @dontmanage.read_only()
 def get():
 	args = get_form_params()
-	# If virtual doctype get data from controller het_list method
+	# If virtual doctype, get data from controller get_list method
 	if is_virtual_doctype(args.doctype):
 		controller = get_controller(args.doctype)
 		data = compress(controller.get_list(args))
@@ -47,7 +46,7 @@ def get_list():
 
 @dontmanage.whitelist()
 @dontmanage.read_only()
-def get_count():
+def get_count() -> int:
 	args = get_form_params()
 
 	if is_virtual_doctype(args.doctype):
@@ -66,7 +65,7 @@ def execute(doctype, *args, **kwargs):
 
 
 def get_form_params():
-	"""Stringify GET request parameters."""
+	"""parse GET request parameters."""
 	data = dontmanage._dict(dontmanage.local.form_dict)
 	clean_params(data)
 	validate_args(data)
@@ -169,9 +168,7 @@ def raise_invalid_field(fieldname):
 def is_standard(fieldname):
 	if "." in fieldname:
 		fieldname = fieldname.split(".")[1].strip("`")
-	return (
-		fieldname in default_fields or fieldname in optional_fields or fieldname in child_table_fields
-	)
+	return fieldname in default_fields or fieldname in optional_fields or fieldname in child_table_fields
 
 
 def extract_fieldname(field):
@@ -202,9 +199,9 @@ def get_meta_and_docfield(fieldname, data):
 
 def update_wildcard_field_param(data):
 	if (isinstance(data.fields, str) and data.fields == "*") or (
-		isinstance(data.fields, (list, tuple)) and len(data.fields) == 1 and data.fields[0] == "*"
+		isinstance(data.fields, list | tuple) and len(data.fields) == 1 and data.fields[0] == "*"
 	):
-		data.fields = dontmanage.db.get_table_columns(data.doctype)
+		data.fields = get_permitted_fields(data.doctype, parenttype=data.parenttype)
 		return True
 
 	return False
@@ -216,12 +213,14 @@ def clean_params(data):
 
 
 def parse_json(data):
-	if isinstance(data.get("filters"), str):
-		data["filters"] = json.loads(data["filters"])
-	if isinstance(data.get("or_filters"), str):
-		data["or_filters"] = json.loads(data["or_filters"])
-	if isinstance(data.get("fields"), str):
-		data["fields"] = ["*"] if data["fields"] == "*" else json.loads(data["fields"])
+	if (filters := data.get("filters")) and isinstance(filters, str):
+		data["filters"] = json.loads(filters)
+	if (applied_filters := data.get("applied_filters")) and isinstance(applied_filters, str):
+		data["applied_filters"] = json.loads(applied_filters)
+	if (or_filters := data.get("or_filters")) and isinstance(or_filters, str):
+		data["or_filters"] = json.loads(or_filters)
+	if (fields := data.get("fields")) and isinstance(fields, str):
+		data["fields"] = ["*"] if fields == "*" else json.loads(fields)
 	if isinstance(data.get("docstatus"), str):
 		data["docstatus"] = json.loads(data["docstatus"])
 	if isinstance(data.get("save_user_settings"), str):
@@ -262,10 +261,7 @@ def compress(data, args=None):
 	values = []
 	keys = list(data[0])
 	for row in data:
-		new_row = []
-		for key in keys:
-			new_row.append(row.get(key))
-		values.append(new_row)
+		values.append([row.get(key) for key in keys])
 
 		# add user info for assignments (avatar)
 		if row.get("_assign", ""):
@@ -335,30 +331,21 @@ def delete_report(name):
 @dontmanage.read_only()
 def export_query():
 	"""export from report builder"""
-	title = dontmanage.form_dict.title
-	dontmanage.form_dict.pop("title", None)
+	from dontmanage.desk.utils import get_csv_bytes, pop_csv_params, provide_binary_file
 
 	form_params = get_form_params()
 	form_params["limit_page_length"] = None
 	form_params["as_list"] = True
-	doctype = form_params.doctype
-	add_totals_row = None
-	file_format_type = form_params["file_format_type"]
-	title = title or doctype
-
-	del form_params["doctype"]
-	del form_params["file_format_type"]
-
-	if "add_totals_row" in form_params and form_params["add_totals_row"] == "1":
-		add_totals_row = 1
-		del form_params["add_totals_row"]
+	doctype = form_params.pop("doctype")
+	file_format_type = form_params.pop("file_format_type")
+	title = form_params.pop("title", doctype)
+	csv_params = pop_csv_params(form_params)
+	add_totals_row = 1 if form_params.pop("add_totals_row", None) == "1" else None
 
 	dontmanage.permissions.can_export(doctype, raise_exception=True)
 
-	if "selected_items" in form_params:
-		si = json.loads(dontmanage.form_dict.get("selected_items"))
-		form_params["filters"] = {"name": ("in", si)}
-		del form_params["selected_items"]
+	if selection := form_params.pop("selected_items", None):
+		form_params["filters"] = {"name": ("in", json.loads(selection))}
 
 	make_access_log(
 		doctype=doctype,
@@ -373,39 +360,25 @@ def export_query():
 	if add_totals_row:
 		ret = append_totals_row(ret)
 
-	data = [[_("Sr")] + get_labels(db_query.fields, doctype)]
-	for i, row in enumerate(ret):
-		data.append([i + 1] + list(row))
-
+	data = [[_("Sr"), *get_labels(db_query.fields, doctype)]]
+	data.extend([i + 1, *list(row)] for i, row in enumerate(ret))
 	data = handle_duration_fieldtype_values(doctype, data, db_query.fields)
 
 	if file_format_type == "CSV":
-
-		# convert to csv
-		import csv
-
 		from dontmanage.utils.xlsxutils import handle_html
 
-		f = StringIO()
-		writer = csv.writer(f)
-		for r in data:
-			# encode only unicode type strings and not int, floats etc.
-			writer.writerow([handle_html(dontmanage.as_unicode(v)) if isinstance(v, str) else v for v in r])
-
-		f.seek(0)
-		dontmanage.response["result"] = cstr(f.read())
-		dontmanage.response["type"] = "csv"
-		dontmanage.response["doctype"] = title
-
+		file_extension = "csv"
+		content = get_csv_bytes(
+			[[handle_html(dontmanage.as_unicode(v)) if isinstance(v, str) else v for v in r] for r in data],
+			csv_params,
+		)
 	elif file_format_type == "Excel":
-
 		from dontmanage.utils.xlsxutils import make_xlsx
 
-		xlsx_file = make_xlsx(data, doctype)
+		file_extension = "xlsx"
+		content = make_xlsx(data, doctype).getvalue()
 
-		dontmanage.response["filename"] = title + ".xlsx"
-		dontmanage.response["filecontent"] = xlsx_file.getvalue()
-		dontmanage.response["type"] = "binary"
+	provide_binary_file(title, file_extension, content)
 
 
 def append_totals_row(data):
@@ -417,10 +390,10 @@ def append_totals_row(data):
 
 	for row in data:
 		for i in range(len(row)):
-			if isinstance(row[i], (float, int)):
+			if isinstance(row[i], float | int):
 				totals[i] = (totals[i] or 0) + row[i]
 
-	if not isinstance(totals[0], (int, float)):
+	if not isinstance(totals[0], int | float):
 		totals[0] = "Total"
 
 	data.append(totals)
@@ -432,16 +405,12 @@ def get_labels(fields, doctype):
 	"""get column labels based on column names"""
 	labels = []
 	for key in fields:
-		key = key.split(" as ")[0]
-
-		if key.startswith(("count(", "sum(", "avg(")):
+		try:
+			parenttype, fieldname = parse_field(key)
+		except ValueError:
 			continue
 
-		if "." in key:
-			parenttype, fieldname = key.split(".")[0][4:-1], key.split(".")[1].strip("`")
-		else:
-			parenttype = doctype
-			fieldname = fieldname.strip("`")
+		parenttype = parenttype or doctype
 
 		if parenttype == doctype and fieldname == "name":
 			label = _("ID", context="Label of name column in report")
@@ -460,17 +429,12 @@ def get_labels(fields, doctype):
 
 def handle_duration_fieldtype_values(doctype, data, fields):
 	for field in fields:
-		key = field.split(" as ")[0]
-
-		if key.startswith(("count(", "sum(", "avg(")):
+		try:
+			parenttype, fieldname = parse_field(field)
+		except ValueError:
 			continue
 
-		if "." in key:
-			parenttype, fieldname = key.split(".")[0][4:-1], key.split(".")[1].strip("`")
-		else:
-			parenttype = doctype
-			fieldname = field.strip("`")
-
+		parenttype = parenttype or doctype
 		df = dontmanage.get_meta(parenttype).get_field(fieldname)
 
 		if df and df.fieldtype == "Duration":
@@ -481,6 +445,20 @@ def handle_duration_fieldtype_values(doctype, data, fields):
 					duration_val = format_duration(val_in_seconds, df.hide_days)
 					data[i][index] = duration_val
 	return data
+
+
+def parse_field(field: str) -> tuple[str | None, str]:
+	"""Parse a field into parenttype and fieldname."""
+	key = field.split(" as ", 1)[0]
+
+	if key.startswith(("count(", "sum(", "avg(")):
+		raise ValueError
+
+	if "." in key:
+		table, column = key.split(".", 2)[:2]
+		return table[4:-1], column.strip("`")
+
+	return None, key.strip("`")
 
 
 @dontmanage.whitelist()
@@ -498,13 +476,16 @@ def delete_items():
 
 
 def delete_bulk(doctype, items):
+	undeleted_items = []
 	for i, d in enumerate(items):
 		try:
 			dontmanage.delete_doc(doctype, d)
 			if len(items) >= 5:
 				dontmanage.publish_realtime(
 					"progress",
-					dict(progress=[i + 1, len(items)], title=_("Deleting {0}").format(doctype), description=d),
+					dict(
+						progress=[i + 1, len(items)], title=_("Deleting {0}").format(doctype), description=d
+					),
 					user=dontmanage.session.user,
 				)
 			# Commit after successful deletion
@@ -512,7 +493,11 @@ def delete_bulk(doctype, items):
 		except Exception:
 			# rollback if any record failed to delete
 			# if not rollbacked, queries get committed on after_request method in app.py
+			undeleted_items.append(d)
 			dontmanage.db.rollback()
+	if undeleted_items and len(items) != len(undeleted_items):
+		dontmanage.clear_messages()
+		delete_bulk(doctype, undeleted_items)
 
 
 @dontmanage.whitelist()
@@ -539,55 +524,55 @@ def get_stats(stats, doctype, filters=None):
 
 	if filters is None:
 		filters = []
-	tags = json.loads(stats)
+	columns = json.loads(stats)
 	if filters:
 		filters = json.loads(filters)
-	stats = {}
+	results = {}
 
 	try:
-		columns = dontmanage.db.get_table_columns(doctype)
+		db_columns = dontmanage.db.get_table_columns(doctype)
 	except (dontmanage.db.InternalError, dontmanage.db.ProgrammingError):
 		# raised when _user_tags column is added on the fly
 		# raised if its a virtual doctype
-		columns = []
+		db_columns = []
 
-	for tag in tags:
-		if tag not in columns:
+	for column in columns:
+		if column not in db_columns:
 			continue
 		try:
 			tag_count = dontmanage.get_list(
 				doctype,
-				fields=[tag, "count(*)"],
-				filters=filters + [[tag, "!=", ""]],
-				group_by=tag,
+				fields=[column, "count(*)"],
+				filters=[*filters, [column, "!=", ""]],
+				group_by=column,
 				as_list=True,
 				distinct=1,
 			)
 
-			if tag == "_user_tags":
-				stats[tag] = scrub_user_tags(tag_count)
+			if column == "_user_tags":
+				results[column] = scrub_user_tags(tag_count)
 				no_tag_count = dontmanage.get_list(
 					doctype,
-					fields=[tag, "count(*)"],
-					filters=filters + [[tag, "in", ("", ",")]],
+					fields=[column, "count(*)"],
+					filters=[*filters, [column, "in", ("", ",")]],
 					as_list=True,
-					group_by=tag,
-					order_by=tag,
+					group_by=column,
+					order_by=column,
 				)
 
 				no_tag_count = no_tag_count[0][1] if no_tag_count else 0
 
-				stats[tag].append([_("No Tags"), no_tag_count])
+				results[column].append([_("No Tags"), no_tag_count])
 			else:
-				stats[tag] = tag_count
+				results[column] = tag_count
 
 		except dontmanage.db.SQLError:
 			pass
-		except dontmanage.db.InternalError as e:
+		except dontmanage.db.InternalError:
 			# raised when _user_tags column is added on the fly
 			pass
 
-	return stats
+	return results
 
 
 @dontmanage.whitelist()
@@ -601,14 +586,14 @@ def get_filter_dashboard_data(stats, doctype, filters=None):
 
 	columns = dontmanage.db.get_table_columns(doctype)
 	for tag in tags:
-		if not tag["name"] in columns:
+		if tag["name"] not in columns:
 			continue
 		tagcount = []
 		if tag["type"] not in ["Date", "Datetime"]:
 			tagcount = dontmanage.get_list(
 				doctype,
 				fields=[tag["name"], "count(*)"],
-				filters=filters + ["ifnull(`%s`,'')!=''" % tag["name"]],
+				filters=[*filters, "ifnull(`%s`,'')!=''" % tag["name"]],
 				group_by=tag["name"],
 				as_list=True,
 			)
@@ -630,12 +615,11 @@ def get_filter_dashboard_data(stats, doctype, filters=None):
 					dontmanage.get_list(
 						doctype,
 						fields=[tag["name"], "count(*)"],
-						filters=filters + ["({0} = '' or {0} is null)".format(tag["name"])],
+						filters=[*filters, "({0} = '' or {0} is null)".format(tag["name"])],
 						as_list=True,
 					)[0][1],
 				]
 				if data and data[1] != 0:
-
 					stats[tag["name"]].append(data)
 		else:
 			stats[tag["name"]] = tagcount
@@ -658,11 +642,7 @@ def scrub_user_tags(tagcount):
 
 				rdict[tag] += tagdict[t]
 
-	rlist = []
-	for tag in rdict:
-		rlist.append([tag, rdict[tag]])
-
-	return rlist
+	return [[tag, rdict[tag]] for tag in rdict]
 
 
 # used in building query in queries.py
@@ -675,17 +655,13 @@ def get_match_cond(doctype, as_condition=True):
 
 
 def build_match_conditions(doctype, user=None, as_condition=True):
-	match_conditions = DatabaseQuery(doctype, user=user).build_match_conditions(
-		as_condition=as_condition
-	)
+	match_conditions = DatabaseQuery(doctype, user=user).build_match_conditions(as_condition=as_condition)
 	if as_condition:
 		return match_conditions.replace("%", "%%")
 	return match_conditions
 
 
-def get_filters_cond(
-	doctype, filters, conditions, ignore_permissions=None, with_match_conditions=False
-):
+def get_filters_cond(doctype, filters, conditions, ignore_permissions=None, with_match_conditions=False):
 	if isinstance(filters, str):
 		filters = json.loads(filters)
 
@@ -697,7 +673,8 @@ def get_filters_cond(
 			for f in filters:
 				if isinstance(f[1], str) and f[1][0] == "!":
 					flt.append([doctype, f[0], "!=", f[1][1:]])
-				elif isinstance(f[1], (list, tuple)) and f[1][0] in (
+				elif isinstance(f[1], list | tuple) and f[1][0].lower() in (
+					"=",
 					">",
 					"<",
 					">=",
@@ -708,8 +685,8 @@ def get_filters_cond(
 					"in",
 					"not in",
 					"between",
+					"is",
 				):
-
 					flt.append([doctype, f[0], f[1][0], f[1][1]])
 				else:
 					flt.append([doctype, f[0], "=", f[1]])

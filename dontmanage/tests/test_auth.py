@@ -1,12 +1,19 @@
 # Copyright (c) 2021, DontManage and Contributors
 # License: MIT. See LICENSE
+import datetime
 import time
 
+import requests
+
 import dontmanage
-import dontmanage.utils
 from dontmanage.auth import LoginAttemptTracker
 from dontmanage.dontmanageclient import AuthError, DontManageClient
+from dontmanage.sessions import Session, get_expired_sessions, get_expiry_in_seconds
+from dontmanage.tests.test_api import DontManageAPITestCase
 from dontmanage.tests.utils import DontManageTestCase
+from dontmanage.utils import get_datetime, get_site_url, now
+from dontmanage.utils.data import add_to_date
+from dontmanage.www.login import _generate_temporary_login_link
 
 
 def add_user(email, password, username=None, mobile_no=None):
@@ -15,6 +22,7 @@ def add_user(email, password, username=None, mobile_no=None):
 		dict(doctype="User", email=email, first_name=first_name, username=username, mobile_no=mobile_no)
 	).insert()
 	user.new_password = password
+	user.simultaneous_sessions = 1
 	user.add_roles("System Manager")
 	dontmanage.db.commit()
 
@@ -23,9 +31,7 @@ class TestAuth(DontManageTestCase):
 	@classmethod
 	def setUpClass(cls):
 		super().setUpClass()
-		cls.HOST_NAME = dontmanage.get_site_config().host_name or dontmanage.utils.get_site_url(
-			dontmanage.local.site
-		)
+		cls.HOST_NAME = dontmanage.get_site_config().host_name or get_site_url(dontmanage.local.site)
 		cls.test_user_email = "test_auth@test.com"
 		cls.test_user_name = "test_auth_user"
 		cls.test_user_mobile = "+911234567890"
@@ -42,9 +48,12 @@ class TestAuth(DontManageTestCase):
 	@classmethod
 	def tearDownClass(cls):
 		dontmanage.delete_doc("User", cls.test_user_email, force=True)
+		dontmanage.local.request_ip = None
+		dontmanage.form_dict.email = None
+		dontmanage.local.response["http_status_code"] = None
 
 	def set_system_settings(self, k, v):
-		dontmanage.db.set_value("System Settings", "System Settings", k, v)
+		dontmanage.db.set_single_value("System Settings", k, v)
 		dontmanage.clear_cache()
 		dontmanage.db.commit()
 
@@ -123,13 +132,43 @@ class TestAuth(DontManageTestCase):
 		with self.assertRaises(Exception):
 			DontManageClient(self.HOST_NAME, self.test_user_email, self.test_user_password).get_list("ToDo")
 
+	def test_login_with_email_link(self):
+		user = self.test_user_email
+
+		# Logs in
+		res = requests.get(_generate_temporary_login_link(user, 10))
+		self.assertEqual(res.status_code, 200)
+		self.assertTrue(res.cookies.get("sid"))
+		self.assertNotEqual(res.cookies.get("sid"), "Guest")
+
+		# Random incorrect URL
+		res = requests.get(_generate_temporary_login_link(user, 10) + "aa")
+		self.assertEqual(res.cookies.get("sid"), "Guest")
+
+		# POST doesn't work
+		res = requests.post(_generate_temporary_login_link(user, 10))
+		self.assertEqual(res.status_code, 403)
+
+		# Rate limiting
+		for _ in range(6):
+			res = requests.get(_generate_temporary_login_link(user, 10))
+			if res.status_code == 417:
+				break
+		else:
+			self.fail("Rate limting not working")
+
+	def test_correct_cookie_expiry_set(self):
+		client = DontManageClient(self.HOST_NAME, self.test_user_email, self.test_user_password)
+
+		expiry_time = next(x for x in client.session.cookies if x.name == "sid").expires
+		current_time = datetime.datetime.now(tz=datetime.UTC).timestamp()
+		self.assertAlmostEqual(get_expiry_in_seconds(), expiry_time - current_time, delta=60 * 60)
+
 
 class TestLoginAttemptTracker(DontManageTestCase):
 	def test_account_lock(self):
 		"""Make sure that account locks after `n consecutive failures"""
-		tracker = LoginAttemptTracker(
-			user_name="tester", max_consecutive_login_attempts=3, lock_interval=60
-		)
+		tracker = LoginAttemptTracker("tester", max_consecutive_login_attempts=3, lock_interval=60)
 		# Clear the cache by setting attempt as success
 		tracker.add_success_attempt()
 
@@ -148,9 +187,7 @@ class TestLoginAttemptTracker(DontManageTestCase):
 	def test_account_unlock(self):
 		"""Make sure that locked account gets unlocked after lock_interval of time."""
 		lock_interval = 2  # In sec
-		tracker = LoginAttemptTracker(
-			user_name="tester", max_consecutive_login_attempts=1, lock_interval=lock_interval
-		)
+		tracker = LoginAttemptTracker("tester", max_consecutive_login_attempts=1, lock_interval=lock_interval)
 		# Clear the cache by setting attempt as success
 		tracker.add_success_attempt()
 
@@ -165,3 +202,27 @@ class TestLoginAttemptTracker(DontManageTestCase):
 
 		tracker.add_failure_attempt()
 		self.assertTrue(tracker.is_user_allowed())
+
+
+class TestSessionExpirty(DontManageAPITestCase):
+	def test_session_expires(self):
+		sid = self.sid  # triggers login for test case login
+		s: Session = dontmanage.local.session_obj
+
+		expiry_in = get_expiry_in_seconds()
+		session_created = now()
+
+		# Try with 1% increments of times, it should always work
+		for step in range(0, 100, 1):
+			seconds_elapsed = expiry_in * step / 100
+
+			time_now = add_to_date(session_created, seconds=seconds_elapsed, as_string=True)
+			with self.freeze_time(time_now):
+				data = s.get_session_data_from_db()
+				self.assertEqual(data.user, "Administrator")
+
+		# 1% higher should immediately expire
+		time_of_expiry = add_to_date(session_created, seconds=expiry_in * 1.01, as_string=True)
+		with self.freeze_time(time_of_expiry):
+			self.assertIn(sid, get_expired_sessions())
+			self.assertFalse(s.get_session_data_from_db())

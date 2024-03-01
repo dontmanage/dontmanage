@@ -55,7 +55,7 @@ def get_first_login(client):
 
 
 @dontmanage.whitelist()
-def delete_client(client_id):
+def delete_client(client_id: str):
 	active_client_id_tokens = dontmanage.get_all(
 		"OAuth Bearer Token", filters=[["user", "=", dontmanage.session.user], ["client", "=", client_id]]
 	)

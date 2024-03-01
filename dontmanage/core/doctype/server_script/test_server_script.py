@@ -3,6 +3,8 @@
 import requests
 
 import dontmanage
+from dontmanage.core.doctype.scheduled_job_type.scheduled_job_type import sync_jobs
+from dontmanage.dontmanageclient import DontManageClient, DontManageException
 from dontmanage.tests.utils import DontManageTestCase
 from dontmanage.utils import get_site_url
 
@@ -95,17 +97,18 @@ class TestServerScript(DontManageTestCase):
 			script_doc = dontmanage.get_doc(doctype="Server Script")
 			script_doc.update(script)
 			script_doc.insert()
-
+		cls.enable_safe_exec()
 		dontmanage.db.commit()
+		return super().setUpClass()
 
 	@classmethod
 	def tearDownClass(cls):
 		dontmanage.db.commit()
 		dontmanage.db.truncate("Server Script")
-		dontmanage.cache().delete_value("server_script_map")
+		dontmanage.cache.delete_value("server_script_map")
 
 	def setUp(self):
-		dontmanage.cache().delete_value("server_script_map")
+		dontmanage.cache.delete_value("server_script_map")
 
 	def test_doctype_event(self):
 		todo = dontmanage.get_doc(dict(doctype="ToDo", description="hello")).insert()
@@ -154,9 +157,7 @@ class TestServerScript(DontManageTestCase):
 		server_script.disabled = 0
 		server_script.save()
 
-		self.assertRaises(
-			AttributeError, dontmanage.get_doc(dict(doctype="ToDo", description="test me")).insert
-		)
+		self.assertRaises(AttributeError, dontmanage.get_doc(dict(doctype="ToDo", description="test me")).insert)
 
 		server_script.disabled = 1
 		server_script.save()
@@ -166,9 +167,7 @@ class TestServerScript(DontManageTestCase):
 		server_script.disabled = 0
 		server_script.save()
 
-		self.assertRaises(
-			AttributeError, dontmanage.get_doc(dict(doctype="ToDo", description="test me")).insert
-		)
+		self.assertRaises(AttributeError, dontmanage.get_doc(dict(doctype="ToDo", description="test me")).insert)
 
 		server_script.disabled = 1
 		server_script.save()
@@ -219,7 +218,7 @@ dontmanage.qb.from_(todo).select(todo.name).where(todo.name == "{todo.name}").ru
 			name="test_nested_scripts_1",
 			script_type="API",
 			api_method="test_nested_scripts_1",
-			script=f"""log("nothing")""",
+			script="""log("nothing")""",
 		)
 		script.insert()
 		script.execute_method()
@@ -229,7 +228,89 @@ dontmanage.qb.from_(todo).select(todo.name).where(todo.name == "{todo.name}").ru
 			name="test_nested_scripts_2",
 			script_type="API",
 			api_method="test_nested_scripts_2",
-			script=f"""dontmanage.call("test_nested_scripts_1")""",
+			script="""dontmanage.call("test_nested_scripts_1")""",
 		)
 		script.insert()
 		script.execute_method()
+
+	def test_server_script_rate_limiting(self):
+		script1 = dontmanage.get_doc(
+			doctype="Server Script",
+			name="rate_limited_server_script",
+			script_type="API",
+			enable_rate_limit=1,
+			allow_guest=1,
+			rate_limit_count=5,
+			api_method="rate_limited_endpoint",
+			script="""dontmanage.flags = {"test": True}""",
+		)
+
+		script1.insert()
+
+		script2 = dontmanage.get_doc(
+			doctype="Server Script",
+			name="rate_limited_server_script2",
+			script_type="API",
+			enable_rate_limit=1,
+			allow_guest=1,
+			rate_limit_count=5,
+			api_method="rate_limited_endpoint2",
+			script="""dontmanage.flags = {"test": False}""",
+		)
+
+		script2.insert()
+
+		dontmanage.db.commit()
+
+		site = dontmanage.utils.get_site_url(dontmanage.local.site)
+		client = DontManageClient(site)
+
+		# Exhaust rate limit
+		for _ in range(5):
+			client.get_api(script1.api_method)
+
+		self.assertRaises(DontManageException, client.get_api, script1.api_method)
+
+		# Exhaust rate limit
+		for _ in range(5):
+			client.get_api(script2.api_method)
+
+		self.assertRaises(DontManageException, client.get_api, script2.api_method)
+
+		script1.delete()
+		script2.delete()
+		dontmanage.db.commit()
+
+	def test_server_script_scheduled(self):
+		scheduled_script = dontmanage.get_doc(
+			doctype="Server Script",
+			name="scheduled_script_wo_cron",
+			script_type="Scheduler Event",
+			script="""dontmanage.flags = {"test": True}""",
+			event_frequency="Hourly",
+		).insert()
+
+		cron_script = dontmanage.get_doc(
+			doctype="Server Script",
+			name="scheduled_script_w_cron",
+			script_type="Scheduler Event",
+			script="""dontmanage.flags = {"test": True}""",
+			event_frequency="Cron",
+			cron_format="0 0 1 1 *",  # 1st january
+		).insert()
+
+		# Ensure that jobs remain in DB after migrate
+		sync_jobs()
+		self.assertTrue(dontmanage.db.exists("Scheduled Job Type", {"server_script": scheduled_script.name}))
+
+		cron_job_name = dontmanage.db.get_value("Scheduled Job Type", {"server_script": cron_script.name})
+		self.assertTrue(cron_job_name)
+
+		cron_job = dontmanage.get_doc("Scheduled Job Type", cron_job_name)
+		self.assertEqual(cron_job.next_execution.day, 1)
+		self.assertEqual(cron_job.next_execution.month, 1)
+
+		cron_script.cron_format = "0 0 2 1 *"  # 2nd january
+		cron_script.save()
+		cron_job.reload()
+		self.assertEqual(cron_job.next_execution.day, 2)

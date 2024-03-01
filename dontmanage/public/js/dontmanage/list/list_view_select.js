@@ -40,6 +40,11 @@ dontmanage.views.ListViewSelect = class ListViewSelect {
 	set_route(view, calendar_name) {
 		const route = [this.slug(), "view", view];
 		if (calendar_name) route.push(calendar_name);
+
+		let search_params = cur_list?.get_search_params();
+		if (search_params) {
+			dontmanage.route_options = Object.fromEntries(search_params);
+		}
 		dontmanage.set_route(route);
 	}
 

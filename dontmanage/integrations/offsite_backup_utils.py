@@ -29,13 +29,11 @@ def send_email(success, service_name, doctype, email_field, error_status=None):
 		)
 	else:
 		subject = "[Warning] Backup Upload Failed"
-		message = """
+		message = f"""
 <h3>Backup Upload Failed!</h3>
-<p>Oops, your automated backup to {} failed.</p>
-<p>Error message: {}</p>
-<p>Please contact your system manager for more information.</p>""".format(
-			service_name, error_status
-		)
+<p>Oops, your automated backup to {service_name} failed.</p>
+<p>Error message: {error_status}</p>
+<p>Please contact your system manager for more information.</p>"""
 
 	dontmanage.sendmail(recipients=recipients, subject=subject, message=message)
 
@@ -54,9 +52,9 @@ def get_latest_backup_file(with_files=False):
 		dontmanage.conf.db_name,
 		dontmanage.conf.db_name,
 		dontmanage.conf.db_password,
-		db_host=dontmanage.db.host,
-		db_type=dontmanage.conf.db_type,
+		db_host=dontmanage.conf.db_host,
 		db_port=dontmanage.conf.db_port,
+		db_type=dontmanage.conf.db_type,
 	)
 	database, public, private, config = odb.get_recent_backup(older_than=24 * 30)
 
@@ -112,9 +110,9 @@ def generate_files_backup():
 		dontmanage.conf.db_name,
 		dontmanage.conf.db_name,
 		dontmanage.conf.db_password,
-		db_host=dontmanage.db.host,
-		db_type=dontmanage.conf.db_type,
+		db_host=dontmanage.conf.db_host,
 		db_port=dontmanage.conf.db_port,
+		db_type=dontmanage.conf.db_type,
 	)
 
 	backup.set_backup_file_name()

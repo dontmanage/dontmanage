@@ -1,15 +1,73 @@
 # Copyright (c) 2019, DontManage Technologies and contributors
 # License: MIT. See LICENSE
 
+from functools import partial
 from types import FunctionType, MethodType, ModuleType
 
 import dontmanage
 from dontmanage import _
 from dontmanage.model.document import Document
-from dontmanage.utils.safe_exec import NamespaceDict, get_safe_globals, safe_exec
+from dontmanage.rate_limiter import rate_limit
+from dontmanage.utils.safe_exec import (
+	DontManageTransformer,
+	NamespaceDict,
+	get_safe_globals,
+	is_safe_exec_enabled,
+	safe_exec,
+)
 
 
 class ServerScript(Document):
+	# begin: auto-generated types
+	# This code is auto-generated. Do not modify anything in this block.
+
+	from typing import TYPE_CHECKING
+
+	if TYPE_CHECKING:
+		from dontmanage.types import DF
+
+		allow_guest: DF.Check
+		api_method: DF.Data | None
+		cron_format: DF.Data | None
+		disabled: DF.Check
+		doctype_event: DF.Literal[
+			"Before Insert",
+			"Before Validate",
+			"Before Save",
+			"After Insert",
+			"After Save",
+			"Before Submit",
+			"After Submit",
+			"Before Cancel",
+			"After Cancel",
+			"Before Delete",
+			"After Delete",
+			"Before Save (Submitted Document)",
+			"After Save (Submitted Document)",
+			"On Payment Authorization",
+		]
+		enable_rate_limit: DF.Check
+		event_frequency: DF.Literal[
+			"All",
+			"Hourly",
+			"Daily",
+			"Weekly",
+			"Monthly",
+			"Yearly",
+			"Hourly Long",
+			"Daily Long",
+			"Weekly Long",
+			"Monthly Long",
+			"Cron",
+		]
+		module: DF.Link | None
+		rate_limit_count: DF.Int
+		rate_limit_seconds: DF.Int
+		reference_doctype: DF.Link | None
+		script: DF.Code
+		script_type: DF.Literal["DocType Event", "Scheduler Event", "Permission Query", "API"]
+
+	# end: auto-generated types
 	def validate(self):
 		dontmanage.only_for("Script Manager", True)
 		self.sync_scheduled_jobs()
@@ -17,10 +75,14 @@ class ServerScript(Document):
 		self.check_if_compilable_in_restricted_context()
 
 	def on_update(self):
-		dontmanage.cache().delete_value("server_script_map")
 		self.sync_scheduler_events()
 
+	def clear_cache(self):
+		dontmanage.cache.delete_value("server_script_map")
+		return super().clear_cache()
+
 	def on_trash(self):
+		dontmanage.cache.delete_value("server_script_map")
 		if self.script_type == "Scheduler Event":
 			for job in self.scheduled_jobs:
 				dontmanage.delete_doc("Scheduled Job Type", job.name)
@@ -50,20 +112,26 @@ class ServerScript(Document):
 	def sync_scheduler_events(self):
 		"""Create or update Scheduled Job Type documents for Scheduler Event Server Scripts"""
 		if not self.disabled and self.event_frequency and self.script_type == "Scheduler Event":
-			setup_scheduler_events(script_name=self.name, frequency=self.event_frequency)
+			cron_format = self.cron_format if self.event_frequency == "Cron" else None
+			setup_scheduler_events(
+				script_name=self.name, frequency=self.event_frequency, cron_format=cron_format
+			)
 
 	def clear_scheduled_events(self):
-		"""Deletes existing scheduled jobs by Server Script if self.event_frequency has changed"""
-		if self.script_type == "Scheduler Event" and self.has_value_changed("event_frequency"):
+		"""Deletes existing scheduled jobs by Server Script if self.event_frequency or self.cron_format has changed"""
+		if (
+			self.script_type == "Scheduler Event"
+			and (self.has_value_changed("event_frequency") or self.has_value_changed("cron_format"))
+		) or (self.has_value_changed("script_type") and self.script_type != "Scheduler Event"):
 			for scheduled_job in self.scheduled_jobs:
-				dontmanage.delete_doc("Scheduled Job Type", scheduled_job.name)
+				dontmanage.delete_doc("Scheduled Job Type", scheduled_job.name, delete_permanently=1)
 
 	def check_if_compilable_in_restricted_context(self):
 		"""Check compilation errors and send them back as warnings."""
 		from RestrictedPython import compile_restricted
 
 		try:
-			compile_restricted(self.script)
+			compile_restricted(self.script, policy=DontManageTransformer)
 		except Exception as e:
 			dontmanage.msgprint(str(e), title=_("Compilation warning"))
 
@@ -77,17 +145,17 @@ class ServerScript(Document):
 		Returns:
 		        dict: Evaluates self.script with dontmanage.utils.safe_exec.safe_exec and returns the flags set in it's safe globals
 		"""
-		# wrong report type!
-		if self.script_type != "API":
-			raise dontmanage.DoesNotExistError
 
-		# validate if guest is allowed
-		if dontmanage.session.user == "Guest" and not self.allow_guest:
-			raise dontmanage.PermissionError
+		if self.enable_rate_limit:
+			# Wrap in rate limiter, required for specifying custom limits for each script
+			# Note that rate limiter works on `cmd` which is script name
+			limit = self.rate_limit_count or 5
+			seconds = self.rate_limit_seconds or 24 * 60 * 60
 
-		# output can be stored in flags
-		_globals, _locals = safe_exec(self.script)
-		return _globals.dontmanage.flags
+			_fn = partial(execute_api_server_script, script=self)
+			return rate_limit(limit=limit, seconds=seconds)(_fn)()
+		else:
+			return execute_api_server_script(self)
 
 	def execute_doc(self, doc: Document):
 		"""Specific to Document Event triggered Server Scripts
@@ -95,7 +163,12 @@ class ServerScript(Document):
 		Args:
 		        doc (Document): Executes script with for a certain document's events
 		"""
-		safe_exec(self.script, _locals={"doc": doc}, restrict_commit_rollback=True)
+		safe_exec(
+			self.script,
+			_locals={"doc": doc},
+			restrict_commit_rollback=True,
+			script_filename=self.name,
+		)
 
 	def execute_scheduled_method(self):
 		"""Specific to Scheduled Jobs via Server Scripts
@@ -106,7 +179,7 @@ class ServerScript(Document):
 		if self.script_type != "Scheduler Event":
 			raise dontmanage.DoesNotExistError
 
-		safe_exec(self.script)
+		safe_exec(self.script, script_filename=self.name)
 
 	def get_permission_query_conditions(self, user: str) -> list[str]:
 		"""Specific to Permission Query Server Scripts
@@ -118,7 +191,7 @@ class ServerScript(Document):
 		        list: Returns list of conditions defined by rules in self.script
 		"""
 		locals = {"user": user, "conditions": ""}
-		safe_exec(self.script, None, locals)
+		safe_exec(self.script, None, locals, script_filename=self.name)
 		if locals["conditions"]:
 			return locals["conditions"]
 
@@ -138,7 +211,7 @@ class ServerScript(Document):
 				if key.startswith("_"):
 					continue
 				value = obj[key]
-				if isinstance(value, (NamespaceDict, dict)) and value:
+				if isinstance(value, NamespaceDict | dict) and value:
 					if key == "form_dict":
 						out.append(["form_dict", 7])
 						continue
@@ -150,7 +223,7 @@ class ServerScript(Document):
 						score = 0
 					elif isinstance(value, ModuleType):
 						score = 10
-					elif isinstance(value, (FunctionType, MethodType)):
+					elif isinstance(value, FunctionType | MethodType):
 						score = 9
 					elif isinstance(value, type):
 						score = 8
@@ -161,16 +234,15 @@ class ServerScript(Document):
 					out.append([key, score])
 			return out
 
-		items = dontmanage.cache().get_value("server_script_autocompletion_items")
+		items = dontmanage.cache.get_value("server_script_autocompletion_items")
 		if not items:
 			items = get_keys(get_safe_globals())
 			items = [{"value": d[0], "score": d[1]} for d in items]
-			dontmanage.cache().set_value("server_script_autocompletion_items", items)
+			dontmanage.cache.set_value("server_script_autocompletion_items", items)
 		return items
 
 
-@dontmanage.whitelist()
-def setup_scheduler_events(script_name, frequency):
+def setup_scheduler_events(script_name: str, frequency: str, cron_format: str | None = None):
 	"""Creates or Updates Scheduled Job Type documents based on the specified script name and frequency
 
 	Args:
@@ -187,6 +259,7 @@ def setup_scheduler_events(script_name, frequency):
 				"method": method,
 				"frequency": frequency,
 				"server_script": script_name,
+				"cron_format": cron_format,
 			}
 		).insert()
 
@@ -199,6 +272,31 @@ def setup_scheduler_events(script_name, frequency):
 			return
 
 		doc.frequency = frequency
+		doc.cron_format = cron_format
 		doc.save()
 
 		dontmanage.msgprint(_("Scheduled execution for script {0} has updated").format(script_name))
+
+
+def execute_api_server_script(script=None, *args, **kwargs):
+	# These are only added for compatibility with rate limiter.
+	del args
+	del kwargs
+
+	if script.script_type != "API":
+		raise dontmanage.DoesNotExistError
+
+	# validate if guest is allowed
+	if dontmanage.session.user == "Guest" and not script.allow_guest:
+		raise dontmanage.PermissionError
+
+	# output can be stored in flags
+	_globals, _locals = safe_exec(script.script, script_filename=script.name)
+
+	return _globals.dontmanage.flags
+
+
+@dontmanage.whitelist()
+def enabled() -> bool | None:
+	if dontmanage.has_permission("Server Script"):
+		return is_safe_exec_enabled()

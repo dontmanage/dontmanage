@@ -3,11 +3,6 @@
 
 dontmanage.ui.form.on("Notification Settings", {
 	onload: (frm) => {
-		dontmanage.breadcrumbs.add({
-			label: __("Settings"),
-			route: "#modules/Settings",
-			type: "Custom",
-		});
 		frm.set_query("subscribed_documents", () => {
 			return {
 				filters: {

@@ -9,6 +9,7 @@ export default class BulkOperations {
 		const allow_print_for_draft = cint(print_settings.allow_print_for_draft);
 		const is_submittable = dontmanage.model.is_submittable(this.doctype);
 		const allow_print_for_cancelled = cint(print_settings.allow_print_for_cancelled);
+		const letterheads = this.get_letterhead_options();
 
 		const valid_docs = docs
 			.filter((doc) => {
@@ -41,14 +42,15 @@ export default class BulkOperations {
 					fieldtype: "Select",
 					label: __("Letter Head"),
 					fieldname: "letter_sel",
-					default: __("No Letterhead"),
-					options: this.get_letterhead_options(),
+					options: letterheads,
+					default: letterheads[0],
 				},
 				{
 					fieldtype: "Select",
 					label: __("Print Format"),
 					fieldname: "print_sel",
 					options: dontmanage.meta.get_print_formats(this.doctype),
+					default: dontmanage.get_meta(this.doctype).default_print_format,
 				},
 				{
 					fieldtype: "Select",
@@ -127,13 +129,18 @@ export default class BulkOperations {
 			args: {
 				doctype: "Letter Head",
 				fields: ["name", "is_default"],
+				filters: { disabled: 0 },
 				limit_page_length: 0,
 			},
 			async: false,
 			callback(r) {
 				if (r.message) {
 					r.message.forEach((letterhead) => {
-						letterhead_options.push(letterhead.name);
+						if (letterhead.is_default) {
+							letterhead_options.unshift(letterhead.name);
+						} else {
+							letterhead_options.push(letterhead.name);
+						}
 					});
 				}
 			},
@@ -228,7 +235,11 @@ export default class BulkOperations {
 	}
 
 	edit(docnames, field_mappings, done) {
-		let field_options = Object.keys(field_mappings).sort();
+		let field_options = Object.keys(field_mappings).sort(function (a, b) {
+			return __(cstr(field_mappings[a].label)).localeCompare(
+				cstr(__(field_mappings[b].label))
+			);
+		});
 		const status_regex = /status/i;
 
 		const default_field = field_options.find((value) => status_regex.test(value));

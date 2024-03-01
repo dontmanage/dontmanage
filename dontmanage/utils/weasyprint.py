@@ -14,9 +14,7 @@ def download_pdf(doctype, name, print_format, letterhead=None):
 	generator = PrintFormatGenerator(print_format, doc, letterhead)
 	pdf = generator.render_pdf()
 
-	dontmanage.local.response.filename = "{name}.pdf".format(
-		name=name.replace(" ", "-").replace("/", "-")
-	)
+	dontmanage.local.response.filename = "{name}.pdf".format(name=name.replace(" ", "-").replace("/", "-"))
 	dontmanage.local.response.filecontent = pdf
 	dontmanage.local.response.type = "pdf"
 
@@ -89,9 +87,7 @@ class PrintFormatGenerator:
 		return self.get_main_html()
 
 	def get_main_html(self):
-		self.context.css = dontmanage.render_template(
-			"templates/print_format/print_format.css", self.context
-		)
+		self.context.css = dontmanage.render_template("templates/print_format/print_format.css", self.context)
 		return dontmanage.render_template("templates/print_format/print_format.html", self.context)
 
 	def get_header_footer_html(self):
@@ -121,9 +117,7 @@ class PrintFormatGenerator:
 
 		if self.header_html or self.footer_html:
 			self._apply_overlay_on_main(main_doc, self.header_body, self.footer_body)
-		pdf = main_doc.write_pdf()
-
-		return pdf
+		return main_doc.write_pdf()
 
 	def _compute_overlay_element(self, element: str):
 		"""

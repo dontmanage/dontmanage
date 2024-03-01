@@ -2,6 +2,7 @@
 # License: MIT. See LICENSE
 
 import json
+from collections.abc import Iterable
 from typing import TYPE_CHECKING
 
 import dontmanage
@@ -12,6 +13,7 @@ from dontmanage.utils import (
 	cint,
 	get_datetime,
 	get_formatted_email,
+	get_imaginary_pixel_response,
 	get_string_between,
 	list_to_str,
 	split_emails,
@@ -36,7 +38,7 @@ def make(
 	send_email=False,
 	print_html=None,
 	print_format=None,
-	attachments="[]",
+	attachments=None,
 	send_me_a_copy=False,
 	cc=None,
 	bcc=None,
@@ -44,6 +46,7 @@ def make(
 	print_letterhead=True,
 	email_template=None,
 	communication_type=None,
+	send_after=None,
 	**kwargs,
 ) -> dict[str, str]:
 	"""Make a new communication. Checks for email permissions for specified Document.
@@ -59,9 +62,10 @@ def make(
 	:param send_email: Send via email (default **False**).
 	:param print_html: HTML Print format to be sent as attachment.
 	:param print_format: Print Format name of parent document to be sent as attachment.
-	:param attachments: List of attachments as list of files or JSON string.
+	:param attachments: List of File names or dicts with keys "fname" and "fcontent"
 	:param send_me_a_copy: Send a copy to the sender (default **False**).
 	:param email_template: Template which is used to compose mail .
+	:param send_after: Send after the given datetime.
 	"""
 	if kwargs:
 		from dontmanage.utils.commands import warn
@@ -97,6 +101,7 @@ def make(
 		email_template=email_template,
 		communication_type=communication_type,
 		add_signature=False,
+		send_after=send_after,
 	)
 
 
@@ -113,7 +118,7 @@ def _make(
 	send_email=False,
 	print_html=None,
 	print_format=None,
-	attachments="[]",
+	attachments=None,
 	send_me_a_copy=False,
 	cc=None,
 	bcc=None,
@@ -122,6 +127,7 @@ def _make(
 	email_template=None,
 	communication_type=None,
 	add_signature=True,
+	send_after=None,
 ) -> dict[str, str]:
 	"""Internal method to make a new communication that ignores Permission checks."""
 
@@ -149,6 +155,7 @@ def _make(
 			"read_receipt": read_receipt,
 			"has_attachment": 1 if attachments else 0,
 			"communication_type": communication_type,
+			"send_after": send_after,
 		}
 	)
 	comm.flags.skip_add_signature = not add_signature
@@ -164,7 +171,7 @@ def _make(
 		if not comm.get_outgoing_email_account():
 			dontmanage.throw(
 				_(
-					"Unable to send mail because of a missing email account. Please setup default Email Account from Setup > Email > Email Account"
+					"Unable to send mail because of a missing email account. Please setup default Email Account from Settings > Email Account"
 				),
 				exc=dontmanage.OutgoingEmailError,
 			)
@@ -217,50 +224,56 @@ def set_incoming_outgoing_accounts(doc):
 		doc.db_set("email_account", doc.outgoing_email_account.name)
 
 
-def add_attachments(name, attachments):
-	"""Add attachments to the given Communication"""
+def add_attachments(name: str, attachments: Iterable[str | dict]) -> None:
+	"""Add attachments to the given Communication
+
+	:param name: Communication name
+	:param attachments: File names or dicts with keys "fname" and "fcontent"
+	"""
 	# loop through attachments
 	for a in attachments:
 		if isinstance(a, str):
-			attach = dontmanage.db.get_value(
-				"File", {"name": a}, ["file_name", "file_url", "is_private"], as_dict=1
-			)
-			# save attachments to new doc
-			_file = dontmanage.get_doc(
-				{
-					"doctype": "File",
-					"file_url": attach.file_url,
-					"attached_to_doctype": "Communication",
-					"attached_to_name": name,
-					"folder": "Home/Attachments",
-					"is_private": attach.is_private,
-				}
-			)
-			_file.save(ignore_permissions=True)
+			attach = dontmanage.db.get_value("File", {"name": a}, ["file_url", "is_private"], as_dict=1)
+			file_args = {
+				"file_url": attach.file_url,
+				"is_private": attach.is_private,
+			}
+		elif isinstance(a, dict) and "fcontent" in a and "fname" in a:
+			# dict returned by dontmanage.attach_print()
+			file_args = {
+				"file_name": a["fname"],
+				"content": a["fcontent"],
+				"is_private": 1,
+			}
+		else:
+			continue
+
+		file_args.update(
+			{
+				"attached_to_doctype": "Communication",
+				"attached_to_name": name,
+				"folder": "Home/Attachments",
+			}
+		)
+
+		_file = dontmanage.new_doc("File")
+		_file.update(file_args)
+		_file.save(ignore_permissions=True)
 
 
 @dontmanage.whitelist(allow_guest=True, methods=("GET",))
-def mark_email_as_seen(name: str = None):
+def mark_email_as_seen(name: str | None = None):
+	dontmanage.request.after_response.add(lambda: _mark_email_as_seen(name))
+	dontmanage.response.update(dontmanage.utils.get_imaginary_pixel_response())
+
+
+def _mark_email_as_seen(name):
 	try:
 		update_communication_as_read(name)
-		dontmanage.db.commit()  # nosemgrep: this will be called in a GET request
-
 	except Exception:
 		dontmanage.log_error("Unable to mark as seen", None, "Communication", name)
 
-	finally:
-		dontmanage.response.update(
-			{
-				"type": "binary",
-				"filename": "imaginary_pixel.png",
-				"filecontent": (
-					b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00"
-					b"\x00\x01\x08\x06\x00\x00\x00\x1f\x15\xc4\x89\x00\x00\x00\r"
-					b"IDATx\x9cc\xf8\xff\xff?\x03\x00\x08\xfc\x02\xfe\xa7\x9a\xa0"
-					b"\xa0\x00\x00\x00\x00IEND\xaeB`\x82"
-				),
-			}
-		)
+	dontmanage.db.commit()  # nosemgrep: after_response requires explicit commit
 
 
 def update_communication_as_read(name):

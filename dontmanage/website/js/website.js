@@ -1,7 +1,5 @@
 // Copyright (c) 2015, DontManage and Contributors
 // MIT License. See license.txt
-/* eslint-disable no-console */
-
 import hljs from "./syntax_highlight";
 
 dontmanage.provide("website");
@@ -9,18 +7,26 @@ dontmanage.provide("dontmanage.awesome_bar_path");
 window.cur_frm = null;
 
 $.extend(dontmanage, {
-	boot: {
-		lang: "en",
-	},
 	_assets_loaded: [],
 	require: async function (links, callback) {
 		if (typeof links === "string") {
 			links = [links];
 		}
+		links = links.map((link) => dontmanage.bundled_asset(link));
 		for (let link of links) {
 			await this.add_asset_to_head(link);
 		}
 		callback && callback();
+	},
+	bundled_asset(path, is_rtl = null) {
+		if (!path.startsWith("/assets") && path.includes(".bundle.")) {
+			if (path.endsWith(".css") && is_rtl) {
+				path = `rtl_${path}`;
+			}
+			path = dontmanage.boot.assets_json[path] || path;
+			return path;
+		}
+		return path;
 	},
 	add_asset_to_head(link) {
 		return new Promise((resolve) => {
@@ -76,7 +82,7 @@ $.extend(dontmanage, {
 		}
 		return $.ajax({
 			type: opts.type || "POST",
-			url: "/",
+			url: opts.url || "/",
 			data: opts.args,
 			dataType: "json",
 			headers: {
@@ -205,15 +211,6 @@ $.extend(dontmanage, {
 			)
 			.appendTo(document.body);
 	},
-	send_message: function (opts, btn) {
-		return dontmanage.call({
-			type: "POST",
-			method: "dontmanage.www.contact.send_message",
-			btn: btn,
-			args: opts,
-			callback: opts.callback,
-		});
-	},
 	has_permission: function (doctype, docname, perm_type, callback) {
 		return dontmanage.call({
 			type: "GET",
@@ -336,9 +333,9 @@ $.extend(dontmanage, {
 	},
 	make_navbar_active: function () {
 		var pathname = window.location.pathname;
-		$(".navbar-nav a.active").removeClass("active");
-		$(".navbar-nav a").each(function () {
-			var href = $(this).attr("href");
+		$(".navbar-nav li.active").removeClass("active");
+		$(".navbar-nav li").each(function () {
+			var href = $(this.getElementsByTagName("a")).attr("href");
 			if (href === pathname) {
 				$(this).addClass("active");
 				return false;
@@ -371,50 +368,6 @@ $.extend(dontmanage, {
 				$($heading).append($a);
 			});
 	},
-	setup_lazy_images: function () {
-		// Use IntersectionObserver to only load images that are visible in the viewport
-		// Fallback for browsers that don't support it
-		// To use this feature, instead of adding an img tag, add
-		// <div class="website-image-lazy" data-class="img-class" data-src="image.jpg" data-alt="image"></div>
-
-		const allowed_attributes = ["src", "srcset", "alt", "title", "width", "height"];
-
-		function replace_with_image(target) {
-			const $target = $(target);
-			const attrs = $target.data();
-			const data_string = Object.keys(attrs)
-				.filter((key) => allowed_attributes.includes(key))
-				.map((key) => `${key}="${attrs[key]}"`)
-				.join(" ");
-			$target.replaceWith(`<img ${data_string}>`);
-		}
-
-		if (!window.IntersectionObserver) {
-			$(".website-image-lazy").each((_, el) => {
-				replace_with_image(el);
-			});
-			return;
-		}
-
-		const io = new IntersectionObserver(
-			(entries) => {
-				entries.forEach((e) => {
-					if (e.intersectionRatio > 0) {
-						io.unobserve(e.target);
-						replace_with_image(e.target);
-					}
-				});
-			},
-			{
-				threshold: [0, 0.2, 0.4, 0.6],
-			}
-		);
-
-		$(".website-image-lazy").each((_, el) => {
-			// Start observing an element
-			io.observe(el);
-		});
-	},
 	show_language_picker() {
 		if (dontmanage.session.user === "Guest" && window.show_language_picker) {
 			dontmanage
@@ -441,14 +394,9 @@ $.extend(dontmanage, {
 					language_switcher.val(language);
 					document.documentElement.lang = language;
 					language_switcher.change(() => {
-						let lang = language_switcher.val();
-						dontmanage
-							.call("dontmanage.translate.set_preferred_language_cookie", {
-								preferred_language: lang,
-							})
-							.then(() => {
-								window.location.reload();
-							});
+						const lang = language_switcher.val();
+						document.cookie = `preferred_language=${lang}`;
+						window.location.reload();
 					});
 				});
 		}
@@ -608,14 +556,14 @@ dontmanage.setup_search = function (target, search_scope) {
 
 // Utility functions
 window.valid_email = function (id) {
-	// eslint-disable-next-line
 	// copied regex from dontmanage/utils.js validate_type
+	// eslint-disable-next-line
 	return /^((([a-z]|\d|[!#\$%&'\*\+\-\/=\?\^_`{\|}~]|[\u00A0-\uD7FF\uF900-\uFDCF\uFDF0-\uFFEF])+(\.([a-z]|\d|[!#\$%&'\*\+\-\/=\?\^_`{\|}~]|[\u00A0-\uD7FF\uF900-\uFDCF\uFDF0-\uFFEF])+)*)|((\x22)((((\x20|\x09)*(\x0d\x0a))?(\x20|\x09)+)?(([\x01-\x08\x0b\x0c\x0e-\x1f\x7f]|\x21|[\x23-\x5b]|[\x5d-\x7e]|[\u00A0-\uD7FF\uF900-\uFDCF\uFDF0-\uFFEF])|(\\([\x01-\x09\x0b\x0c\x0d-\x7f]|[\u00A0-\uD7FF\uF900-\uFDCF\uFDF0-\uFFEF]))))*(((\x20|\x09)*(\x0d\x0a))?(\x20|\x09)+)?(\x22)))@((([a-z]|\d|[\u00A0-\uD7FF\uF900-\uFDCF\uFDF0-\uFFEF])|(([a-z]|\d|[\u00A0-\uD7FF\uF900-\uFDCF\uFDF0-\uFFEF])([a-z]|\d|-|\.|_|~|[\u00A0-\uD7FF\uF900-\uFDCF\uFDF0-\uFFEF])*([a-z]|\d|[\u00A0-\uD7FF\uF900-\uFDCF\uFDF0-\uFFEF])))\.)+(([a-z]|[\u00A0-\uD7FF\uF900-\uFDCF\uFDF0-\uFFEF])|(([a-z]|[\u00A0-\uD7FF\uF900-\uFDCF\uFDF0-\uFFEF])([a-z]|\d|-|\.|_|~|[\u00A0-\uD7FF\uF900-\uFDCF\uFDF0-\uFFEF])*([a-z]|[\u00A0-\uD7FF\uF900-\uFDCF\uFDF0-\uFFEF])))$/.test(
 		id.toLowerCase()
 	);
 };
 
-window.validate_email = valid_email;
+window.validate_email = window.valid_email;
 
 window.cstr = function (s) {
 	return s == null ? "" : s + "";
@@ -665,7 +613,6 @@ $(document).ready(function () {
 	}
 
 	dontmanage.render_user();
-	dontmanage.setup_lazy_images();
 
 	$(document).trigger("page-change");
 });
@@ -699,5 +646,5 @@ $(document).on("page-change", function () {
 dontmanage.ready(function () {
 	dontmanage.show_language_picker();
 	dontmanage.setup_videos();
-	dontmanage.socketio.init(window.socketio_port);
+	dontmanage.realtime.init(window.socketio_port, true); // lazy connection
 });

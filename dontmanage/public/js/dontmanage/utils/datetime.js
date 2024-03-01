@@ -82,6 +82,10 @@ $.extend(dontmanage.datetime, {
 		return moment(d1).diff(d2, "hours");
 	},
 
+	get_minute_diff: function (d1, d2) {
+		return moment(d1).diff(d2, "minutes");
+	},
+
 	get_day_diff: function (d1, d2) {
 		return moment(d1).diff(d2, "days");
 	},
@@ -268,36 +272,5 @@ $.extend(dontmanage.datetime, {
 	get_first_day_of_the_week_index() {
 		const first_day_of_the_week = dontmanage.sys_defaults.first_day_of_the_week || "Sunday";
 		return moment.weekdays().indexOf(first_day_of_the_week);
-	},
-});
-
-// Proxy for dateutil and get_today
-Object.defineProperties(window, {
-	dateutil: {
-		get: function () {
-			console.warn(
-				"Please use `dontmanage.datetime` instead of `dateutil`. It will be deprecated soon."
-			);
-			return dontmanage.datetime;
-		},
-		configurable: true,
-	},
-	date: {
-		get: function () {
-			console.warn(
-				"Please use `dontmanage.datetime` instead of `date`. It will be deprecated soon."
-			);
-			return dontmanage.datetime;
-		},
-		configurable: true,
-	},
-	get_today: {
-		get: function () {
-			console.warn(
-				"Please use `dontmanage.datetime.get_today` instead of `get_today`. It will be deprecated soon."
-			);
-			return dontmanage.datetime.get_today;
-		},
-		configurable: true,
 	},
 });

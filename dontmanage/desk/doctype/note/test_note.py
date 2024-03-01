@@ -13,9 +13,7 @@ class TestNote(DontManageTestCase):
 		dontmanage.db.delete("Note")
 		dontmanage.db.delete("Note Seen By")
 
-		return dontmanage.get_doc(
-			dict(doctype="Note", title="test note", content="test note content")
-		).insert()
+		return dontmanage.get_doc(dict(doctype="Note", title="test note", content="test note content")).insert()
 
 	def test_version(self):
 		note = self.insert_note()

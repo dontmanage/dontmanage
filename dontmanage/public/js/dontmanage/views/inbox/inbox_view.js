@@ -74,11 +74,9 @@ dontmanage.views.InboxView = class InboxView extends dontmanage.views.ListView {
 	}
 
 	get_seen_class(doc) {
-		const seen =
-			Boolean(doc.seen) || JSON.parse(doc._seen || "[]").includes(dontmanage.session.user)
-				? ""
-				: "bold";
-		return seen;
+		return Boolean(doc.seen) || JSON.parse(doc._seen || "[]").includes(dontmanage.session.user)
+			? ""
+			: "bold";
 	}
 
 	get is_sent_emails() {
@@ -143,7 +141,7 @@ dontmanage.views.InboxView = class InboxView extends dontmanage.views.ListView {
 				["Communication", "sent_or_received", "=", "Sent", true],
 				["Communication", "email_status", "not in", "Spam,Trash", true],
 			]);
-		} else if (in_list(["Spam", "Trash"], email_account)) {
+		} else if (["Spam", "Trash"].includes(email_account)) {
 			filters = default_filters.concat([
 				["Communication", "email_status", "=", email_account, true],
 				["Communication", "email_account", "in", dontmanage.boot.all_accounts, true],
@@ -169,7 +167,7 @@ dontmanage.views.InboxView = class InboxView extends dontmanage.views.ListView {
 	get_no_result_message() {
 		var email_account = this.email_account;
 		var args;
-		if (in_list(["Spam", "Trash"], email_account)) {
+		if (["Spam", "Trash"].includes(email_account)) {
 			return __("No {0} mail", [email_account]);
 		} else if (!email_account && !dontmanage.boot.email_accounts.length) {
 			// email account is not configured

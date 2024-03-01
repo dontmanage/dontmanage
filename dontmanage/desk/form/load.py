@@ -2,19 +2,21 @@
 # License: MIT. See LICENSE
 
 import json
+import typing
 from urllib.parse import quote
 
 import dontmanage
 import dontmanage.defaults
 import dontmanage.desk.form.meta
-import dontmanage.share
 import dontmanage.utils
 from dontmanage import _, _dict
 from dontmanage.desk.form.document_follow import is_document_followed
-from dontmanage.model.utils import is_virtual_doctype
 from dontmanage.model.utils.user_settings import get_user_settings
 from dontmanage.permissions import get_doc_permissions
 from dontmanage.utils.data import cstr
+
+if typing.TYPE_CHECKING:
+	from dontmanage.model.document import Document
 
 
 @dontmanage.whitelist()
@@ -28,14 +30,11 @@ def getdoc(doctype, name, user=None):
 	if not (doctype and name):
 		raise Exception("doctype and name required!")
 
-	if not name:
-		name = doctype
-
-	if not is_virtual_doctype(doctype) and not dontmanage.db.exists(doctype, name):
+	try:
+		doc = dontmanage.get_doc(doctype, name)
+	except dontmanage.DoesNotExistError:
+		dontmanage.clear_last_message()
 		return []
-
-	doc = dontmanage.get_doc(doctype, name)
-	run_onload(doc)
 
 	if not doc.has_permission("read"):
 		dontmanage.flags.error_message = _("Insufficient Permission for {0}").format(
@@ -43,7 +42,7 @@ def getdoc(doctype, name, user=None):
 		)
 		raise dontmanage.PermissionError(("read", doctype, name))
 
-	# ignores system setting (apply_perm_level_on_api_calls) unconditionally to maintain backward compatibility
+	run_onload(doc)
 	doc.apply_fieldlevel_read_permissions()
 
 	# add file list
@@ -82,20 +81,24 @@ def getdoctype(doctype, with_parent=False, cached_timestamp=None):
 
 def get_meta_bundle(doctype):
 	bundle = [dontmanage.desk.form.meta.get_meta(doctype)]
-	for df in bundle[0].fields:
-		if df.fieldtype in dontmanage.model.table_fields:
-			bundle.append(dontmanage.desk.form.meta.get_meta(df.options, not dontmanage.conf.developer_mode))
+	bundle.extend(
+		dontmanage.desk.form.meta.get_meta(df.options)
+		for df in bundle[0].fields
+		if df.fieldtype in dontmanage.model.table_fields
+	)
 	return bundle
 
 
 @dontmanage.whitelist()
 def get_docinfo(doc=None, doctype=None, name=None):
+	from dontmanage.share import _get_users as get_docshares
+
 	if not doc:
 		doc = dontmanage.get_doc(doctype, name)
 		if not doc.has_permission("read"):
 			raise dontmanage.PermissionError
 
-	all_communications = _get_communications(doc.doctype, doc.name)
+	all_communications = _get_communications(doc.doctype, doc.name, limit=21)
 	automated_messages = [
 		msg for msg in all_communications if msg["communication_type"] == "Automated Message"
 	]
@@ -114,12 +117,11 @@ def get_docinfo(doc=None, doctype=None, name=None):
 			"attachments": get_attachments(doc.doctype, doc.name),
 			"communications": communications_except_auto_messages,
 			"automated_messages": automated_messages,
-			"total_comments": len(json.loads(doc.get("_comments") or "[]")),
 			"versions": get_versions(doc),
 			"assignments": get_assignments(doc.doctype, doc.name),
 			"permissions": get_doc_permissions(doc),
-			"shared": dontmanage.share.get_users(doc.doctype, doc.name),
-			"views": get_view_logs(doc.doctype, doc.name),
+			"shared": get_docshares(doc),
+			"views": get_view_logs(doc),
 			"energy_point_logs": get_point_logs(doc.doctype, doc.name),
 			"additional_timeline_content": get_additional_timeline_content(doc.doctype, doc.name),
 			"milestones": get_milestones(doc.doctype, doc.name),
@@ -151,29 +153,22 @@ def add_comments(doc, docinfo):
 	)
 
 	for c in comments:
-		if c.comment_type == "Comment":
-			c.content = dontmanage.utils.markdown(c.content)
-			docinfo.comments.append(c)
-
-		elif c.comment_type in ("Shared", "Unshared"):
-			docinfo.shared.append(c)
-
-		elif c.comment_type in ("Assignment Completed", "Assigned"):
-			docinfo.assignment_logs.append(c)
-
-		elif c.comment_type in ("Attachment", "Attachment Removed"):
-			docinfo.attachment_logs.append(c)
-
-		elif c.comment_type in ("Info", "Edit", "Label"):
-			docinfo.info_logs.append(c)
-
-		elif c.comment_type == "Like":
-			docinfo.like_logs.append(c)
-
-		elif c.comment_type == "Workflow":
-			docinfo.workflow_logs.append(c)
-
-		dontmanage.utils.add_user_info(c.owner, docinfo.user_info)
+		match c.comment_type:
+			case "Comment":
+				c.content = dontmanage.utils.markdown(c.content)
+				docinfo.comments.append(c)
+			case "Shared" | "Unshared":
+				docinfo.shared.append(c)
+			case "Assignment Completed" | "Assigned":
+				docinfo.assignment_logs.append(c)
+			case "Attachment" | "Attachment Removed":
+				docinfo.attachment_logs.append(c)
+			case "Info" | "Edit" | "Label":
+				docinfo.info_logs.append(c)
+			case "Like":
+				docinfo.like_logs.append(c)
+			case "Workflow":
+				docinfo.workflow_logs.append(c)
 
 	return comments
 
@@ -194,7 +189,9 @@ def get_attachments(dt, dn):
 	)
 
 
-def get_versions(doc):
+def get_versions(doc: "Document") -> list[dict]:
+	if not doc.meta.track_changes:
+		return []
 	return dontmanage.get_all(
 		"Version",
 		filters=dict(ref_doctype=doc.doctype, docname=doc.name),
@@ -206,16 +203,16 @@ def get_versions(doc):
 
 @dontmanage.whitelist()
 def get_communications(doctype, name, start=0, limit=20):
+	from dontmanage.utils import cint
+
 	doc = dontmanage.get_doc(doctype, name)
 	if not doc.has_permission("read"):
 		raise dontmanage.PermissionError
 
-	return _get_communications(doctype, name, start, limit)
+	return _get_communications(doctype, name, cint(start), cint(limit))
 
 
-def get_comments(
-	doctype: str, name: str, comment_type: str | list[str] = "Comment"
-) -> list[dontmanage._dict]:
+def get_comments(doctype: str, name: str, comment_type: str | list[str] = "Comment") -> list[dontmanage._dict]:
 	if isinstance(comment_type, list):
 		comment_types = comment_type
 
@@ -289,11 +286,9 @@ def get_communication_data(
 	conditions = ""
 	if after:
 		# find after a particular date
-		conditions += """
-			AND C.creation > {}
-		""".format(
-			after
-		)
+		conditions += f"""
+			AND C.communication_date > {after}
+		"""
 
 	if doctype == "User":
 		conditions += """
@@ -301,44 +296,41 @@ def get_communication_data(
 		"""
 
 	# communications linked to reference_doctype
-	part1 = """
+	part1 = f"""
 		SELECT {fields}
 		FROM `tabCommunication` as C
 		WHERE C.communication_type IN ('Communication', 'Feedback', 'Automated Message')
 		AND (C.reference_doctype = %(doctype)s AND C.reference_name = %(name)s)
 		{conditions}
-	""".format(
-		fields=fields, conditions=conditions
-	)
+	"""
 
 	# communications linked in Timeline Links
-	part2 = """
+	part2 = f"""
 		SELECT {fields}
 		FROM `tabCommunication` as C
 		INNER JOIN `tabCommunication Link` ON C.name=`tabCommunication Link`.parent
 		WHERE C.communication_type IN ('Communication', 'Feedback', 'Automated Message')
 		AND `tabCommunication Link`.link_doctype = %(doctype)s AND `tabCommunication Link`.link_name = %(name)s
 		{conditions}
-	""".format(
-		fields=fields, conditions=conditions
-	)
+	"""
 
-	communications = dontmanage.db.sql(
+	return dontmanage.db.sql(
 		"""
 		SELECT *
 		FROM (({part1}) UNION ({part2})) AS combined
 		{group_by}
-		ORDER BY creation DESC
+		ORDER BY communication_date DESC
 		LIMIT %(limit)s
 		OFFSET %(start)s
-	""".format(
-			part1=part1, part2=part2, group_by=(group_by or "")
+	""".format(part1=part1, part2=part2, group_by=(group_by or "")),
+		dict(
+			doctype=doctype,
+			name=name,
+			start=dontmanage.utils.cint(start),
+			limit=limit,
 		),
-		dict(doctype=doctype, name=name, start=dontmanage.utils.cint(start), limit=limit),
 		as_dict=as_dict,
 	)
-
-	return communications
 
 
 def get_assignments(dt, dn):
@@ -348,22 +340,10 @@ def get_assignments(dt, dn):
 		filters={
 			"reference_type": dt,
 			"reference_name": dn,
-			"status": ("!=", "Cancelled"),
+			"status": ("not in", ("Cancelled", "Closed")),
 			"allocated_to": ("is", "set"),
 		},
 	)
-
-
-@dontmanage.whitelist()
-def get_badge_info(doctypes, filters):
-	filters = json.loads(filters)
-	doctypes = json.loads(doctypes)
-	filters["docstatus"] = ["!=", 2]
-	out = {}
-	for doctype in doctypes:
-		out[doctype] = dontmanage.db.get_value(doctype, filters, "count(*)")
-
-	return out
 
 
 def run_onload(doc):
@@ -371,32 +351,29 @@ def run_onload(doc):
 	doc.run_method("onload")
 
 
-def get_view_logs(doctype, docname):
+def get_view_logs(doc: "Document") -> list[dict]:
 	"""get and return the latest view logs if available"""
-	logs = []
-	if hasattr(dontmanage.get_meta(doctype), "track_views") and dontmanage.get_meta(doctype).track_views:
-		view_logs = dontmanage.get_all(
-			"View Log",
-			filters={
-				"reference_doctype": doctype,
-				"reference_name": docname,
-			},
-			fields=["name", "creation", "owner"],
-			order_by="creation desc",
-		)
+	if not doc.meta.track_views:
+		return []
 
-		if view_logs:
-			logs = view_logs
-	return logs
+	return dontmanage.get_all(
+		"View Log",
+		filters={
+			"reference_doctype": doc.doctype,
+			"reference_name": doc.name,
+		},
+		fields=["name", "creation", "owner"],
+		order_by="creation desc",
+	)
 
 
-def get_tags(doctype, name):
-	tags = [
-		tag.tag
-		for tag in dontmanage.get_all(
-			"Tag Link", filters={"document_type": doctype, "document_name": name}, fields=["tag"]
-		)
-	]
+def get_tags(doctype: str, name: str) -> str:
+	tags = dontmanage.get_all(
+		"Tag Link",
+		filters={"document_type": doctype, "document_name": name},
+		fields=["tag"],
+		pluck="tag",
+	)
 
 	return ",".join(tags)
 
@@ -487,17 +464,20 @@ def send_link_titles(link_titles):
 
 
 def update_user_info(docinfo):
-	for d in docinfo.communications:
-		dontmanage.utils.add_user_info(d.sender, docinfo.user_info)
+	users = set()
 
-	for d in docinfo.shared:
-		dontmanage.utils.add_user_info(d.user, docinfo.user_info)
+	users.update(d.sender for d in docinfo.communications)
+	users.update(d.user for d in docinfo.shared)
+	users.update(d.owner for d in docinfo.assignments)
+	users.update(d.owner for d in docinfo.views)
+	users.update(d.owner for d in docinfo.workflow_logs)
+	users.update(d.owner for d in docinfo.like_logs)
+	users.update(d.owner for d in docinfo.info_logs)
+	users.update(d.owner for d in docinfo.attachment_logs)
+	users.update(d.owner for d in docinfo.assignment_logs)
+	users.update(d.owner for d in docinfo.comments)
 
-	for d in docinfo.assignments:
-		dontmanage.utils.add_user_info(d.owner, docinfo.user_info)
-
-	for d in docinfo.views:
-		dontmanage.utils.add_user_info(d.owner, docinfo.user_info)
+	dontmanage.utils.add_user_info(users, docinfo.user_info)
 
 
 @dontmanage.whitelist()

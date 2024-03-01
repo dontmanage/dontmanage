@@ -2,7 +2,7 @@
 // For license information, please see license.txt
 
 dontmanage.ui.form.on("Prepared Report", {
-	onload: function (frm) {
+	render_filter_values: function (frm, filters) {
 		var wrapper = $(frm.fields_dict["filter_values"].wrapper).empty();
 
 		let filter_table = $(`<table class="table table-bordered">
@@ -14,8 +14,6 @@ dontmanage.ui.form.on("Prepared Report", {
 			</thead>
 			<tbody></tbody>
 		</table>`);
-
-		const filters = JSON.parse(frm.doc.filters);
 
 		Object.keys(filters).forEach((key) => {
 			const filter_row = $(`<tr>
@@ -30,8 +28,20 @@ dontmanage.ui.form.on("Prepared Report", {
 
 	refresh: function (frm) {
 		frm.disable_save();
+
+		const filters = JSON.parse(frm.doc.filters);
+		if (!$.isEmptyObject(filters)) {
+			frm.toggle_display(["filter_values"], 1);
+			frm.events.render_filter_values(frm, filters);
+		}
+
+		// always keep report_name hidden - we do this as we can't set mandatory and hidden
+		// property on a docfield at the same time
+		frm.toggle_display(["report_name"], 0);
+
 		if (frm.doc.status == "Completed") {
 			frm.page.set_primary_action(__("Show Report"), () => {
+				dontmanage.route_options = filters;
 				dontmanage.set_route(
 					"query-report",
 					frm.doc.report_name,

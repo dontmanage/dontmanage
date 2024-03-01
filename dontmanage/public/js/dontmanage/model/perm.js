@@ -30,14 +30,11 @@ $.extend(dontmanage.perm, {
 		"print",
 		"email",
 		"share",
-		"set_user_permissions",
 	],
 
 	doctype_perm: {},
 
-	has_perm: (doctype, permlevel, ptype, doc) => {
-		if (!permlevel) permlevel = 0;
-
+	has_perm: (doctype, permlevel = 0, ptype = "read", doc) => {
 		const perms = dontmanage.perm.get_perm(doctype, doc);
 		return !!perms?.[permlevel]?.[ptype];
 	},
@@ -196,7 +193,7 @@ $.extend(dontmanage.perm, {
 
 		if (!perm) {
 			let is_hidden = df && (cint(df.hidden) || cint(df.hidden_due_to_dependency));
-			let is_read_only = df && cint(df.read_only);
+			let is_read_only = df && (cint(df.read_only) || cint(df.is_virtual));
 			return is_hidden ? "None" : is_read_only ? "Read" : "Write";
 		}
 
@@ -206,7 +203,7 @@ $.extend(dontmanage.perm, {
 
 		// permission
 		if (p) {
-			if (p.write && !df.disabled) {
+			if (p.write && !df.disabled && !df.is_virtual) {
 				status = "Write";
 			} else if (p.read) {
 				status = "Read";
@@ -243,7 +240,7 @@ $.extend(dontmanage.perm, {
 			// fields updated by workflow must be read-only
 			if (
 				cint(cur_frm.read_only) ||
-				in_list(cur_frm.states.update_fields, df.fieldname) ||
+				cur_frm.states.update_fields.includes(df.fieldname) ||
 				df.fieldname == cur_frm.state_fieldname
 			) {
 				status = "Read";
@@ -291,10 +288,9 @@ $.extend(dontmanage.perm, {
 		const allowed_docs = filtered_perms.map((perm) => perm.doc);
 
 		if (with_default_doc) {
-			const default_doc =
-				allowed_docs.length === 1
-					? allowed_docs
-					: filtered_perms.filter((perm) => perm.is_default).map((record) => record.doc);
+			const default_doc = filtered_perms
+				.filter((perm) => perm.is_default)
+				.map((record) => record.doc);
 
 			return {
 				allowed_records: allowed_docs,

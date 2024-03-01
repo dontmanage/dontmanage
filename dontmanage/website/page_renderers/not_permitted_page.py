@@ -15,7 +15,7 @@ class NotPermittedPage(TemplatePage):
 
 	def render(self):
 		action = f"/login?redirect-to={dontmanage.request.path}"
-		if dontmanage.request.path.startswith("/app"):
+		if dontmanage.request.path.startswith("/app/") or dontmanage.request.path == "/app":
 			action = "/login"
 		dontmanage.local.message_title = _("Not Permitted")
 		dontmanage.local.response["context"] = dict(

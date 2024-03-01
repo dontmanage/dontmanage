@@ -8,6 +8,7 @@ from jinja2.exceptions import TemplateSyntaxError
 import dontmanage
 from dontmanage import _
 from dontmanage.utils import get_datetime, now, quoted, strip_html
+from dontmanage.utils.caching import redis_cache
 from dontmanage.utils.jinja import render_template
 from dontmanage.utils.safe_exec import safe_exec
 from dontmanage.website.doctype.website_slideshow.website_slideshow import get_slideshow
@@ -24,20 +25,52 @@ H_TAG_PATTERN = re.compile("<h.>")
 
 
 class WebPage(WebsiteGenerator):
+	# begin: auto-generated types
+	# This code is auto-generated. Do not modify anything in this block.
+
+	from typing import TYPE_CHECKING
+
+	if TYPE_CHECKING:
+		from dontmanage.types import DF
+		from dontmanage.website.doctype.web_page_block.web_page_block import WebPageBlock
+
+		breadcrumbs: DF.Code | None
+		content_type: DF.Literal["Rich Text", "Markdown", "HTML", "Page Builder", "Slideshow"]
+		context_script: DF.Code | None
+		css: DF.Code | None
+		dynamic_route: DF.Check
+		dynamic_template: DF.Check
+		enable_comments: DF.Check
+		end_date: DF.Datetime | None
+		full_width: DF.Check
+		header: DF.HTMLEditor | None
+		idx: DF.Int
+		insert_style: DF.Check
+		javascript: DF.Code | None
+		main_section: DF.TextEditor | None
+		main_section_html: DF.HTMLEditor | None
+		main_section_md: DF.MarkdownEditor | None
+		meta_description: DF.SmallText | None
+		meta_image: DF.AttachImage | None
+		meta_title: DF.Data | None
+		module: DF.Link | None
+		page_blocks: DF.Table[WebPageBlock]
+		published: DF.Check
+		route: DF.Data | None
+		show_sidebar: DF.Check
+		show_title: DF.Check
+		slideshow: DF.Link | None
+		start_date: DF.Datetime | None
+		text_align: DF.Literal["Left", "Center", "Right"]
+		title: DF.Data
+		website_sidebar: DF.Link | None
+
+	# end: auto-generated types
 	def validate(self):
 		self.validate_dates()
 		self.set_route()
 		if not self.dynamic_route:
 			self.route = quoted(self.route)
-
-	def get_feed(self):
-		return self.title
-
-	def on_update(self):
-		super().on_update()
-
-	def on_trash(self):
-		super().on_trash()
 
 	def get_context(self, context):
 		context.main_section = get_html_content_based_on_type(self, "main_section", self.content_type)
@@ -46,7 +79,7 @@ class WebPage(WebsiteGenerator):
 
 		if self.context_script:
 			_locals = dict(context=dontmanage._dict())
-			safe_exec(self.context_script, None, _locals)
+			safe_exec(self.context_script, None, _locals, script_filename=f"web page {self.name}")
 			context.update(_locals["context"])
 
 		self.render_dynamic(context)
@@ -93,7 +126,7 @@ class WebPage(WebsiteGenerator):
 			dontmanage.flags.web_block_styles = {}
 			try:
 				context["main_section"] = render_template(context.main_section, context)
-				if not "<!-- static -->" in context.main_section:
+				if "<!-- static -->" not in context.main_section:
 					context["no_cache"] = 1
 			except TemplateSyntaxError:
 				raise
@@ -105,13 +138,13 @@ class WebPage(WebsiteGenerator):
 		"""Build breadcrumbs template"""
 		if self.breadcrumbs:
 			context.parents = dontmanage.safe_eval(self.breadcrumbs, {"_": _})
-		if not "no_breadcrumbs" in context:
+		if "no_breadcrumbs" not in context:
 			if "<!-- no-breadcrumbs -->" in context.main_section:
 				context.no_breadcrumbs = 1
 
 	def set_title_and_header(self, context):
 		"""Extract and set title and header from content or context."""
-		if not "no_header" in context:
+		if "no_header" not in context:
 			if "<!-- no-header -->" in context.main_section:
 				context.no_header = 1
 
@@ -250,3 +283,17 @@ def extract_script_and_style_tags(html):
 		style.extract()
 
 	return str(soup), scripts, styles
+
+
+@redis_cache(ttl=60 * 60)
+def get_dynamic_web_pages() -> dict[str, str]:
+	pages = dontmanage.get_all(
+		"Web Page",
+		fields=["name", "route", "modified"],
+		filters=dict(published=1, dynamic_route=1),
+		update={"doctype": "Web Page"},
+	)
+	get_web_pages_with_dynamic_routes = dontmanage.get_hooks("get_web_pages_with_dynamic_routes") or []
+	for method in get_web_pages_with_dynamic_routes:
+		pages.extend(dontmanage.get_attr(method)())
+	return pages

@@ -19,6 +19,26 @@ from dontmanage.utils import cint, get_fullname, get_link_to_form, getdate
 
 
 class EnergyPointLog(Document):
+	# begin: auto-generated types
+	# This code is auto-generated. Do not modify anything in this block.
+
+	from typing import TYPE_CHECKING
+
+	if TYPE_CHECKING:
+		from dontmanage.types import DF
+
+		points: DF.Int
+		reason: DF.Text | None
+		reference_doctype: DF.Link | None
+		reference_name: DF.Data | None
+		revert_of: DF.Link | None
+		reverted: DF.Check
+		rule: DF.Link | None
+		seen: DF.Check
+		type: DF.Literal["Auto", "Appreciation", "Criticism", "Review", "Revert"]
+		user: DF.Link
+
+	# end: auto-generated types
 	def validate(self):
 		self.map_milestone_reference()
 		if self.type in ["Appreciation", "Criticism"] and self.user == self.owner:
@@ -38,12 +58,11 @@ class EnergyPointLog(Document):
 				"energy_point_alert", message=alert_dict, user=self.user, after_commit=True
 			)
 
-		dontmanage.cache().hdel("energy_points", self.user)
+		dontmanage.cache.hdel("energy_points", self.user)
 
 		if self.type != "Review" and dontmanage.get_cached_value(
 			"Notification Settings", self.user, "energy_points_system_notifications"
 		):
-
 			reference_user = self.user if self.type == "Auto" else self.owner
 			notification_doc = {
 				"type": "Energy Point",
@@ -76,7 +95,7 @@ class EnergyPointLog(Document):
 		self.reverted = 1
 		self.save(ignore_permissions=True)
 
-		revert_log = dontmanage.get_doc(
+		return dontmanage.get_doc(
 			{
 				"doctype": "Energy Point Log",
 				"points": -(self.points),
@@ -88,8 +107,6 @@ class EnergyPointLog(Document):
 				"revert_of": self.name,
 			}
 		).insert(ignore_permissions=True)
-
-		return revert_log
 
 
 def get_notification_message(doc):
@@ -172,13 +189,12 @@ def get_alert_dict(doc):
 
 def create_energy_points_log(ref_doctype, ref_name, doc, apply_only_once=False):
 	doc = dontmanage._dict(doc)
-
-	log_exists = check_if_log_exists(
-		ref_doctype, ref_name, doc.rule, None if apply_only_once else doc.user
-	)
-
-	if log_exists:
-		return dontmanage.get_doc("Energy Point Log", log_exists)
+	if doc.rule:
+		log_exists = check_if_log_exists(
+			ref_doctype, ref_name, doc.rule, None if apply_only_once else doc.user
+		)
+		if log_exists:
+			return dontmanage.get_doc("Energy Point Log", log_exists)
 
 	new_log = dontmanage.new_doc("Energy Point Log")
 	new_log.reference_doctype = ref_doctype
@@ -222,9 +238,6 @@ def add_review_points(user, points):
 
 @dontmanage.whitelist()
 def get_energy_points(user):
-	# points = dontmanage.cache().hget('energy_points', user,
-	# 	lambda: get_user_energy_and_review_points(user))
-	# TODO: cache properly
 	points = get_user_energy_and_review_points(user)
 	return dontmanage._dict(points.get(user, {}))
 
@@ -244,7 +257,7 @@ def get_user_energy_and_review_points(user=None, from_date=None, as_dict=True):
 		values.from_date = from_date
 
 	points_list = dontmanage.db.sql(
-		"""
+		f"""
 		SELECT
 			SUM(CASE WHEN `type` != 'Review' THEN `points` ELSE 0 END) AS energy_points,
 			SUM(CASE WHEN `type` = 'Review' THEN `points` ELSE 0 END) AS review_points,
@@ -258,9 +271,7 @@ def get_user_energy_and_review_points(user=None, from_date=None, as_dict=True):
 		{conditions}
 		GROUP BY `user`
 		ORDER BY `energy_points` DESC
-	""".format(
-			conditions=conditions, given_points_condition=given_points_condition
-		),
+	""",
 		values=values,
 		as_dict=1,
 	)

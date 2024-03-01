@@ -47,7 +47,6 @@ dontmanage.ui.form.make_control = function (opts) {
 	if (dontmanage.ui.form[control_class_name]) {
 		return new dontmanage.ui.form[control_class_name](opts);
 	} else {
-		// eslint-disable-next-line
 		console.log("Invalid Control Name: " + opts.df.fieldtype);
 	}
 };

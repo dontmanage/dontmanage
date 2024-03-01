@@ -1,7 +1,6 @@
 # Copyright (c) 2020, DontManage and Contributors
 # License: MIT. See LICENSE
 
-import io
 import json
 import os
 import re
@@ -45,6 +44,7 @@ class Importer:
 			file_path or data_import.google_sheets_url or data_import.import_file,
 			self.template_options,
 			self.import_type,
+			console=self.console,
 		)
 
 	def get_data_for_import_preview(self):
@@ -62,7 +62,7 @@ class Importer:
 
 	def before_import(self):
 		# set user lang for translations
-		dontmanage.cache().hdel("lang", dontmanage.session.user)
+		dontmanage.cache.hdel("lang", dontmanage.session.user)
 		dontmanage.set_user_lang(dontmanage.session.user)
 
 		# set flags
@@ -102,10 +102,7 @@ class Importer:
 		log_index = 0
 
 		# Do not remove rows in case of retry after an error or pending data import
-		if (
-			self.data_import.status == "Partial Success"
-			and len(import_log) >= self.data_import.payload_count
-		):
+		if self.data_import.status == "Partial Success" and len(import_log) >= self.data_import.payload_count:
 			# remove previous failures from import log only in case of retry after partial success
 			import_log = [log for log in import_log if log.get("success")]
 
@@ -151,8 +148,8 @@ class Importer:
 
 					if self.console:
 						update_progress_bar(
-							f"Importing {total_payload_count} records",
-							current_index,
+							f"Importing {self.doctype}: {total_payload_count} records",
+							current_index - 1,
 							total_payload_count,
 						)
 					elif total_payload_count > 5:
@@ -393,12 +390,13 @@ class Importer:
 
 
 class ImportFile:
-	def __init__(self, doctype, file, template_options=None, import_type=None):
+	def __init__(self, doctype, file, template_options=None, import_type=None, *, console=False):
 		self.doctype = doctype
 		self.template_options = template_options or dontmanage._dict(column_to_field_map=dontmanage._dict())
 		self.column_to_field_map = self.template_options.column_to_field_map
 		self.import_type = import_type
 		self.warnings = []
+		self.console = console
 
 		self.file_doc = self.file_path = self.google_sheets_url = None
 		if isinstance(file, str):
@@ -485,7 +483,7 @@ class ImportFile:
 					"read_only": col.df.read_only,
 				}
 
-		data = [[row.row_number] + row.as_list() for row in self.data]
+		data = [[row.row_number, *row.as_list()] for row in self.data]
 
 		warnings = self.get_warnings()
 
@@ -526,7 +524,6 @@ class ImportFile:
 			# subsequent rows that have blank values in parent columns
 			# are considered as child rows
 			parent_column_indexes = self.header.get_column_indexes(self.doctype)
-			parent_row_values = first_row.get_values(parent_column_indexes)
 
 			data_without_first_row = data[1:]
 			for row in data_without_first_row:
@@ -579,6 +576,10 @@ class ImportFile:
 
 		file_content = None
 
+		if self.console:
+			file_content = dontmanage.read_file(file_path, True)
+			return file_content, extn
+
 		file_name = dontmanage.db.get_value("File", {"file_url": file_path})
 		if file_name:
 			file = dontmanage.get_doc("File", file_name)
@@ -602,8 +603,6 @@ class ImportFile:
 
 
 class Row:
-	link_values_exist_map = {}
-
 	def __init__(self, index, row, doctype, header, import_type):
 		self.index = index
 		self.row_number = index + 1
@@ -618,7 +617,9 @@ class Row:
 		if len_row != len_columns:
 			less_than_columns = len_row < len_columns
 			message = (
-				"Row has less values than columns" if less_than_columns else "Row has more values than columns"
+				"Row has less values than columns"
+				if less_than_columns
+				else "Row has more values than columns"
 			)
 			self.warnings.append(
 				{
@@ -636,8 +637,7 @@ class Row:
 			return None
 
 		columns = self.header.get_columns(col_indexes)
-		doc = self._parse_doc(doctype, columns, values, parent_doc, table_df)
-		return doc
+		return self._parse_doc(doctype, columns, values, parent_doc, table_df)
 
 	def _parse_doc(self, doctype, columns, values, parent_doc=None, table_df=None):
 		doc = dontmanage._dict()
@@ -654,7 +654,7 @@ class Row:
 		for key in dontmanage.model.default_fields + dontmanage.model.child_table_fields + ("__islocal",):
 			doc.pop(key, None)
 
-		for col, value in zip(columns, values):
+		for col, value in zip(columns, values, strict=False):
 			df = col.df
 			if value in INVALID_VALUES:
 				value = None
@@ -690,7 +690,7 @@ class Row:
 		df = col.df
 		if df.fieldtype == "Select":
 			select_options = get_select_options(df)
-			if select_options and value not in select_options:
+			if select_options and cstr(value) not in select_options:
 				options_string = ", ".join(dontmanage.bold(d) for d in select_options)
 				msg = _("Value must be one of {0}").format(options_string)
 				self.warnings.append(
@@ -745,14 +745,11 @@ class Row:
 		return value
 
 	def link_exists(self, value, df):
-		key = df.options + "::" + cstr(value)
-		if Row.link_values_exist_map.get(key) is None:
-			Row.link_values_exist_map[key] = dontmanage.db.exists(df.options, value)
-		return Row.link_values_exist_map.get(key)
+		return bool(dontmanage.db.exists(df.options, value, cache=True))
 
 	def parse_value(self, value, col):
 		df = col.df
-		if isinstance(value, (datetime, date)) and df.fieldtype in ["Date", "Datetime"]:
+		if isinstance(value, datetime | date) and df.fieldtype in ["Date", "Datetime"]:
 			return value
 
 		value = cstr(value)
@@ -775,7 +772,7 @@ class Row:
 		return value
 
 	def get_date(self, value, column):
-		if isinstance(value, (datetime, date)):
+		if isinstance(value, datetime | date):
 			return value
 
 		date_format = column.date_format
@@ -844,9 +841,6 @@ class Header(Row):
 
 
 class Column:
-	seen = []
-	fields_column_map = {}
-
 	def __init__(self, index, header, doctype, column_values, map_to_field=None, seen=None):
 		if seen is None:
 			seen = []
@@ -942,7 +936,7 @@ class Column:
 		"""
 
 		def guess_date_format(d):
-			if isinstance(d, (datetime, date, time)):
+			if isinstance(d, datetime | date | time):
 				if self.df.fieldtype == "Date":
 					return "%Y-%m-%d"
 				if self.df.fieldtype == "Datetime":
@@ -992,9 +986,7 @@ class Column:
 		if self.df.fieldtype == "Link":
 			# find all values that dont exist
 			values = list({cstr(v) for v in self.column_values if v})
-			exists = [
-				cstr(d.name) for d in dontmanage.get_all(self.df.options, filters={"name": ("in", values)})
-			]
+			exists = [cstr(d.name) for d in dontmanage.get_all(self.df.options, filters={"name": ("in", values)})]
 			not_exists = list(set(values) - set(exists))
 			if not_exists:
 				missing_values = ", ".join(not_exists)
@@ -1143,7 +1135,6 @@ def build_fields_dict_for_column_matching(parent_doctype):
 
 			label = (df.label or "").strip()
 			translated_label = _(label)
-			parent = df.parent or parent_doctype
 
 			if parent_doctype == doctype:
 				# for parent doctypes keys will be
@@ -1207,7 +1198,7 @@ def get_df_for_column_header(doctype, header):
 	def build_fields_dict_for_doctype():
 		return build_fields_dict_for_column_matching(doctype)
 
-	df_by_labels_and_fieldname = dontmanage.cache().hget(
+	df_by_labels_and_fieldname = dontmanage.cache.hget(
 		"data_import_column_header_map", doctype, generator=build_fields_dict_for_doctype
 	)
 	return df_by_labels_and_fieldname.get(header)
@@ -1239,9 +1230,7 @@ def get_item_at_index(_list, i, default=None):
 
 
 def get_user_format(date_format):
-	return (
-		date_format.replace("%Y", "yyyy").replace("%y", "yy").replace("%m", "mm").replace("%d", "dd")
-	)
+	return date_format.replace("%Y", "yyyy").replace("%y", "yy").replace("%m", "mm").replace("%d", "dd")
 
 
 def df_as_json(df):

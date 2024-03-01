@@ -4,6 +4,7 @@ import json
 
 import dontmanage
 from dontmanage.desk.listview import get_group_by_count, get_list_settings, set_list_settings
+from dontmanage.desk.reportview import get
 from dontmanage.tests.utils import DontManageTestCase
 
 
@@ -22,6 +23,7 @@ class TestListView(DontManageTestCase):
 
 		self.assertEqual(settings.disable_auto_refresh, 0)
 		self.assertEqual(settings.disable_count, 0)
+		self.assertEqual(settings.disable_comment_count, 0)
 		self.assertEqual(settings.disable_sidebar_stats, 0)
 
 	def test_get_list_settings_with_non_default_settings(self):
@@ -31,6 +33,7 @@ class TestListView(DontManageTestCase):
 
 		self.assertEqual(settings.disable_auto_refresh, 0)
 		self.assertEqual(settings.disable_count, 1)
+		self.assertEqual(settings.disable_comment_count, 0)
 		self.assertEqual(settings.disable_sidebar_stats, 0)
 
 	def test_set_list_settings_without_settings(self):
@@ -39,6 +42,7 @@ class TestListView(DontManageTestCase):
 
 		self.assertEqual(settings.disable_auto_refresh, 0)
 		self.assertEqual(settings.disable_count, 0)
+		self.assertEqual(settings.disable_comment_count, 0)
 		self.assertEqual(settings.disable_sidebar_stats, 0)
 
 	def test_set_list_settings_with_existing_settings(self):
@@ -48,6 +52,7 @@ class TestListView(DontManageTestCase):
 
 		self.assertEqual(settings.disable_auto_refresh, 1)
 		self.assertEqual(settings.disable_count, 0)
+		self.assertEqual(settings.disable_comment_count, 0)
 		self.assertEqual(settings.disable_sidebar_stats, 0)
 
 	def test_list_view_child_table_filter_with_created_by_filter(self):
@@ -65,3 +70,27 @@ class TestListView(DontManageTestCase):
 			for d in get_group_by_count("Note", '[["Note Seen By","user","=","Administrator"]]', "owner")
 		}
 		self.assertEqual(data["Administrator"], 1)
+
+	def test_get_group_by_invalid_field(self):
+		self.assertRaises(
+			ValueError,
+			get_group_by_count,
+			"Note",
+			'[["Note Seen By","user","=","Administrator"]]',
+			"invalid_field",
+		)
+
+	def test_list_view_comment_count(self):
+		dontmanage.form_dict.doctype = "DocType"
+		dontmanage.form_dict.limit = "1"
+		dontmanage.form_dict.fields = [
+			"`tabDocType`.`name`",
+		]
+
+		for with_comment_count in (1, True, "1"):
+			dontmanage.form_dict.with_comment_count = with_comment_count
+			self.assertEqual(len(get()["values"][0]), 2)
+
+		for with_comment_count in (0, False, "0", None):
+			dontmanage.form_dict.with_comment_count = with_comment_count
+			self.assertEqual(len(get()["values"][0]), 1)

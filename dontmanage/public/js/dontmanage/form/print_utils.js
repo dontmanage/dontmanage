@@ -47,7 +47,7 @@ dontmanage.ui.get_print_settings = function (pdf, callback, letter_head, pick_co
 				columns: 2,
 				select_all: true,
 				options: pick_columns.map((df) => ({
-					label: __(df.label),
+					label: __(df.label, null, df.parent),
 					value: df.fieldname,
 				})),
 			}

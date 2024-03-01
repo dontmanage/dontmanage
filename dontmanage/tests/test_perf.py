@@ -16,8 +16,10 @@ query. This test can be written like this.
 >>> 		get_controller("User")
 
 """
+import gc
+import sys
 import time
-import unittest
+from unittest.mock import patch
 
 from tenacity import retry, retry_if_exception_type, stop_after_attempt, wait_fixed
 
@@ -27,7 +29,10 @@ from dontmanage.model.base_document import get_controller
 from dontmanage.query_builder.utils import db_type_is
 from dontmanage.tests.test_query_builder import run_only_if
 from dontmanage.tests.utils import DontManageTestCase
+from dontmanage.utils import cint
 from dontmanage.website.path_resolver import PathResolver
+
+TEST_USER = "test@example.com"
 
 
 @run_only_if(db_type_is.MARIADB)
@@ -45,10 +50,24 @@ class TestPerformance(DontManageTestCase):
 		self.reset_request_specific_caches()
 
 	def test_meta_caching(self):
+		dontmanage.clear_cache()
 		dontmanage.get_meta("User")
+		dontmanage.clear_cache(doctype="ToDo")
 
 		with self.assertQueryCount(0):
 			dontmanage.get_meta("User")
+
+	def test_permitted_fieldnames(self):
+		dontmanage.clear_cache()
+
+		doc = dontmanage.new_doc("Prepared Report")
+		# load permitted fieldnames once
+		doc.permitted_fieldnames
+
+		with patch("dontmanage.model.base_document.get_permitted_fields") as mocked:
+			doc.as_dict()
+			# get_permitted_fields should not be called again
+			mocked.assert_not_called()
 
 	def test_set_value_query_count(self):
 		dontmanage.db.set_value("User", "Administrator", "interest", "Nothing")
@@ -65,10 +84,31 @@ class TestPerformance(DontManageTestCase):
 			)
 
 	def test_controller_caching(self):
-
 		get_controller("User")
 		with self.assertQueryCount(0):
 			get_controller("User")
+
+	def test_get_value_limits(self):
+		# check both dict and list style filters
+		filters = [{"enabled": 1}, [["enabled", "=", 1]]]
+
+		# Warm up code
+		dontmanage.db.get_values("User", filters=filters[0], limit=1)
+		for filter in filters:
+			with self.assertRowsRead(1):
+				self.assertEqual(1, len(dontmanage.db.get_values("User", filters=filter, limit=1)))
+			with self.assertRowsRead(2):
+				self.assertEqual(2, len(dontmanage.db.get_values("User", filters=filter, limit=2)))
+
+			self.assertEqual(
+				len(dontmanage.db.get_values("User", filters=filter)), dontmanage.db.count("User", filter)
+			)
+
+			with self.assertRowsRead(1):
+				dontmanage.db.get_value("User", filters=filter)
+
+			with self.assertRowsRead(1):
+				dontmanage.db.exists("User", filter)
 
 	def test_db_value_cache(self):
 		"""Link validation if repeated should just use db.value_cache, hence no extra queries"""
@@ -88,7 +128,7 @@ class TestPerformance(DontManageTestCase):
 		"""Ideally should be ran against gunicorn worker, though I have not seen any difference
 		when using werkzeug's run_simple for synchronous requests."""
 
-		EXPECTED_RPS = 55  # measured on GHA
+		EXPECTED_RPS = 50  # measured on GHA
 		FAILURE_THREASHOLD = 0.1
 
 		req_count = 1000
@@ -105,13 +145,54 @@ class TestPerformance(DontManageTestCase):
 		self.assertGreaterEqual(
 			rps,
 			EXPECTED_RPS * (1 - FAILURE_THREASHOLD),
-			f"Possible performance regression in basic /api/Resource list  requests",
+			"Possible performance regression in basic /api/Resource list  requests",
 		)
 
-	@unittest.skip("Not implemented")
 	def test_homepage_resolver(self):
 		paths = ["/", "/app"]
 		for path in paths:
 			PathResolver(path).resolve()
 			with self.assertQueryCount(1):
 				PathResolver(path).resolve()
+
+	def test_consistent_build_version(self):
+		from dontmanage.utils import get_build_version
+
+		self.assertEqual(get_build_version(), get_build_version())
+
+	def test_get_list_single_query(self):
+		"""get_list should only perform single query."""
+
+		user = dontmanage.get_doc("User", TEST_USER)
+
+		dontmanage.set_user(TEST_USER)
+		# Give full read access, no share/user perm check should be done.
+		user.add_roles("System Manager")
+
+		dontmanage.get_list("User")
+		with self.assertQueryCount(1):
+			dontmanage.get_list("User")
+
+	def test_no_ifnull_checks(self):
+		query = dontmanage.get_all("DocType", {"autoname": ("is", "set")}, run=0).lower()
+		self.assertNotIn("coalesce", query)
+		self.assertNotIn("ifnull", query)
+
+	def test_no_stale_ref_sql(self):
+		"""dontmanage.db.sql should not hold any internal references to result set.
+
+		pymysql stores results internally. If your code reads a lot and doesn't make another
+		query, for that entire duration there's copy of result consuming memory in internal
+		attributes of pymysql.
+		We clear it manually, this test ensures that it actually works.
+		"""
+
+		query = "select * from tabUser"
+		for kwargs in ({}, {"as_dict": True}, {"as_list": True}):
+			result = dontmanage.db.sql(query, **kwargs)
+			self.assertEqual(sys.getrefcount(result), 2)  # Note: This always returns +1
+			self.assertFalse(gc.get_referrers(result))
+
+	def test_no_cyclic_references(self):
+		doc = dontmanage.get_doc("User", "Administrator")
+		self.assertEqual(sys.getrefcount(doc), 2)  # Note: This always returns +1

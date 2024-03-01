@@ -4,10 +4,7 @@ img {
 	position: relative;
 }
 
-@include broken-img(
-	$height: 175px,
-	$border-radius: 0,
-);
+@include broken-img($height: 175px, $border-radius: 0);
 
 .website-image-placeholder {
 	display: flex;
@@ -16,12 +13,6 @@ img {
 	font-size: $font-size-5xl;
 	color: $gray-300;
 	background: $light;
-}
-
-.website-image-lazy {
-	min-height: 200px;
-	height: 100%;
-	background-color: $light;
 }
 
 @mixin website-image {

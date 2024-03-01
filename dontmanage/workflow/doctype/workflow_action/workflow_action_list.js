@@ -11,7 +11,6 @@ dontmanage.listview_settings["Workflow Action"] = {
 		}
 		docname = docname.match(/[%'"]/) ? encodeURIComponent(docname) : docname;
 
-		const link = "/app/" + dontmanage.router.slug(doctype) + "/" + docname;
-		return link;
+		return "/app/" + dontmanage.router.slug(doctype) + "/" + docname;
 	},
 };

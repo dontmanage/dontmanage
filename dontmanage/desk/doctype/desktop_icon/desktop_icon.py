@@ -11,6 +11,34 @@ from dontmanage.utils.user import UserPermissions
 
 
 class DesktopIcon(Document):
+	# begin: auto-generated types
+	# This code is auto-generated. Do not modify anything in this block.
+
+	from typing import TYPE_CHECKING
+
+	if TYPE_CHECKING:
+		from dontmanage.types import DF
+
+		_doctype: DF.Link | None
+		_report: DF.Link | None
+		app: DF.Data | None
+		blocked: DF.Check
+		category: DF.Data | None
+		color: DF.Data | None
+		custom: DF.Check
+		description: DF.SmallText | None
+		force_show: DF.Check
+		hidden: DF.Check
+		icon: DF.Data | None
+		idx: DF.Int
+		label: DF.Data | None
+		link: DF.SmallText | None
+		module_name: DF.Data | None
+		reverse: DF.Check
+		standard: DF.Check
+		type: DF.Literal["module", "list", "link", "page", "query-report"]
+
+	# end: auto-generated types
 	def validate(self):
 		if not self.label:
 			self.label = self.module_name
@@ -28,7 +56,7 @@ def get_desktop_icons(user=None):
 	if not user:
 		user = dontmanage.session.user
 
-	user_icons = dontmanage.cache().hget("desktop_icons", user)
+	user_icons = dontmanage.cache.hget("desktop_icons", user)
 
 	if not user_icons:
 		fields = [
@@ -69,9 +97,7 @@ def get_desktop_icons(user=None):
 				icon.blocked = 1
 			standard_map[icon.module_name] = icon
 
-		user_icons = dontmanage.get_all(
-			"Desktop Icon", fields=fields, filters={"standard": 0, "owner": user}
-		)
+		user_icons = dontmanage.get_all("Desktop Icon", fields=fields, filters={"standard": 0, "owner": user})
 
 		# update hidden property
 		for icon in user_icons:
@@ -99,7 +125,6 @@ def get_desktop_icons(user=None):
 		user_icon_names = [icon.module_name for icon in user_icons]
 		for standard_icon in standard_icons:
 			if standard_icon.module_name not in user_icon_names:
-
 				# if blocked, hidden too!
 				if standard_icon.blocked:
 					standard_icon.hidden = 1
@@ -118,9 +143,9 @@ def get_desktop_icons(user=None):
 		# translate
 		for d in user_icons:
 			if d.label:
-				d.label = _(d.label)
+				d.label = _(d.label, context=d.parent)
 
-		dontmanage.cache().hset("desktop_icons", user, user_icons)
+		dontmanage.cache.hset("desktop_icons", user, user_icons)
 
 	return user_icons
 
@@ -147,9 +172,7 @@ def add_user_icon(_doctype, _report=None, label=None, link=None, type="link", st
 
 	else:
 		idx = (
-			dontmanage.db.sql("select max(idx) from `tabDesktop Icon` where owner=%s", dontmanage.session.user)[0][
-				0
-			]
+			dontmanage.db.sql("select max(idx) from `tabDesktop Icon` where owner=%s", dontmanage.session.user)[0][0]
 			or dontmanage.db.sql("select count(*) from `tabDesktop Icon` where standard=1")[0][0]
 		)
 
@@ -198,7 +221,7 @@ def add_user_icon(_doctype, _report=None, label=None, link=None, type="link", st
 
 			icon_name = new_icon.name
 
-		except dontmanage.UniqueValidationError as e:
+		except dontmanage.UniqueValidationError:
 			dontmanage.throw(_("Desktop Icon already exists"))
 		except Exception as e:
 			raise e
@@ -243,7 +266,7 @@ def set_desktop_icons(visible_list, ignore_duplicate=True):
 		dontmanage.db.sql("update `tabDesktop Icon` set blocked=0, hidden=1 where standard=1")
 
 	# set as visible if present, or add icon
-	for module_name in visible_list:
+	for module_name in list(visible_list):
 		name = dontmanage.db.get_value("Desktop Icon", {"module_name": module_name})
 		if name:
 			dontmanage.db.set_value("Desktop Icon", name, "hidden", 0)
@@ -256,8 +279,7 @@ def set_desktop_icons(visible_list, ignore_duplicate=True):
 						raise e
 					else:
 						visible_list.remove(module_name)
-						if dontmanage.message_log:
-							dontmanage.message_log.pop()
+						dontmanage.clear_last_message()
 
 	# set the order
 	set_order(visible_list)
@@ -307,14 +329,13 @@ def set_hidden(module_name, user=None, hidden=1):
 
 def get_all_icons():
 	return [
-		d.module_name
-		for d in dontmanage.get_all("Desktop Icon", filters={"standard": 1}, fields=["module_name"])
+		d.module_name for d in dontmanage.get_all("Desktop Icon", filters={"standard": 1}, fields=["module_name"])
 	]
 
 
 def clear_desktop_icons_cache(user=None):
-	dontmanage.cache().hdel("desktop_icons", user or dontmanage.session.user)
-	dontmanage.cache().hdel("bootinfo", user or dontmanage.session.user)
+	dontmanage.cache.hdel("desktop_icons", user or dontmanage.session.user)
+	dontmanage.cache.hdel("bootinfo", user or dontmanage.session.user)
 
 
 def get_user_copy(module_name, user=None):
@@ -445,7 +466,7 @@ def get_module_icons(user=None):
 	if not user:
 		icons = dontmanage.get_all("Desktop Icon", fields="*", filters={"standard": 1}, order_by="idx")
 	else:
-		dontmanage.cache().hdel("desktop_icons", user)
+		dontmanage.cache.hdel("desktop_icons", user)
 		icons = get_user_icons(user)
 
 	for icon in icons:

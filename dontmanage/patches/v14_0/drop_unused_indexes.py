@@ -30,7 +30,7 @@ def execute():
 		table = f"tab{doctype}"
 		if table not in db_tables:
 			continue
-		_drop_index_if_exists(table, "parent")
+		drop_index_if_exists(table, "parent")
 
 	# Unused composite indexes
 	for doctype, index_fields in UNUSED_INDEXES:
@@ -38,10 +38,10 @@ def execute():
 		index_name = dontmanage.db.get_index_name(index_fields)
 		if table not in db_tables:
 			continue
-		_drop_index_if_exists(table, index_name)
+		drop_index_if_exists(table, index_name)
 
 
-def _drop_index_if_exists(table: str, index: str):
+def drop_index_if_exists(table: str, index: str):
 	if not dontmanage.db.has_index(table, index):
 		click.echo(f"- Skipped {index} index for {table} because it doesn't exist")
 		return
@@ -50,7 +50,7 @@ def _drop_index_if_exists(table: str, index: str):
 		dontmanage.db.sql_ddl(f"ALTER TABLE `{table}` DROP INDEX `{index}`")
 	except Exception as e:
 		dontmanage.log_error("Failed to drop index")
-		click.secho(f"x Failed to drop index {index} from {table}\n {str(e)}", fg="red")
+		click.secho(f"x Failed to drop index {index} from {table}\n {e!s}", fg="red")
 		return
 
 	click.echo(f"✓ dropped {index} index from {table}")

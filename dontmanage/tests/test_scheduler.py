@@ -34,18 +34,19 @@ class TestScheduler(TestCase):
 		if not dontmanage.get_all("Scheduled Job Type", limit=1):
 			sync_jobs()
 
+	def tearDown(self):
+		purge_pending_jobs()
+
 	def test_enqueue_jobs(self):
 		dontmanage.db.sql("update `tabScheduled Job Type` set last_execution = '2010-01-01 00:00:00'")
 
-		dontmanage.flags.execute_job = True
-		enqueue_events(site=dontmanage.local.site)
-		dontmanage.flags.execute_job = False
+		enqueued_jobs = enqueue_events(site=dontmanage.local.site)
 
-		self.assertTrue("dontmanage.email.queue.set_expiry_for_email_queue", dontmanage.flags.enqueued_jobs)
-		self.assertTrue("dontmanage.utils.change_log.check_for_update", dontmanage.flags.enqueued_jobs)
-		self.assertTrue(
+		self.assertIn("dontmanage.desk.notifications.clear_notifications", enqueued_jobs)
+		self.assertIn("dontmanage.utils.change_log.check_for_update", enqueued_jobs)
+		self.assertIn(
 			"dontmanage.email.doctype.auto_email_report.auto_email_report.send_monthly",
-			dontmanage.flags.enqueued_jobs,
+			enqueued_jobs,
 		)
 
 	def test_queue_peeking(self):
@@ -92,9 +93,7 @@ class TestScheduler(TestCase):
 		)
 
 
-def get_test_job(
-	method="dontmanage.tests.test_scheduler.test_timeout_10", frequency="All"
-) -> ScheduledJobType:
+def get_test_job(method="dontmanage.tests.test_scheduler.test_timeout_10", frequency="All") -> ScheduledJobType:
 	if not dontmanage.db.exists("Scheduled Job Type", dict(method=method)):
 		job = dontmanage.get_doc(
 			dict(

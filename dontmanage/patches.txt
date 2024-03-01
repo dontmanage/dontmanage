@@ -1,4 +1,5 @@
 [pre_model_sync]
+dontmanage.patches.v15_0.remove_implicit_primary_key
 dontmanage.patches.v12_0.remove_deprecated_fields_from_doctype #3
 execute:dontmanage.utils.global_search.setup_global_search_table()
 execute:dontmanage.reload_doc('core', 'doctype', 'doctype_action', force=True) #2019-09-23
@@ -31,7 +32,6 @@ execute:dontmanage.reload_doc('core', 'doctype', 'user') #2017-10-27
 execute:dontmanage.reload_doc('core', 'doctype', 'report_column')
 execute:dontmanage.reload_doc('core', 'doctype', 'report_filter')
 execute:dontmanage.reload_doc('core', 'doctype', 'report') #2020-08-25
-execute:dontmanage.reload_doc('core', 'doctype', 'error_snapshot')
 execute:dontmanage.get_doc("User", "Guest").save()
 execute:dontmanage.delete_doc("DocType", "Control Panel", force=1)
 execute:dontmanage.delete_doc("DocType", "Tag")
@@ -42,7 +42,6 @@ execute:dontmanage.db.sql("delete from `tabProperty Setter` where `property` = '
 execute:dontmanage.db.sql("delete from tabSessions where user is null")
 execute:dontmanage.delete_doc("DocType", "Backup Manager")
 execute:dontmanage.permissions.reset_perms("Web Page")
-execute:dontmanage.permissions.reset_perms("Error Snapshot")
 execute:dontmanage.db.sql("delete from `tabWeb Page` where ifnull(template_path, '')!=''")
 execute:dontmanage.core.doctype.language.language.update_language_names() # 2017-04-12
 execute:dontmanage.db.set_value("Print Settings", "Print Settings", "add_draft_heading", 1)
@@ -60,7 +59,6 @@ dontmanage.patches.v10_0.refactor_social_login_keys
 dontmanage.patches.v10_0.enable_chat_by_default_within_system_settings
 dontmanage.patches.v10_0.remove_custom_field_for_disabled_domain
 execute:dontmanage.delete_doc("Page", "chat")
-dontmanage.patches.v10_0.migrate_passwords_passlib
 dontmanage.patches.v11_0.rename_standard_reply_to_email_template
 execute:dontmanage.delete_doc_if_exists('Page', 'user-permissions')
 dontmanage.patches.v10_0.set_no_copy_to_workflow_state
@@ -72,7 +70,6 @@ dontmanage.patches.v11_0.rename_email_alert_to_notification #13-06-2018
 dontmanage.patches.v11_0.delete_duplicate_user_permissions
 dontmanage.patches.v11_0.set_dropbox_file_backup
 dontmanage.patches.v10_0.set_default_locking_time
-dontmanage.patches.v11_0.rename_google_maps_doctype
 dontmanage.patches.v10_0.modify_smallest_currency_fraction
 dontmanage.patches.v10_0.modify_naming_series_table
 dontmanage.patches.v10_0.enhance_security
@@ -157,7 +154,6 @@ dontmanage.patches.v13_0.set_route_for_blog_category
 dontmanage.patches.v13_0.enable_custom_script
 dontmanage.patches.v13_0.update_newsletter_content_type
 execute:dontmanage.db.set_value('Website Settings', 'Website Settings', {'navbar_template': 'Standard Navbar', 'footer_template': 'Standard Footer'})
-dontmanage.patches.v13_0.delete_event_producer_and_consumer_keys
 dontmanage.patches.v13_0.web_template_set_module #2020-10-05
 dontmanage.patches.v13_0.remove_custom_link
 execute:dontmanage.delete_doc("DocType", "Footer Item")
@@ -170,7 +166,6 @@ execute:dontmanage.db.set_default('desktop:home_page', 'space')
 execute:dontmanage.delete_doc_if_exists('Page', 'workspace')
 execute:dontmanage.delete_doc_if_exists('Page', 'dashboard', force=1)
 dontmanage.core.doctype.page.patches.drop_unused_pages
-execute:dontmanage.get_doc('Role', 'Guest').save() # remove desk access
 dontmanage.patches.v13_0.remove_chat
 dontmanage.patches.v13_0.rename_desk_page_to_workspace # 02.02.2021
 dontmanage.patches.v13_0.delete_package_publish_tool
@@ -185,7 +180,7 @@ dontmanage.patches.v13_0.encrypt_2fa_secrets
 dontmanage.patches.v13_0.reset_corrupt_defaults
 dontmanage.patches.v13_0.remove_share_for_std_users
 execute:dontmanage.reload_doc('custom', 'doctype', 'custom_field')
-dontmanage.patches.v14_0.update_workspace2 # 20.09.2021
+dontmanage.email.doctype.email_queue.patches.drop_search_index_on_message_id
 dontmanage.patches.v14_0.save_ratings_in_fraction #23-12-2021
 dontmanage.patches.v14_0.transform_todo_schema
 dontmanage.patches.v14_0.remove_post_and_post_comment
@@ -196,10 +191,16 @@ dontmanage.patches.v14_0.log_settings_migration
 dontmanage.patches.v14_0.setup_likes_from_feedback
 dontmanage.patches.v14_0.update_webforms
 dontmanage.patches.v14_0.delete_payment_gateways
-dontmanage.patches.v14_0.event_streaming_deprecation_warning
+dontmanage.patches.v15_0.remove_event_streaming
+dontmanage.patches.v15_0.copy_disable_prepared_report_to_prepared_report
+execute:dontmanage.reload_doc("desk", "doctype", "Form Tour")
+execute:dontmanage.delete_doc('Page', 'recorder', ignore_missing=True, force=True)
+dontmanage.patches.v14_0.modify_value_column_size_for_singles
 
 [post_model_sync]
+execute:dontmanage.get_doc('Role', 'Guest').save() # remove desk access
 dontmanage.core.doctype.role.patches.v13_set_default_desk_properties
+dontmanage.patches.v14_0.update_workspace2 # 06.06.2023
 dontmanage.patches.v14_0.drop_data_import_legacy
 dontmanage.patches.v14_0.copy_mail_data #08.03.21
 dontmanage.patches.v14_0.update_github_endpoints #08-11-2021
@@ -213,7 +214,22 @@ dontmanage.patches.v14_0.delete_data_migration_tool
 dontmanage.patches.v14_0.set_suspend_email_queue_default
 dontmanage.patches.v14_0.different_encryption_key
 dontmanage.patches.v14_0.update_multistep_webforms
+execute:dontmanage.delete_doc('Page', 'background_jobs', ignore_missing=True, force=True)
 dontmanage.patches.v14_0.drop_unused_indexes
+dontmanage.patches.v15_0.drop_modified_index
+dontmanage.patches.v14_0.update_attachment_comment
+dontmanage.patches.v15_0.set_contact_full_name
+execute:dontmanage.delete_doc("Page", "activity", force=1)
 dontmanage.patches.v14_0.disable_email_accounts_with_oauth
+execute:dontmanage.delete_doc("Page", "translation-tool", force=1)
+dontmanage.patches.v15_0.remove_prepared_report_settings_from_system_settings
 dontmanage.patches.v14_0.remove_manage_subscriptions_from_navbar
-dontmanage.core.doctype.system_settings.patches.set_default_rounding_method
+dontmanage.patches.v15_0.remove_background_jobs_from_dropdown
+dontmanage.desk.doctype.form_tour.patches.introduce_ui_tours
+execute:dontmanage.delete_doc_if_exists("Workspace", "Customization")
+execute:dontmanage.db.set_single_value("Document Naming Settings", "default_amend_naming", "Amend Counter")
+dontmanage.patches.v15_0.move_event_cancelled_to_status
+dontmanage.patches.v15_0.set_file_type
+dontmanage.core.doctype.data_import.patches.remove_stale_docfields_from_legacy_version
+dontmanage.patches.v15_0.validate_newsletter_recipients
+dontmanage.patches.v15_0.sanitize_workspace_titles

@@ -1,0 +1,4 @@
+# Any python files modifed but no test files modified
+add-test-cases:
+- any: ['dontmanage/**/*.py']
+  all: ['!dontmanage/**/test*.py']

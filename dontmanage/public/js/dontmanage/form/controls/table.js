@@ -110,7 +110,7 @@ dontmanage.ui.form.ControlTable = class ControlTable extends dontmanage.ui.form.
 				return (
 					field.fieldname.toLowerCase() === field_name ||
 					(field.label || "").toLowerCase() === field_name ||
-					(__(field.label) || "").toLowerCase() === field_name
+					(__(field.label, null, field.parent) || "").toLowerCase() === field_name
 				);
 			};
 

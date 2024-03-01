@@ -28,6 +28,8 @@ dontmanage.ui.Dialog = class Dialog extends dontmanage.ui.FieldGroup {
 			this.get_close_btn().hide();
 		}
 
+		if (!this.size) this.set_modal_size();
+
 		this.wrapper = this.$wrapper.find(".modal-dialog").get(0);
 		if (this.size == "small") $(this.wrapper).addClass("modal-sm");
 		else if (this.size == "large") $(this.wrapper).addClass("modal-lg");
@@ -88,6 +90,8 @@ dontmanage.ui.Dialog = class Dialog extends dontmanage.ui.FieldGroup {
 				me.display = false;
 				me.is_minimized = false;
 				me.hide_scrollbar(false);
+				// hide any grid row form if open
+				dontmanage.ui.form.get_open_grid_form?.()?.hide_form();
 
 				if (dontmanage.ui.open_dialogs[dontmanage.ui.open_dialogs.length - 1] === me) {
 					dontmanage.ui.open_dialogs.pop();
@@ -123,6 +127,31 @@ dontmanage.ui.Dialog = class Dialog extends dontmanage.ui.FieldGroup {
 			});
 	}
 
+	set_modal_size() {
+		if (!this.fields) {
+			this.size = "";
+			return;
+		}
+
+		let col_brk = 0;
+		let cur_col_brk = 0;
+
+		// if fields have more than 2 Column Breaks before encountering Section Break, make it large
+		this.fields.forEach((field) => {
+			if (field.fieldtype == "Column Break") {
+				cur_col_brk++;
+
+				if (cur_col_brk > col_brk) {
+					col_brk = cur_col_brk;
+				}
+			} else if (field.fieldtype == "Section Break") {
+				cur_col_brk = 0;
+			}
+		});
+
+		this.size = col_brk >= 4 ? "extra-large" : col_brk >= 2 ? "large" : "";
+	}
+
 	get_primary_btn() {
 		return this.standard_actions.find(".btn-primary");
 	}
@@ -151,11 +180,9 @@ dontmanage.ui.Dialog = class Dialog extends dontmanage.ui.FieldGroup {
 		this.footer.removeClass("hide");
 		this.has_primary_action = true;
 		var me = this;
-		return this.get_primary_btn()
-			.removeClass("hide")
-			.html(label)
-			.off("click")
-			.on("click", function () {
+		const primary_btn = this.get_primary_btn().removeClass("hide").html(label);
+		if (typeof click == "function") {
+			primary_btn.off("click").on("click", function () {
 				me.primary_action_fulfilled = true;
 				// get values and send it
 				// as first parameter to click callback
@@ -164,6 +191,8 @@ dontmanage.ui.Dialog = class Dialog extends dontmanage.ui.FieldGroup {
 				if (!values) return;
 				click && click.apply(me, [values]);
 			});
+		}
+		return primary_btn;
 	}
 
 	set_secondary_action(click) {

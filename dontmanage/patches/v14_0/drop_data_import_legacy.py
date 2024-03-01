@@ -8,7 +8,7 @@ def execute():
 	table = dontmanage.utils.get_table_name(doctype)
 
 	# delete the doctype record to avoid broken links
-	dontmanage.db.delete("DocType", {"name": doctype})
+	dontmanage.delete_doc("DocType", doctype, force=True)
 
 	# leaving table in database for manual cleanup
 	click.secho(

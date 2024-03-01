@@ -9,7 +9,10 @@ dontmanage.listview_settings["Email Queue"] = {
 		};
 		return [__(doc.status), colour[doc.status], "status,=," + doc.status];
 	},
-	refresh: show_toggle_sending_button,
+	refresh: function (listview) {
+		show_toggle_sending_button(listview);
+		add_bulk_retry_button_to_actions(listview);
+	},
 	onload: function (list_view) {
 		dontmanage.require("logtypes.bundle.js", () => {
 			dontmanage.utils.logtypes.show_log_retention_message(list_view.doctype);
@@ -37,5 +40,21 @@ function show_toggle_sending_button(list_view) {
 		// clear the button and show one with the opposite label
 		list_view.page.remove_inner_button(label);
 		show_toggle_sending_button(list_view);
+	});
+}
+
+function add_bulk_retry_button_to_actions(list_view) {
+	list_view.page.add_actions_menu_item(__("Retry Sending"), () => {
+		dontmanage.call({
+			method: "dontmanage.email.doctype.email_queue.email_queue.bulk_retry",
+			args: {
+				queues: list_view.get_checked_items(true),
+			},
+			callback: (r) => {
+				if (!r.exc) {
+					list_view.refresh();
+				}
+			},
+		});
 	});
 }

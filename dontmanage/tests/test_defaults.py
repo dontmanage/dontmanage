@@ -1,9 +1,10 @@
 # Copyright (c) 2015, DontManage and Contributors
 # License: MIT. See LICENSE
-from contextlib import contextmanager
-
 import dontmanage
+from dontmanage.core.doctype.user_permission.test_user_permission import create_user
 from dontmanage.defaults import *
+from dontmanage.query_builder.utils import db_type_is
+from dontmanage.tests.test_query_builder import run_only_if
 from dontmanage.tests.utils import DontManageTestCase
 
 
@@ -54,29 +55,58 @@ class TestDefaults(DontManageTestCase):
 		self.assertEqual(get_user_default("language"), "en")
 		self.assertEqual(get_user_default_as_list("language"), ["en"])
 
-		with as_restricted_user():
-			self.assertEqual(get_global_default("language"), None)
-			self.assertEqual(get_user_default("language"), None)
-			self.assertEqual(get_user_default_as_list("language"), [])
+		old_user = dontmanage.session.user
+		user = "test@example.com"
+		dontmanage.set_user(user)
 
+		perm_doc = dontmanage.get_doc(
+			dict(
+				doctype="User Permission",
+				user=dontmanage.session.user,
+				allow="Language",
+				for_value="en-GB",
+			)
+		).insert(ignore_permissions=True)
 
-@contextmanager
-def as_restricted_user():
-	old_user = dontmanage.session.user
-	user = "test@example.com"
+		self.assertEqual(get_global_default("language"), None)
+		self.assertEqual(get_user_default("language"), None)
+		self.assertEqual(get_user_default_as_list("language"), [])
 
-	perm_doc = dontmanage.get_doc(
-		{
-			"doctype": "User Permission",
-			"user": user,
-			"allow": "Language",
-			"for_value": "en-GB",
-		}
-	).insert(ignore_permissions=True)
+		dontmanage.delete_doc("User Permission", perm_doc.name)
+		dontmanage.set_user(old_user)
 
-	dontmanage.set_user(user)
+	@run_only_if(db_type_is.MARIADB)
+	def test_user_permission_defaults(self):
+		# Create user permission
+		create_user("user_default_test@example.com", "Blogger")
+		dontmanage.set_user("user_default_test@example.com")
+		set_global_default("Country", "")
+		clear_user_default("Country")
 
-	yield
+		perm_doc = dontmanage.get_doc(
+			dict(
+				doctype="User Permission",
+				user=dontmanage.session.user,
+				allow="Country",
+				for_value="India",
+			)
+		).insert(ignore_permissions=True)
 
-	perm_doc.delete(ignore_permissions=True)
-	dontmanage.set_user(old_user)
+		dontmanage.db.set_value("User Permission", perm_doc.name, "is_default", 1)
+		set_global_default("Country", "United States")
+		self.assertEqual(get_user_default("Country"), "India")
+
+		dontmanage.db.set_value("User Permission", perm_doc.name, "is_default", 0)
+		clear_user_default("Country")
+		self.assertEqual(get_user_default("Country"), None)
+
+		perm_doc = dontmanage.get_doc(
+			dict(
+				doctype="User Permission",
+				user=dontmanage.session.user,
+				allow="Country",
+				for_value="United States",
+			)
+		).insert(ignore_permissions=True)
+
+		self.assertEqual(get_user_default("Country"), "United States")

@@ -2,14 +2,24 @@
 # License: MIT. See LICENSE
 def get_jenv():
 	import dontmanage
-	from dontmanage.utils.safe_exec import get_safe_globals
 
 	if not getattr(dontmanage.local, "jenv", None):
 		from jinja2 import DebugUndefined
 		from jinja2.sandbox import SandboxedEnvironment
 
+		from dontmanage.utils.safe_exec import UNSAFE_ATTRIBUTES, get_safe_globals
+
+		UNSAFE_ATTRIBUTES = UNSAFE_ATTRIBUTES - {"format", "format_map"}
+
+		class DontManageSandboxedEnvironment(SandboxedEnvironment):
+			def is_safe_attribute(self, obj, attr, *args, **kwargs):
+				if attr in UNSAFE_ATTRIBUTES:
+					return False
+
+				return super().is_safe_attribute(obj, attr, *args, **kwargs)
+
 		# dontmanage will be loaded last, so app templates will get precedence
-		jenv = SandboxedEnvironment(loader=get_jloader(), undefined=DebugUndefined)
+		jenv = DontManageSandboxedEnvironment(loader=get_jloader(), undefined=DebugUndefined)
 		set_filters(jenv)
 
 		jenv.globals.update(get_safe_globals())
@@ -56,11 +66,10 @@ def validate_template(html):
 	try:
 		jenv.from_string(html)
 	except TemplateSyntaxError as e:
-		dontmanage.msgprint(f"Line {e.lineno}: {e.message}")
-		dontmanage.throw(dontmanage._("Syntax error in template"))
+		dontmanage.throw(dontmanage._(f"Syntax error in template as line {e.lineno}: {e.message}"))
 
 
-def render_template(template, context, is_path=None, safe_render=True):
+def render_template(template, context=None, is_path=None, safe_render=True):
 	"""Render a template using Jinja
 
 	:param template: path or HTML containing the jinja template
@@ -75,6 +84,9 @@ def render_template(template, context, is_path=None, safe_render=True):
 
 	if not template:
 		return ""
+
+	if context is None:
+		context = {}
 
 	if is_path or guess_is_path(template):
 		return get_jenv().get_template(template).render(context)
@@ -110,7 +122,9 @@ def get_jloader():
 		apps = dontmanage.get_hooks("template_apps")
 		if not apps:
 			apps = list(
-				reversed(dontmanage.local.flags.web_pages_apps or dontmanage.get_installed_apps(_ensure_on_bench=True))
+				reversed(
+					dontmanage.local.flags.web_pages_apps or dontmanage.get_installed_apps(_ensure_on_bench=True)
+				)
 			)
 
 		if "dontmanage" not in apps:

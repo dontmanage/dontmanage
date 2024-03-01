@@ -60,7 +60,9 @@ dontmanage.ui.form.ControlButton = class ControlButton extends dontmanage.ui.for
 		if (label) {
 			this.df.label = label;
 		}
-		label = (this.df.icon ? dontmanage.utils.icon(this.df.icon) : "") + __(this.df.label);
+		label =
+			(this.df.icon ? dontmanage.utils.icon(this.df.icon) : "") +
+			__(this.df.label, null, this.df.parent);
 		$(this.label_span).html("&nbsp;");
 		this.$input && this.$input.html(label);
 	}

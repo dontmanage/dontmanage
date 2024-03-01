@@ -9,9 +9,7 @@ def execute():
 
 	for blog in dontmanage.get_all("Blog Post"):
 		blog = dontmanage.get_doc("Blog Post", blog.name)
-		dontmanage.db.set_value(
-			"Blog Post", blog.name, "read_time", get_read_time(blog), update_modified=False
-		)
+		dontmanage.db.set_value("Blog Post", blog.name, "read_time", get_read_time(blog), update_modified=False)
 
 
 def get_read_time(blog):

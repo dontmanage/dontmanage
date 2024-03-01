@@ -21,7 +21,7 @@ class NotFoundPage(TemplatePage):
 
 	def render(self):
 		if self.can_cache_404():
-			dontmanage.cache().hset("website_404", self.request_url, True)
+			dontmanage.cache.hset("website_404", self.request_url, True)
 		return super().render()
 
 	def can_cache_404(self):

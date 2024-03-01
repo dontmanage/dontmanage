@@ -7,8 +7,8 @@ import dontmanage
 
 
 def get_parent_doc(doc):
-	"""Returns document of `reference_doctype`, `reference_doctype`"""
-	if not hasattr(doc, "parent_doc"):
+	"""Return document of `reference_doctype`, `reference_doctype`."""
+	if not getattr(doc, "parent_doc", None):
 		if doc.reference_doctype and doc.reference_name:
 			doc.parent_doc = dontmanage.get_doc(doc.reference_doctype, doc.reference_name)
 		else:
@@ -66,11 +66,7 @@ def find_all(list_of_dict, match_function):
 
 	        red_shapes = find_all(colored_shapes, lambda d: d['color'] == 'red')
 	"""
-	found = []
-	for entry in list_of_dict:
-		if match_function(entry):
-			found.append(entry)
-	return found
+	return [entry for entry in list_of_dict if match_function(entry)]
 
 
 def ljust_list(_list, length, fill_word=None):

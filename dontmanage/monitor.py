@@ -32,6 +32,12 @@ def add_data_to_monitor(**kwargs) -> None:
 		dontmanage.local.monitor.add_custom_data(**kwargs)
 
 
+def get_trace_id() -> str | None:
+	"""Get unique ID for current transaction."""
+	if monitor := getattr(dontmanage.local, "monitor", None):
+		return monitor.data.uuid
+
+
 def log_file():
 	return os.path.join(dontmanage.utils.get_bench_path(), "logs", "monitor.json.log")
 
@@ -66,14 +72,16 @@ class Monitor:
 			}
 		)
 
+		if request_id := dontmanage.request.headers.get("X-DontManage-Request-Id"):
+			self.data.uuid = request_id
+
 	def collect_job_meta(self, method, kwargs):
 		self.data.job = dontmanage._dict({"method": method, "scheduled": False, "wait": 0})
 		if "run_scheduled_job" in method:
 			self.data.job.method = kwargs["job_type"]
 			self.data.job.scheduled = True
 
-		job = rq.get_current_job()
-		if job:
+		if job := rq.get_current_job():
 			self.data.uuid = job.id
 			waitdiff = self.data.timestamp - job.enqueued_at
 			self.data.job.wait = int(waitdiff.total_seconds() * 1000000)
@@ -89,8 +97,11 @@ class Monitor:
 			self.data.duration = int(timediff.total_seconds() * 1000000)
 
 			if self.data.transaction_type == "request":
-				self.data.request.status_code = response.status_code
-				self.data.request.response_length = int(response.headers.get("Content-Length", 0))
+				if response:
+					self.data.request.status_code = response.status_code
+					self.data.request.response_length = int(response.headers.get("Content-Length", 0))
+				else:
+					self.data.request.status_code = 500
 
 				if hasattr(dontmanage.local, "rate_limiter"):
 					limiter = dontmanage.local.rate_limiter
@@ -103,22 +114,22 @@ class Monitor:
 			traceback.print_exc()
 
 	def store(self):
-		if dontmanage.cache().llen(MONITOR_REDIS_KEY) > MONITOR_MAX_ENTRIES:
-			dontmanage.cache().ltrim(MONITOR_REDIS_KEY, 1, -1)
+		if dontmanage.cache.llen(MONITOR_REDIS_KEY) > MONITOR_MAX_ENTRIES:
+			dontmanage.cache.ltrim(MONITOR_REDIS_KEY, 1, -1)
 		serialized = json.dumps(self.data, sort_keys=True, default=str, separators=(",", ":"))
-		dontmanage.cache().rpush(MONITOR_REDIS_KEY, serialized)
+		dontmanage.cache.rpush(MONITOR_REDIS_KEY, serialized)
 
 
 def flush():
 	try:
 		# Fetch all the logs without removing from cache
-		logs = dontmanage.cache().lrange(MONITOR_REDIS_KEY, 0, -1)
+		logs = dontmanage.cache.lrange(MONITOR_REDIS_KEY, 0, -1)
 		if logs:
 			logs = list(map(dontmanage.safe_decode, logs))
 			with open(log_file(), "a", os.O_NONBLOCK) as f:
 				f.write("\n".join(logs))
 				f.write("\n")
 			# Remove fetched entries from cache
-			dontmanage.cache().ltrim(MONITOR_REDIS_KEY, len(logs) - 1, -1)
+			dontmanage.cache.ltrim(MONITOR_REDIS_KEY, len(logs) - 1, -1)
 	except Exception:
 		traceback.print_exc()

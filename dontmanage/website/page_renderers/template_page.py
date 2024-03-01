@@ -50,7 +50,7 @@ class TemplatePage(BaseTemplatePage):
 		and /templates/pages folders and sets path if match is found
 		"""
 		folders = get_start_folders()
-		for app in dontmanage.get_installed_apps(dontmanage_last=True):
+		for app in reversed(dontmanage.get_installed_apps()):
 			app_path = dontmanage.get_app_path(app)
 
 			for dirname in folders:
@@ -109,7 +109,7 @@ class TemplatePage(BaseTemplatePage):
 		super().post_process_context()
 
 	def add_sidebar_and_breadcrumbs(self):
-		if self.basepath:
+		if not self.context.sidebar_items:
 			self.context.sidebar_items = get_sidebar_items(self.context.website_sidebar, self.basepath)
 
 		if self.context.add_breadcrumbs and not self.context.parents:
@@ -201,10 +201,8 @@ class TemplatePage(BaseTemplatePage):
 			and "{% extends" not in self.source
 			and "</body>" not in self.source
 		):
-			self.source = """{{% extends "{0}" %}}
-				{{% block page_content %}}{1}{{% endblock %}}""".format(
-				context.base_template, self.source
-			)
+			self.source = f"""{{% extends "{context.base_template}" %}}
+				{{% block page_content %}}{self.source}{{% endblock %}}"""
 
 		self.set_properties_via_comments()
 

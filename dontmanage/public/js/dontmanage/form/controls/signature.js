@@ -6,7 +6,7 @@ dontmanage.ui.form.ControlSignature = class ControlSignature extends dontmanage.
 		super.make();
 
 		if (this.df.label) {
-			$(this.wrapper).find("label").text(__(this.df.label));
+			$(this.wrapper).find("label").text(__(this.df.label, null, this.df.parent));
 		}
 		this.set_doc_url();
 
@@ -43,7 +43,7 @@ dontmanage.ui.form.ControlSignature = class ControlSignature extends dontmanage.
 			this.$reset_button_wrapper = $(`
 					<div class="signature-btn-row">
 						<a href="#" type="button" class="signature-reset btn icon-btn">
-							${dontmanage.utils.icon("refresh", "sm")}
+							${dontmanage.utils.icon("es-line-reload", "sm")}
 						</a>
 					</div>
 				`)
@@ -132,5 +132,8 @@ dontmanage.ui.form.ControlSignature = class ControlSignature extends dontmanage.
 		var base64_img = this.$pad.jSignature("getData");
 		this.set_my_value(base64_img);
 		this.set_image(this.get_value());
+	}
+	on_section_collapse() {
+		this.refresh();
 	}
 };

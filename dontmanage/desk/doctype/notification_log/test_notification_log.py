@@ -30,9 +30,7 @@ class TestNotificationLog(DontManageTestCase):
 		self.assertEqual(log_type, "Share")
 
 		email = get_last_email_queue()
-		content = "Subject: {} shared a document ToDo".format(
-			dontmanage.utils.get_fullname(dontmanage.session.user)
-		)
+		content = f"Subject: {dontmanage.utils.get_fullname(dontmanage.session.user)} shared a document ToDo"
 		self.assertTrue(content in email.message)
 
 

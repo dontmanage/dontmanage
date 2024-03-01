@@ -30,9 +30,7 @@ def execute():
 		dontmanage_login_key.base_url = social_login_keys.get("dontmanage_server_url")
 		dontmanage_login_key.client_id = social_login_keys.get("dontmanage_client_id")
 		dontmanage_login_key.client_secret = social_login_keys.get("dontmanage_client_secret")
-		if not (
-			dontmanage_login_key.client_secret and dontmanage_login_key.client_id and dontmanage_login_key.base_url
-		):
+		if not (dontmanage_login_key.client_secret and dontmanage_login_key.client_id and dontmanage_login_key.base_url):
 			dontmanage_login_key.enable_social_login = 0
 		dontmanage_login_key.save()
 
@@ -63,9 +61,7 @@ def run_patch():
 	dontmanage.reload_doc("core", "doctype", "user", force=True)
 	dontmanage.reload_doc("core", "doctype", "user_social_login", force=True)
 
-	users = dontmanage.get_all(
-		"User", fields=["*"], filters={"name": ("not in", ["Administrator", "Guest"])}
-	)
+	users = dontmanage.get_all("User", fields=["*"], filters={"name": ("not in", ["Administrator", "Guest"])})
 
 	for user in users:
 		idx = 0
@@ -122,9 +118,7 @@ def insert_user_social_login(user, modified_by, provider, idx, userid=None, user
 
 	query = """INSERT INTO `tabUser Social Login` (`{source_cols}`)
 		VALUES ({values})
-	""".format(
-		source_cols="`, `".join(source_cols), values=", ".join([dontmanage.db.escape(d) for d in values])
-	)
+	""".format(source_cols="`, `".join(source_cols), values=", ".join([dontmanage.db.escape(d) for d in values]))
 
 	dontmanage.db.sql(query)
 

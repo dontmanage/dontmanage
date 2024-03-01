@@ -1,8 +1,6 @@
 import "./libs.bundle.js";
-import "./jquery-bootstrap";
 import "./dontmanage/class.js";
 import "./dontmanage/polyfill.js";
-import "./lib/moment.js";
 import "./dontmanage/provide.js";
 import "./dontmanage/translate.js";
 import "./dontmanage/form/formatters.js";

@@ -1,11 +1,16 @@
 # Copyright (c) 2022, DontManage and Contributors
 # License: MIT. See LICENSE
 
+import typing
 from functools import cached_property
 from types import NoneType
 
 import dontmanage
 from dontmanage.query_builder.builder import MariaDB, Postgres
+from dontmanage.query_builder.functions import Function
+
+if typing.TYPE_CHECKING:
+	from dontmanage.query_builder import DocType
 
 Query = str | MariaDB | Postgres
 QueryValues = tuple | list | dict | NoneType
@@ -18,11 +23,23 @@ NestedSetHierarchy = (
 	"descendants of",
 	"not ancestors of",
 	"not descendants of",
+	"descendants of (inclusive)",
 )
 
 
 def is_query_type(query: str, query_type: str | tuple[str]) -> bool:
 	return query.lstrip().split(maxsplit=1)[0].lower().startswith(query_type)
+
+
+def is_pypika_function_object(field: str) -> bool:
+	return getattr(field, "__module__", None) == "pypika.functions" or isinstance(field, Function)
+
+
+def get_doctype_name(table_name: str) -> str:
+	if table_name.startswith(("tab", "`tab", '"tab')):
+		table_name = table_name.replace("tab", "", 1)
+	table_name = table_name.replace("`", "")
+	return table_name.replace('"', "")
 
 
 class LazyString:

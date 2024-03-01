@@ -19,7 +19,7 @@ dontmanage.xcall = function (method, params) {
 				resolve(r.message);
 			},
 			error: (r) => {
-				reject(r.message);
+				reject(r?.message);
 			},
 		});
 	});
@@ -75,7 +75,7 @@ dontmanage.call = function (opts) {
 	var callback = function (data, response_text) {
 		if (data.task_id) {
 			// async call, subscribe
-			dontmanage.socketio.subscribe(data.task_id, opts);
+			dontmanage.realtime.subscribe(data.task_id, opts);
 
 			if (opts.queued) {
 				opts.queued(data);
@@ -88,7 +88,11 @@ dontmanage.call = function (opts) {
 
 	let url = opts.url;
 	if (!url) {
-		url = "/api/method/" + args.cmd;
+		let prefix = "/api/method/";
+		if (opts.api_version) {
+			prefix = `/api/${opts.api_version}/method/`;
+		}
+		url = prefix + args.cmd;
 		if (window.cordova) {
 			let host = dontmanage.request.url;
 			host = host.slice(0, host.length - 1);
@@ -116,6 +120,7 @@ dontmanage.call = function (opts) {
 		// show_spinner: !opts.no_spinner,
 		async: opts.async,
 		silent: opts.silent,
+		api_version: opts.api_version,
 		url,
 	});
 };
@@ -133,6 +138,7 @@ dontmanage.request.call = function (opts) {
 			} else {
 				dontmanage.app.handle_session_expired();
 			}
+			opts.error_callback && opts.error_callback();
 		},
 		404: function (xhr) {
 			dontmanage.msgprint({
@@ -140,6 +146,7 @@ dontmanage.request.call = function (opts) {
 				indicator: "red",
 				message: __("The resource you are looking for is not available"),
 			});
+			opts.error_callback && opts.error_callback();
 		},
 		403: function (xhr) {
 			if (dontmanage.session.user === "Guest" && dontmanage.session.logged_in_user !== "Guest") {
@@ -169,6 +176,7 @@ dontmanage.request.call = function (opts) {
 					),
 				});
 			}
+			opts.error_callback && opts.error_callback();
 		},
 		508: function (xhr) {
 			dontmanage.utils.play_sound("error");
@@ -179,6 +187,7 @@ dontmanage.request.call = function (opts) {
 					"Another transaction is blocking this one. Please try again in a few seconds."
 				),
 			});
+			opts.error_callback && opts.error_callback();
 		},
 		413: function (data, xhr) {
 			dontmanage.msgprint({
@@ -188,6 +197,7 @@ dontmanage.request.call = function (opts) {
 					(dontmanage.boot.max_file_size || 5242880) / 1048576,
 				]),
 			});
+			opts.error_callback && opts.error_callback();
 		},
 		417: function (xhr) {
 			var r = xhr.responseJSON;
@@ -220,6 +230,7 @@ dontmanage.request.call = function (opts) {
 		},
 		502: function (xhr) {
 			dontmanage.msgprint(__("Internal Server Error"));
+			opts.error_callback && opts.error_callback();
 		},
 	};
 
@@ -294,8 +305,8 @@ dontmanage.request.call = function (opts) {
 					status_code_handler(data, xhr);
 				}
 			} catch (e) {
-				console.log("Unable to handle success response", data); // eslint-disable-line
-				console.error(e); // eslint-disable-line
+				console.log("Unable to handle success response", data);
+				console.error(e);
 			}
 		})
 		.always(function (data, textStatus, xhr) {
@@ -304,7 +315,7 @@ dontmanage.request.call = function (opts) {
 					data = JSON.parse(data);
 				}
 				if (data.responseText) {
-					var xhr = data;
+					var xhr = data; // eslint-disable-line
 					data = JSON.parse(data.responseText);
 				}
 			} catch (e) {
@@ -348,8 +359,8 @@ dontmanage.request.call = function (opts) {
 				// if not handled by error handler!
 				opts.error_callback && opts.error_callback(xhr);
 			} catch (e) {
-				console.log("Unable to handle failed response"); // eslint-disable-line
-				console.error(e); // eslint-disable-line
+				console.log("Unable to handle failed response");
+				console.error(e);
 			}
 		});
 };
@@ -366,7 +377,6 @@ dontmanage.request.is_fresh = function (args, threshold) {
 			new Date() - past_request.timestamp < threshold &&
 			dontmanage.utils.deep_equal(args, past_request.args)
 		) {
-			// eslint-disable-next-line no-console
 			console.log("throttled");
 			return true;
 		}
@@ -439,12 +449,18 @@ dontmanage.request.cleanup = function (opts, r) {
 		}
 
 		// show messages
-		if (r._server_messages && !opts.silent) {
+		//
+		let messages;
+		if (opts.api_version == "v2") {
+			messages = r.messages;
+		} else if (r._server_messages) {
+			messages = JSON.parse(r._server_messages);
+		}
+		if (messages && !opts.silent) {
 			// show server messages if no handlers exist
 			if (handlers.length === 0) {
-				r._server_messages = JSON.parse(r._server_messages);
 				dontmanage.hide_msgprint();
-				dontmanage.msgprint(r._server_messages);
+				dontmanage.msgprint(messages);
 			}
 		}
 
@@ -524,6 +540,9 @@ dontmanage.request.report_error = function (xhr, request_opts) {
 
 	const copy_markdown_to_clipboard = () => {
 		const code_block = (snippet) => "```\n" + snippet + "\n```";
+
+		let request_data = Object.assign({}, request_opts);
+		request_data.request_id = xhr.getResponseHeader("X-DontManage-Request-Id");
 		const traceback_info = [
 			"### App Versions",
 			code_block(JSON.stringify(dontmanage.boot.versions, null, "\t")),
@@ -532,7 +551,7 @@ dontmanage.request.report_error = function (xhr, request_opts) {
 			"### Traceback",
 			code_block(exc),
 			"### Request Data",
-			code_block(JSON.stringify(request_opts, null, "\t")),
+			code_block(JSON.stringify(request_data, null, "\t")),
 			"### Response Data",
 			code_block(JSON.stringify(data, null, "\t")),
 		].join("\n");
@@ -585,27 +604,32 @@ dontmanage.request.report_error = function (xhr, request_opts) {
 		if (!dontmanage.error_dialog) {
 			dontmanage.error_dialog = new dontmanage.ui.Dialog({
 				title: __("Server Error"),
-				primary_action_label: __("Report"),
-				primary_action: () => {
-					if (error_report_email) {
-						show_communication();
-					} else {
-						dontmanage.msgprint(__("Support Email Address Not Specified"));
-					}
+			});
+
+			if (error_report_email) {
+				dontmanage.error_dialog.set_primary_action(__("Report"), () => {
+					show_communication();
 					dontmanage.error_dialog.hide();
-				},
-				secondary_action_label: __("Copy error to clipboard"),
-				secondary_action: () => {
+				});
+			} else {
+				dontmanage.error_dialog.set_primary_action(__("Copy error to clipboard"), () => {
 					copy_markdown_to_clipboard();
 					dontmanage.error_dialog.hide();
-				},
-			});
+				});
+			}
 			dontmanage.error_dialog.wrapper.classList.add("msgprint-dialog");
 		}
 
 		let parts = strip(exc).split("\n");
 
-		dontmanage.error_dialog.$body.html(parts[parts.length - 1]);
+		let dialog_html = parts[parts.length - 1];
+
+		if (data._exc_source) {
+			dialog_html += "<br>";
+			dialog_html += `Possible source of error: ${data._exc_source.bold()} `;
+		}
+
+		dontmanage.error_dialog.$body.html(dialog_html);
 		dontmanage.error_dialog.show();
 	}
 };

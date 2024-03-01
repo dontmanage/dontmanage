@@ -2,19 +2,22 @@
 # License: MIT. See LICENSE
 
 import datetime
+import itertools
 import json
 import random
 import re
 import string
 import traceback
+from collections.abc import Iterable, Sequence
 from contextlib import contextmanager, suppress
 from time import time
+from typing import TYPE_CHECKING, Any, Union
 
+from pypika.dialects import MySQLQueryBuilder, PostgreSQLQueryBuilder
 from pypika.terms import Criterion, NullValue
 
 import dontmanage
 import dontmanage.defaults
-import dontmanage.model.meta
 from dontmanage import _
 from dontmanage.database.utils import (
 	DefaultOrderBy,
@@ -26,16 +29,25 @@ from dontmanage.database.utils import (
 	is_query_type,
 )
 from dontmanage.exceptions import DoesNotExistError, ImplicitCommitError
-from dontmanage.model.utils.link_count import flush_local_link_count
+from dontmanage.monitor import get_trace_id
 from dontmanage.query_builder.functions import Count
+from dontmanage.utils import CallbackManager, cint, get_datetime, get_table_name, getdate, now, sbool
 from dontmanage.utils import cast as cast_fieldtype
-from dontmanage.utils import cint, get_datetime, get_table_name, getdate, now, sbool
-from dontmanage.utils.deprecations import deprecated, deprecation_warning
+from dontmanage.utils.deprecations import deprecation_warning
+
+if TYPE_CHECKING:
+	from psycopg2 import connection as PostgresConnection
+	from psycopg2 import cursor as PostgresCursor
+	from pymysql.connections import Connection as MariadbConnection
+	from pymysql.cursors import Cursor as MariadbCursor
+
 
 IFNULL_PATTERN = re.compile(r"ifnull\(", flags=re.IGNORECASE)
 INDEX_PATTERN = re.compile(r"\s*\([^)]+\)\s*")
 SINGLE_WORD_PATTERN = re.compile(r'([`"]?)(tab([A-Z]\w+))\1')
 MULTI_WORD_PATTERN = re.compile(r'([`"])(tab([A-Z]\w+)( [A-Z]\w+)+)\1')
+
+SQL_ITERATOR_BATCH_SIZE = 100
 
 
 class Database:
@@ -48,29 +60,12 @@ class Database:
 	VARCHAR_LEN = 140
 	MAX_COLUMN_LENGTH = 64
 
-	OPTIONAL_COLUMNS = ["_user_tags", "_comments", "_assign", "_liked_by"]
-	DEFAULT_SHORTCUTS = ["_Login", "__user", "_Full Name", "Today", "__today", "now", "Now"]
+	OPTIONAL_COLUMNS = ("_user_tags", "_comments", "_assign", "_liked_by")
+	DEFAULT_SHORTCUTS = ("_Login", "__user", "_Full Name", "Today", "__today", "now", "Now")
 	STANDARD_VARCHAR_COLUMNS = ("name", "owner", "modified_by")
-	DEFAULT_COLUMNS = ["name", "creation", "modified", "modified_by", "owner", "docstatus", "idx"]
+	DEFAULT_COLUMNS = ("name", "creation", "modified", "modified_by", "owner", "docstatus", "idx")
 	CHILD_TABLE_COLUMNS = ("parent", "parenttype", "parentfield")
 	MAX_WRITES_PER_TRANSACTION = 200_000
-
-	# NOTE:
-	# FOR MARIADB - using no cache - as during backup, if the sequence was used in anyform,
-	# it drops the cache and uses the next non cached value in setval query and
-	# puts that in the backup file, which will start the counter
-	# from that value when inserting any new record in the doctype.
-	# By default the cache is 1000 which will mess up the sequence when
-	# using the system after a restore.
-	#
-	# Another case could be if the cached values expire then also there is a chance of
-	# the cache being skipped.
-	#
-	# FOR POSTGRES - The sequence cache for postgres is per connection.
-	# Since we're opening and closing connections for every request this results in skipping the cache
-	# to the next non-cached value hence not using cache in postgres.
-	# ref: https://stackoverflow.com/questions/21356375/postgres-9-0-4-sequence-skipping-numbers
-	SEQUENCE_CACHE = 0
 
 	class InvalidColumnName(dontmanage.ValidationError):
 		pass
@@ -85,8 +80,8 @@ class Database:
 		port=None,
 	):
 		self.setup_type_map()
-		self.host = host or dontmanage.conf.db_host or "127.0.0.1"
-		self.port = port or dontmanage.conf.db_port or ""
+		self.host = host or dontmanage.conf.db_host
+		self.port = port or dontmanage.conf.db_port
 		self.user = user or dontmanage.conf.db_name
 		self.db_name = dontmanage.conf.db_name
 		self._conn = None
@@ -102,6 +97,14 @@ class Database:
 
 		self.password = password or dontmanage.conf.db_password
 		self.value_cache = {}
+		self.logger = dontmanage.logger("database")
+		self.logger.setLevel("WARNING")
+
+		self.before_commit = CallbackManager()
+		self.after_commit = CallbackManager()
+		self.before_rollback = CallbackManager()
+		self.after_rollback = CallbackManager()
+
 		# self.db_type: str
 		# self.last_query (lazy) attribute of last sql query executed
 
@@ -111,15 +114,14 @@ class Database:
 	def connect(self):
 		"""Connects to a database as set in `site_config.json`."""
 		self.cur_db_name = self.user
-		self._conn = self.get_connection()
-		self._cursor = self._conn.cursor()
-		dontmanage.local.rollback_observers = []
+		self._conn: "MariadbConnection" | "PostgresConnection" = self.get_connection()
+		self._cursor: "MariadbCursor" | "PostgresCursor" = self._conn.cursor()
 
 		try:
 			if execution_timeout := get_query_execution_timeout():
 				self.set_execution_timeout(execution_timeout)
 		except Exception as e:
-			dontmanage.logger("database").warning(f"Couldn't set execution timeout {e}")
+			self.logger.warning(f"Couldn't set execution timeout {e}")
 
 	def set_execution_timeout(self, seconds: int):
 		"""Set session speicifc timeout on exeuction of statements.
@@ -143,21 +145,24 @@ class Database:
 	def _transform_result(self, result: list[tuple]) -> list[tuple]:
 		return result
 
+	def _clean_up(self):
+		pass
+
 	def sql(
 		self,
 		query: Query,
 		values: QueryValues = EmptyQueryValues,
+		*,
 		as_dict=0,
 		as_list=0,
-		formatted=0,
 		debug=0,
 		ignore_ddl=0,
-		as_utf8=0,
 		auto_commit=0,
 		update=None,
 		explain=False,
 		run=True,
 		pluck=False,
+		as_iterator=False,
 	):
 		"""Execute a SQL query and fetch all rows.
 
@@ -165,13 +170,16 @@ class Database:
 		:param values: Tuple / List / Dict of values to be escaped and substituted in the query.
 		:param as_dict: Return as a dictionary.
 		:param as_list: Always return as a list.
-		:param formatted: Format values like date etc.
 		:param debug: Print query and `EXPLAIN` in debug log.
 		:param ignore_ddl: Catch exception if table, column missing.
-		:param as_utf8: Encode values as UTF 8.
 		:param auto_commit: Commit after executing the query.
 		:param update: Update this dict to all rows (if returned `as_dict`).
-		:param run: Returns query without executing it if False.
+		:param run: Return query without executing it if False.
+		:param pluck: Get the plucked field only.
+		:param explain: Print `EXPLAIN` in error log.
+		:param as_iterator: Returns iterator over results instead of fetching all results at once.
+		        This should be used with unbuffered cursor as default cursors used by pymysql and postgres
+		        buffer the results internally. See `Database.unbuffered_cursor`.
 		Examples:
 
 		        # return customer names as dicts
@@ -185,6 +193,9 @@ class Database:
 		                {"name": "a%", "owner":"test@example.com"})
 
 		"""
+		if isinstance(query, MySQLQueryBuilder | PostgreSQLQueryBuilder):
+			dontmanage.errprint("Use run method to execute SQL queries generated by Query Engine")
+
 		debug = debug or getattr(self, "debug", False)
 		query = str(query)
 		if not run:
@@ -211,9 +222,13 @@ class Database:
 
 		if values == EmptyQueryValues:
 			values = None
-		elif not isinstance(values, (tuple, dict, list)):
+		elif not isinstance(values, tuple | dict | list):
 			values = (values,)
+
 		query, values = self._transform_query(query, values)
+
+		if trace_id := get_trace_id():
+			query += f" /* DONTMANAGE_TRACE_ID: {trace_id} */"
 
 		try:
 			self._cursor.execute(query, values)
@@ -230,7 +245,7 @@ class Database:
 			elif self.is_read_only_mode_error(e):
 				dontmanage.throw(
 					_(
-						"Site is running in read only mode, this action can not be performed right now. Please try again later."
+						"Site is running in read only mode for maintenance or site update, this action can not be performed right now. Please try again later."
 					),
 					title=_("In Read Only Mode"),
 					exc=dontmanage.InReadOnlyMode,
@@ -266,32 +281,61 @@ class Database:
 		if not self._cursor.description:
 			return ()
 
-		self.last_result = self._transform_result(self._cursor.fetchall())
+		if as_iterator:
+			return self._return_as_iterator(pluck=pluck, as_dict=as_dict, as_list=as_list, update=update)
 
+		last_result = self._transform_result(self._cursor.fetchall())
 		if pluck:
-			return [r[0] for r in self.last_result]
-
-		if as_utf8:
-			deprecation_warning("as_utf8 parameter is deprecated and will be removed in version 15.")
-		if formatted:
-			deprecation_warning("formatted parameter is deprecated and will be removed in version 15.")
+			last_result = [r[0] for r in last_result]
+			self._clean_up()
+			return last_result
 
 		# scrub output if required
 		if as_dict:
-			ret = self.fetch_as_dict(formatted, as_utf8)
+			last_result = self.fetch_as_dict(last_result)
 			if update:
-				for r in ret:
+				for r in last_result:
 					r.update(update)
-			return ret
-		elif as_list or as_utf8:
-			return self.convert_to_lists(self.last_result, formatted, as_utf8)
-		return self.last_result
 
-	def _log_query(self, mogrified_query: str, debug: bool = False, explain: bool = False) -> None:
+		elif as_list:
+			last_result = self.convert_to_lists(last_result)
+
+		self._clean_up()
+		return last_result
+
+	def _return_as_iterator(self, *, pluck, as_dict, as_list, update):
+		while result := self._transform_result(self._cursor.fetchmany(SQL_ITERATOR_BATCH_SIZE)):
+			if pluck:
+				for row in result:
+					yield row[0]
+
+			elif as_dict:
+				keys = [column[0] for column in self._cursor.description]
+				for row in result:
+					row = dontmanage._dict(zip(keys, row, strict=False))
+					if update:
+						row.update(update)
+					yield row
+
+			elif as_list:
+				for row in result:
+					yield list(row)
+			else:
+				dontmanage.throw(_("`as_iterator` only works with `as_list=True` or `as_dict=True`"))
+
+		self._clean_up()
+
+	def _log_query(
+		self,
+		mogrified_query: str,
+		debug: bool = False,
+		explain: bool = False,
+		unmogrified_query: str = "",
+	) -> None:
 		"""Takes the query and logs it to various interfaces according to the settings."""
 		_query = None
 
-		if dontmanage.conf.allow_tests and dontmanage.cache().get_value("flag_print_sql"):
+		if dontmanage.conf.allow_tests and dontmanage.cache.get_value("flag_print_sql"):
 			_query = _query or str(mogrified_query)
 			print(_query)
 
@@ -303,7 +347,13 @@ class Database:
 
 		if dontmanage.conf.logging == 2:
 			_query = _query or str(mogrified_query)
-			dontmanage.log(f"<<<< query\n{_query}\n>>>>")
+			dontmanage.log(f"#### query\n{_query}\n####")
+
+		if unmogrified_query and is_query_type(
+			unmogrified_query, ("alter", "drop", "create", "truncate", "rename")
+		):
+			_query = _query or str(mogrified_query)
+			self.logger.warning("DDL Query made to DB:\n" + _query)
 
 		if dontmanage.flags.in_migrate:
 			_query = _query or str(mogrified_query)
@@ -316,7 +366,7 @@ class Database:
 		# like cursor._transformed_statement from the cursor object. We can also avoid setting
 		# mogrified_query if we don't need to log it.
 		mogrified_query = self.lazy_mogrify(query, values)
-		self._log_query(mogrified_query, debug, explain)
+		self._log_query(mogrified_query, debug, explain, unmogrified_query=query)
 		return mogrified_query
 
 	def mogrify(self, query: Query, values: QueryValues):
@@ -328,8 +378,10 @@ class Database:
 			return self._cursor.mogrify(query, values)
 		except AttributeError:
 			if isinstance(values, dict):
-				return query % {k: dontmanage.db.escape(v) if isinstance(v, str) else v for k, v in values.items()}
-			elif isinstance(values, (list, tuple)):
+				return query % {
+					k: dontmanage.db.escape(v) if isinstance(v, str) else v for k, v in values.items()
+				}
+			elif isinstance(values, list | tuple):
 				return query % tuple(dontmanage.db.escape(v) if isinstance(v, str) else v for v in values)
 			return query, values
 
@@ -365,7 +417,7 @@ class Database:
 		self.sql(query, debug=debug)
 
 	def check_transaction_status(self, query):
-		"""Raises exception if more than 20,000 `INSERT`, `UPDATE` queries are
+		"""Raises exception if more than 200,000 `INSERT`, `UPDATE` queries are
 		executed in one transaction. This is to ensure that writes are always flushed otherwise this
 		could cause the system to hang."""
 		self.check_implicit_commit(query)
@@ -391,62 +443,26 @@ class Database:
 		):
 			raise ImplicitCommitError("This statement can cause implicit commit")
 
-	def fetch_as_dict(self, formatted=0, as_utf8=0) -> list[dontmanage._dict]:
-		"""Internal. Converts results to dict."""
-		result = self.last_result
+	def fetch_as_dict(self, result) -> list[dontmanage._dict]:
+		"""Internal. Convert results to dict."""
 		if result:
 			keys = [column[0] for column in self._cursor.description]
 
-		if not as_utf8:
-			return [dontmanage._dict(zip(keys, row)) for row in result]
-
-		ret = []
-		for r in result:
-			values = []
-			for value in r:
-				if as_utf8 and isinstance(value, str):
-					value = value.encode("utf-8")
-				values.append(value)
-
-			ret.append(dontmanage._dict(zip(keys, values)))
-		return ret
+		return [dontmanage._dict(zip(keys, row, strict=False)) for row in result]
 
 	@staticmethod
 	def clear_db_table_cache(query):
 		if query and is_query_type(query, ("drop", "create")):
-			dontmanage.cache().delete_key("db_tables")
-
-	@staticmethod
-	def needs_formatting(result, formatted):
-		"""Returns true if the first row in the result has a Date, Datetime, Long Int."""
-		if result and result[0]:
-			for v in result[0]:
-				if isinstance(v, (datetime.date, datetime.timedelta, datetime.datetime, int)):
-					return True
-				if formatted and isinstance(v, (int, float)):
-					return True
-
-		return False
+			dontmanage.cache.delete_key("db_tables")
 
 	def get_description(self):
 		"""Returns result metadata."""
 		return self._cursor.description
 
 	@staticmethod
-	def convert_to_lists(res, formatted=0, as_utf8=0):
+	def convert_to_lists(res):
 		"""Convert tuple output to lists (internal)."""
-		if not as_utf8:
-			return [[value for value in row] for row in res]
-
-		nres = []
-		for r in res:
-			nr = []
-			for val in r:
-				if as_utf8 and isinstance(val, str):
-					val = val.encode("utf-8")
-				nr.append(val)
-			nres.append(nr)
-		return nres
+		return [[value for value in row] for row in res]
 
 	def get(self, doctype, filters=None, as_dict=True, cache=False):
 		"""Returns `get_value` with fieldname='*'"""
@@ -467,6 +483,7 @@ class Database:
 		run=True,
 		pluck=False,
 		distinct=False,
+		skip_locked=False,
 	):
 		"""Returns a document property or list of properties.
 
@@ -477,6 +494,10 @@ class Database:
 		:param as_dict: Return values as dict.
 		:param debug: Print query in error log.
 		:param order_by: Column to order by
+		:param cache: Use cached results fetched during current job/request
+		:param pluck: pluck first column instead of returning as nested list or dict.
+		:param for_update: All the affected/read rows will be locked.
+		:param skip_locked: Skip selecting currently locked rows.
 
 		Example:
 
@@ -507,6 +528,7 @@ class Database:
 			pluck=pluck,
 			distinct=distinct,
 			limit=1,
+			skip_locked=skip_locked,
 		)
 
 		if not run:
@@ -539,6 +561,7 @@ class Database:
 		pluck=False,
 		distinct=False,
 		limit=None,
+		skip_locked=False,
 	):
 		"""Returns multiple document properties.
 
@@ -578,6 +601,8 @@ class Database:
 				distinct=distinct,
 				limit=limit,
 				as_dict=as_dict,
+				skip_locked=skip_locked,
+				for_update=for_update,
 			)
 
 		else:
@@ -598,15 +623,19 @@ class Database:
 						debug=debug,
 						order_by=order_by,
 						update=update,
-						for_update=for_update,
 						run=run,
 						pluck=pluck,
 						distinct=distinct,
 						limit=limit,
+						for_update=for_update,
+						skip_locked=skip_locked,
 					)
 				except Exception as e:
-					if ignore and (dontmanage.db.is_missing_column(e) or dontmanage.db.is_table_missing(e)):
-						# table or column not found, return None
+					if ignore and (
+						dontmanage.db.is_missing_column(e)
+						or dontmanage.db.is_table_missing(e)
+						or str(e).startswith("Invalid DocType")
+					):
 						out = None
 					elif (not ignore) and dontmanage.db.is_table_missing(e):
 						# table not found, look in singles
@@ -654,13 +683,13 @@ class Database:
 						return []
 
 			if as_dict:
-				return values and [values] or []
+				return [values] if values else []
 
 			if isinstance(fields, list):
-				return [map(values.get, fields)]
+				return [list(map(values.get, fields))]
 
 		else:
-			r = dontmanage.qb.engine.get_query(
+			r = dontmanage.qb.get_query(
 				"Singles",
 				filters={"field": ("in", tuple(fields)), "doctype": doctype},
 				fields=["field", "value"],
@@ -669,16 +698,18 @@ class Database:
 
 			if not run:
 				return r
-			if as_dict:
-				if r:
-					r = dontmanage._dict(r)
-					if update:
-						r.update(update)
-					return [r]
-				else:
-					return []
-			else:
-				return r and [[i[1] for i in r]] or []
+
+			if not r:
+				return []
+
+			r = dontmanage._dict(r)
+			if update:
+				r.update(update)
+
+			if not as_dict:
+				return [[r.get(field) for field in fields]]
+
+			return [r]
 
 	def get_singles_dict(self, doctype, debug=False, *, for_update=False, cast=False):
 		"""Get Single DocType as dict.
@@ -693,7 +724,7 @@ class Database:
 		        # Get coulmn and value of the single doctype Accounts Settings
 		        account_settings = dontmanage.db.get_singles_dict("Accounts Settings")
 		"""
-		queried_result = dontmanage.qb.engine.get_query(
+		queried_result = dontmanage.qb.get_query(
 			"Singles",
 			filters={"doctype": doctype},
 			fields=["field", "value"],
@@ -727,13 +758,30 @@ class Database:
 	def get_list(*args, **kwargs):
 		return dontmanage.get_list(*args, **kwargs)
 
+	@staticmethod
+	def _get_update_dict(
+		fieldname: str | dict, value: Any, *, modified: str, modified_by: str, update_modified: bool
+	) -> dict[str, Any]:
+		"""Create update dict that represents column-values to be updated."""
+		update_dict = fieldname if isinstance(fieldname, dict) else {fieldname: value}
+
+		if update_modified:
+			modified = modified or now()
+			modified_by = modified_by or dontmanage.session.user
+			update_dict.update({"modified": modified, "modified_by": modified_by})
+
+		return update_dict
+
 	def set_single_value(
 		self,
 		doctype: str,
 		fieldname: str | dict,
 		value: str | int | None = None,
-		*args,
-		**kwargs,
+		*,
+		modified=None,
+		modified_by=None,
+		update_modified=True,
+		debug=False,
 	):
 		"""Set field value of Single DocType.
 
@@ -744,9 +792,23 @@ class Database:
 		Example:
 
 		        # Update the `deny_multiple_sessions` field in System Settings DocType.
-		        company = dontmanage.db.set_single_value("System Settings", "deny_multiple_sessions", True)
+		        dontmanage.db.set_single_value("System Settings", "deny_multiple_sessions", True)
 		"""
-		return self.set_value(doctype, doctype, fieldname, value, *args, **kwargs)
+
+		to_update = self._get_update_dict(
+			fieldname, value, modified=modified, modified_by=modified_by, update_modified=update_modified
+		)
+
+		dontmanage.db.delete(
+			"Singles", filters={"field": ("in", tuple(to_update)), "doctype": doctype}, debug=debug
+		)
+
+		singles_data = ((doctype, key, sbool(value)) for key, value in to_update.items())
+		dontmanage.qb.into("Singles").columns("doctype", "field", "value").insert(*singles_data).run(debug=debug)
+		dontmanage.clear_document_cache(doctype, doctype)
+
+		if doctype in self.value_cache:
+			del self.value_cache[doctype]
 
 	def get_single_value(self, doctype, fieldname, cache=True):
 		"""Get property of Single DocType. Cache locally by default
@@ -766,7 +828,7 @@ class Database:
 		if cache and fieldname in self.value_cache[doctype]:
 			return self.value_cache[doctype][fieldname]
 
-		val = dontmanage.qb.engine.get_query(
+		val = dontmanage.qb.get_query(
 			table="Singles",
 			filters={"doctype": doctype, "field": fieldname},
 			fields="value",
@@ -777,7 +839,9 @@ class Database:
 
 		if not df:
 			dontmanage.throw(
-				_("Invalid field name: {0}").format(dontmanage.bold(fieldname)), self.InvalidColumnName
+				_("Field {0} does not exist on {1}").format(
+					dontmanage.bold(fieldname), dontmanage.bold(doctype), self.InvalidColumnName
+				)
 			)
 
 		val = cast_fieldtype(df.fieldtype, val)
@@ -801,23 +865,24 @@ class Database:
 		order_by=None,
 		update=None,
 		for_update=False,
+		skip_locked=False,
 		run=True,
 		pluck=False,
 		distinct=False,
 		limit=None,
 	):
-		field_objects = []
-		query = dontmanage.qb.engine.get_query(
+		query = dontmanage.qb.get_query(
 			table=doctype,
 			filters=filters,
-			orderby=order_by,
+			order_by=order_by,
 			for_update=for_update,
-			field_objects=field_objects,
+			skip_locked=skip_locked,
 			fields=fields,
 			distinct=distinct,
 			limit=limit,
+			validate_filters=True,
 		)
-		if fields == "*" and not isinstance(fields, (list, tuple)) and not isinstance(fields, Criterion):
+		if isinstance(fields, str) and fields == "*":
 			as_dict = True
 
 		return query.run(as_dict=as_dict, debug=debug, update=update, run=run, pluck=pluck)
@@ -835,26 +900,22 @@ class Database:
 		distinct=False,
 		limit=None,
 		as_dict=False,
+		for_update=False,
+		skip_locked=False,
 	):
 		if names := list(filter(None, names)):
-			return self.get_all(
+			return dontmanage.qb.get_query(
 				doctype,
 				fields=field,
 				filters=names,
 				order_by=order_by,
-				pluck=pluck,
-				debug=debug,
-				as_list=not as_dict,
-				run=run,
 				distinct=distinct,
-				limit_page_length=limit,
-			)
+				limit=limit,
+				validate_filters=True,
+				for_update=for_update,
+				skip_locked=skip_locked,
+			).run(debug=debug, run=run, as_dict=as_dict, pluck=pluck)
 		return {}
-
-	@deprecated
-	def update(self, *args, **kwargs):
-		"""Update multiple values. Alias for `set_value`."""
-		return self.set_value(*args, **kwargs)
 
 	def set_value(
 		self,
@@ -866,7 +927,6 @@ class Database:
 		modified_by=None,
 		update_modified=True,
 		debug=False,
-		for_update=True,
 	):
 		"""Set a single value in the database, do not call the ORM triggers
 		but update the modified timestamp (unless specified not to).
@@ -874,83 +934,57 @@ class Database:
 		**Warning:** this function will not call Document events and should be avoided in normal cases.
 
 		:param dt: DocType name.
-		:param dn: Document name.
+		:param dn: Document name for updating single record or filters for updating many records.
 		:param field: Property / field name or dictionary of values to be updated
 		:param value: Value to be updated.
 		:param modified: Use this as the `modified` timestamp.
 		:param modified_by: Set this user as `modified_by`.
 		:param update_modified: default True. Set as false, if you don't want to update the timestamp.
 		:param debug: Print the query in the developer / js console.
-		:param for_update: [DEPRECATED] This function now performs updates in single query, locking is not required.
 		"""
-		is_single_doctype = not (dn and dt != dn)
-		to_update = field if isinstance(field, dict) else {field: val}
+		from dontmanage.model.utils import is_single_doctype
 
-		if is_single_doctype:
+		if dn is None or dt == dn:
+			if not is_single_doctype(dt):
+				return
 			deprecation_warning(
-				"Calling db.set_value to set single doctype values is deprecated. This behaviour will be removed in version 15. Use db.set_single_value instead."
+				"Calling db.set_value on single doctype is deprecated. This behaviour will be removed in future. Use db.set_single_value instead."
 			)
-
-		if update_modified:
-			modified = modified or now()
-			modified_by = modified_by or dontmanage.session.user
-			to_update.update({"modified": modified, "modified_by": modified_by})
-
-		if is_single_doctype:
-			dontmanage.db.delete(
-				"Singles", filters={"field": ("in", tuple(to_update)), "doctype": dt}, debug=debug
+			self.set_single_value(
+				doctype=dt,
+				fieldname=field,
+				value=val,
+				debug=debug,
+				update_modified=update_modified,
+				modified=modified,
+				modified_by=modified_by,
 			)
+			return
 
-			singles_data = ((dt, key, sbool(value)) for key, value in to_update.items())
-			query = (
-				dontmanage.qb.into("Singles").columns("doctype", "field", "value").insert(*singles_data)
-			).run(debug=debug)
-			dontmanage.clear_document_cache(dt, dt)
+		to_update = self._get_update_dict(
+			field, val, modified=modified, modified_by=modified_by, update_modified=update_modified
+		)
 
+		query = dontmanage.qb.get_query(
+			table=dt,
+			filters=dn,
+			update=True,
+			validate_filters=True,
+		)
+
+		if isinstance(dn, str):
+			dontmanage.clear_document_cache(dt, dn)
 		else:
-			query = dontmanage.qb.engine.build_conditions(table=dt, filters=dn, update=True)
+			# No way to guess which documents are modified, clear all of them
+			dontmanage.clear_document_cache(dt)
 
-			if isinstance(dn, str):
-				dontmanage.clear_document_cache(dt, dn)
-			else:
-				# TODO: Fix this; doesn't work rn - gavin@dontmanage.io
-				# dontmanage.cache().hdel_keys(dt, "document_cache")
-				# Workaround: clear all document caches
-				dontmanage.cache().delete_value("document_cache")
+		for column, value in to_update.items():
+			query = query.set(column, value)
 
-			for column, value in to_update.items():
-				query = query.set(column, value)
-
-			query.run(debug=debug)
+		query.run(debug=debug)
 
 		if dt in self.value_cache:
 			del self.value_cache[dt]
-
-	@staticmethod
-	@deprecated
-	def set(doc, field, val):
-		"""Set value in document. **Avoid**"""
-		doc.db_set(field, val)
-
-	@deprecated
-	def touch(self, doctype, docname):
-		"""Update the modified timestamp of this document."""
-		modified = now()
-		DocType = dontmanage.qb.DocType(doctype)
-		dontmanage.qb.update(DocType).set(DocType.modified, modified).where(DocType.name == docname).run()
-		return modified
-
-	@staticmethod
-	def set_temp(value):
-		"""Set a temperory value and return a key."""
-		key = dontmanage.generate_hash()
-		dontmanage.cache().hset("temp", key, value)
-		return key
-
-	@staticmethod
-	def get_temp(key):
-		"""Return the temperory value and delete it."""
-		return dontmanage.cache().hget("temp", key)
 
 	def set_global(self, key, val, user="__global"):
 		"""Save a global key value. Global values will be automatically set if they match fieldname."""
@@ -994,26 +1028,30 @@ class Database:
 
 	def commit(self):
 		"""Commit current transaction. Calls SQL `COMMIT`."""
-		for method in dontmanage.local.before_commit:
-			dontmanage.call(method[0], *(method[1] or []), **(method[2] or {}))
+		self.before_rollback.reset()
+		self.after_rollback.reset()
+
+		self.before_commit.run()
 
 		self.sql("commit")
 		self.begin()  # explicitly start a new transaction
 
-		dontmanage.local.rollback_observers = []
-		self.flush_realtime_log()
-		enqueue_jobs_after_commit()
-		flush_local_link_count()
+		self.after_commit.run()
 
-	def add_before_commit(self, method, args=None, kwargs=None):
-		dontmanage.local.before_commit.append([method, args, kwargs])
+	def rollback(self, *, save_point=None):
+		"""`ROLLBACK` current transaction. Optionally rollback to a known save_point."""
+		if save_point:
+			self.sql(f"rollback to savepoint {save_point}")
+		else:
+			self.before_commit.reset()
+			self.after_commit.reset()
 
-	@staticmethod
-	def flush_realtime_log():
-		for args in dontmanage.local.realtime_log:
-			dontmanage.realtime.emit_via_redis(*args)
+			self.before_rollback.run()
 
-		dontmanage.local.realtime_log = []
+			self.sql("rollback")
+			self.begin()
+
+			self.after_rollback.run()
 
 	def savepoint(self, save_point):
 		"""Savepoints work as a nested transaction.
@@ -1027,21 +1065,6 @@ class Database:
 
 	def release_savepoint(self, save_point):
 		self.sql(f"release savepoint {save_point}")
-
-	def rollback(self, *, save_point=None):
-		"""`ROLLBACK` current transaction. Optionally rollback to a known save_point."""
-		if save_point:
-			self.sql(f"rollback to savepoint {save_point}")
-		else:
-			self.sql("rollback")
-			self.begin()
-			for obj in dict.fromkeys(dontmanage.local.rollback_observers):
-				if hasattr(obj, "on_rollback"):
-					obj.on_rollback()
-			dontmanage.local.rollback_observers = []
-
-			dontmanage.local.realtime_log = []
-			dontmanage.flags.enqueue_after_commit = []
 
 	def field_exists(self, dt, fn):
 		"""Return true of field exists."""
@@ -1094,20 +1117,23 @@ class Database:
 			dt = dt.copy()  # don't modify the original dict
 			dt, dn = dt.pop("doctype"), dt
 
-		return self.get_value(dt, dn, ignore=True, cache=cache)
+		return self.get_value(dt, dn, ignore=True, cache=cache, order_by=None)
 
 	def count(self, dt, filters=None, debug=False, cache=False, distinct: bool = True):
 		"""Returns `COUNT(*)` for given DocType and filters."""
 		if cache and not filters:
-			cache_count = dontmanage.cache().get_value(f"doctype:count:{dt}")
+			cache_count = dontmanage.cache.get_value(f"doctype:count:{dt}")
 			if cache_count is not None:
 				return cache_count
-		query = dontmanage.qb.engine.get_query(
-			table=dt, filters=filters, fields=Count("*"), distinct=distinct
-		)
-		count = query.run(debug=debug)[0][0]
+		count = dontmanage.qb.get_query(
+			table=dt,
+			filters=filters,
+			fields=Count("*"),
+			distinct=distinct,
+			validate_filters=True,
+		).run(debug=debug)[0][0]
 		if not filters and cache:
-			dontmanage.cache().set_value(f"doctype:count:{dt}", count, expires_in_sec=86400)
+			dontmanage.cache.set_value(f"doctype:count:{dt}", count, expires_in_sec=86400)
 		return count
 
 	@staticmethod
@@ -1115,7 +1141,7 @@ class Database:
 		return getdate(date).strftime("%Y-%m-%d")
 
 	@staticmethod
-	def format_datetime(datetime):
+	def format_datetime(datetime):  # noqa: F811
 		if not datetime:
 			return FallBackDateTimeStr
 
@@ -1138,7 +1164,7 @@ class Database:
 
 	def get_db_table_columns(self, table) -> list[str]:
 		"""Returns list of column names from given table."""
-		columns = dontmanage.cache().hget("table_columns", table)
+		columns = dontmanage.cache.hget("table_columns", table)
 		if columns is None:
 			information_schema = dontmanage.qb.Schema("information_schema")
 
@@ -1150,7 +1176,7 @@ class Database:
 			)
 
 			if columns:
-				dontmanage.cache().hset("table_columns", table, columns)
+				dontmanage.cache.hset("table_columns", table, columns)
 
 		return columns
 
@@ -1164,21 +1190,6 @@ class Database:
 	def has_column(self, doctype, column):
 		"""Returns True if column exists in database."""
 		return column in self.get_table_columns(doctype)
-
-	def get_column_type(self, doctype, column):
-		"""Returns column type from database."""
-		information_schema = dontmanage.qb.Schema("information_schema")
-		table = get_table_name(doctype)
-
-		return (
-			dontmanage.qb.from_(information_schema.columns)
-			.select(information_schema.columns.column_type)
-			.where(
-				(information_schema.columns.table_name == table)
-				& (information_schema.columns.column_name == column)
-			)
-			.run(pluck=True)[0]
-		)
 
 	def has_index(self, table_name, index_name):
 		raise NotImplementedError
@@ -1233,14 +1244,19 @@ class Database:
 		query = sql_dict.get(current_dialect)
 		return self.sql(query, values, **kwargs)
 
-	def delete(self, doctype: str, filters: dict | list = None, debug=False, **kwargs):
+	def delete(self, doctype: str, filters: dict | list | None = None, debug=False, **kwargs):
 		"""Delete rows from a table in site which match the passed filters. This
 		does trigger DocType hooks. Simply runs a DELETE query in the database.
 
 		Doctype name can be passed directly, it will be pre-pended with `tab`.
 		"""
 		filters = filters or kwargs.get("conditions")
-		query = dontmanage.qb.engine.build_conditions(table=doctype, filters=filters).delete()
+		query = dontmanage.qb.get_query(
+			table=doctype,
+			filters=filters,
+			delete=True,
+			validate_filters=True,
+		)
 		if "debug" not in kwargs:
 			kwargs["debug"] = debug
 		return query.run(**kwargs)
@@ -1252,10 +1268,6 @@ class Database:
 		Doctype name can be passed directly, it will be pre-pended with `tab`.
 		"""
 		return self.sql_ddl(f"truncate `{get_table_name(doctype)}`")
-
-	@deprecated
-	def clear_table(self, doctype):
-		return self.truncate(doctype)
 
 	def get_last_created(self, doctype):
 		last_record = self.get_all(doctype, ("creation"), limit=1, order_by="creation desc")
@@ -1272,7 +1284,7 @@ class Database:
 			# multi_word_regex is designed to match following patterns
 			# `tabXxx Xxx` and "tabXxx Xxx"
 
-			# ([`"]?) Captures " or ` at the begining of the table name (if provided)
+			# ([`"]?) Captures " or ` at the beginning of the table name (if provided)
 			# \1 matches the first captured group (quote character) at the end of the table name
 			# multi word table name must have surrounding quotes.
 
@@ -1288,28 +1300,36 @@ class Database:
 				dontmanage.flags.touched_tables = set()
 			dontmanage.flags.touched_tables.update(tables)
 
-	def bulk_insert(self, doctype, fields, values, ignore_duplicates=False, *, chunk_size=10_000):
+	def bulk_insert(
+		self,
+		doctype: str,
+		fields: list[str],
+		values: Iterable[Sequence[Any]],
+		ignore_duplicates=False,
+		*,
+		chunk_size=10_000,
+	):
 		"""
 		Insert multiple records at a time
 
 		:param doctype: Doctype name
 		:param fields: list of fields
-		:params values: list of list of values
+		:params values: iterable of values
 		"""
-		values = list(values)
 		table = dontmanage.qb.DocType(doctype)
 
-		for start_index in range(0, len(values), chunk_size):
-			query = dontmanage.qb.into(table)
-			if ignore_duplicates:
-				# Pypika does not have same api for ignoring duplicates
-				if self.db_type == "mariadb":
-					query = query.ignore()
-				elif self.db_type == "postgres":
-					query = query.on_conflict().do_nothing()
+		query = dontmanage.qb.into(table).columns(fields)
 
-			values_to_insert = values[start_index : start_index + chunk_size]
-			query.columns(fields).insert(*values_to_insert).run()
+		if ignore_duplicates:
+			# Pypika does not have same api for ignoring duplicates
+			if dontmanage.conf.db_type == "mariadb":
+				query = query.ignore()
+			elif dontmanage.conf.db_type == "postgres":
+				query = query.on_conflict().do_nothing()
+
+		value_iterator = iter(values)
+		while value_chunk := tuple(itertools.islice(value_iterator, chunk_size)):
+			query.insert(*value_chunk).run()
 
 	def create_sequence(self, *args, **kwargs):
 		from dontmanage.database.sequence import create_sequence
@@ -1326,26 +1346,28 @@ class Database:
 
 		return get_next_val(*args, **kwargs)
 
+	def get_row_size(self, doctype: str) -> int:
+		"""Get estimated max row size of any table in bytes."""
+		raise NotImplementedError
 
-def enqueue_jobs_after_commit():
-	from dontmanage.utils.background_jobs import (
-		RQ_JOB_FAILURE_TTL,
-		RQ_RESULTS_TTL,
-		execute_job,
-		get_queue,
-	)
+	def rename_column(self, doctype: str, old_column_name: str, new_column_name: str):
+		raise NotImplementedError
 
-	if dontmanage.flags.enqueue_after_commit and len(dontmanage.flags.enqueue_after_commit) > 0:
-		for job in dontmanage.flags.enqueue_after_commit:
-			q = get_queue(job.get("queue"), is_async=job.get("is_async"))
-			q.enqueue_call(
-				execute_job,
-				timeout=job.get("timeout"),
-				kwargs=job.get("queue_args"),
-				failure_ttl=dontmanage.conf.get("rq_job_failure_ttl") or RQ_JOB_FAILURE_TTL,
-				result_ttl=dontmanage.conf.get("rq_results_ttl") or RQ_RESULTS_TTL,
-			)
-		dontmanage.flags.enqueue_after_commit = []
+	@contextmanager
+	def unbuffered_cursor(self):
+		"""Context manager to temporarily use unbuffered cursor.
+
+		Using this with `as_iterator=True` provides O(1) memory usage while reading large result sets.
+
+		NOTE: You MUST do entire result set processing in the context, otherwise underlying cursor
+		will be switched and you'll not get complete results.
+
+		Usage:
+		        with dontmanage.db.unbuffered_cursor():
+		                for row in dontmanage.db.sql("query with huge result", as_iterator=True):
+		                        continue # Do some processing.
+		"""
+		raise NotImplementedError
 
 
 @contextmanager

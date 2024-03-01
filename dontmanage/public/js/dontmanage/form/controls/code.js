@@ -38,19 +38,27 @@ dontmanage.ui.form.ControlCode = class ControlCode extends dontmanage.ui.form.Co
 				.appendTo(this.$input_wrapper);
 		}
 
+		if (this.disabled) {
+			this.editor.setReadOnly(true);
+			$(this.ace_editor_target).css("pointer-events", "none");
+		}
+
 		this.editor.setTheme("ace/theme/tomorrow");
 		this.editor.setOption("showPrintMargin", false);
 		this.editor.setOption("wrap", this.df.wrap);
 		this.set_language();
+		this.is_setting_content = false;
 
 		// events
-		this.editor.session.on(
-			"change",
-			dontmanage.utils.debounce(() => {
-				const input_value = this.get_input_value();
-				this.parse_validate_and_set_in_model(input_value);
-			}, 300)
-		);
+		this.editor.session.on("change", () => {
+			if (this.is_setting_content) return;
+			change_content();
+		});
+
+		let change_content = dontmanage.utils.debounce(() => {
+			const input_value = this.get_input_value();
+			this.parse_validate_and_set_in_model(input_value);
+		}, 300);
 
 		// setup autocompletion when it is set the first time
 		Object.defineProperty(this.df, "autocompletions", {
@@ -145,6 +153,7 @@ dontmanage.ui.form.ControlCode = class ControlCode extends dontmanage.ui.form.Co
 			JS: "ace/mode/javascript",
 			Python: "ace/mode/python",
 			Py: "ace/mode/python",
+			PythonExpression: "ace/mode/python",
 			HTML: "ace/mode/html",
 			CSS: "ace/mode/css",
 			Markdown: "ace/mode/markdown",
@@ -152,12 +161,12 @@ dontmanage.ui.form.ControlCode = class ControlCode extends dontmanage.ui.form.Co
 			JSON: "ace/mode/json",
 			Golang: "ace/mode/golang",
 			Go: "ace/mode/golang",
+			Jinja: "ace/mode/django",
 		};
 		const language = this.df.options;
 
 		const valid_languages = Object.keys(language_map);
 		if (language && !valid_languages.includes(language)) {
-			// eslint-disable-next-line
 			console.warn(
 				`Invalid language option provided for field "${
 					this.df.label
@@ -182,7 +191,9 @@ dontmanage.ui.form.ControlCode = class ControlCode extends dontmanage.ui.form.Co
 			if (!this.editor) return;
 			if (!value) value = "";
 			if (value === this.get_input_value()) return;
+			this.is_setting_content = true;
 			this.editor.session.setValue(value);
+			this.is_setting_content = false;
 		});
 	}
 

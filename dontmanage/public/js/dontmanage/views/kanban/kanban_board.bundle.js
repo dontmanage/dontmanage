@@ -1,6 +1,6 @@
 // TODO: Refactor for better UX
 
-import Vuex from "vuex";
+import { createStore } from "vuex";
 
 dontmanage.provide("dontmanage.views");
 
@@ -9,7 +9,7 @@ dontmanage.provide("dontmanage.views");
 
 	let columns_unwatcher = null;
 
-	var store = new Vuex.Store({
+	var store = createStore({
 		state: {
 			doctype: "",
 			board: {},
@@ -96,7 +96,7 @@ dontmanage.provide("dontmanage.views");
 							});
 						},
 						function (err) {
-							console.error(err); // eslint-disable-line
+							console.error(err);
 						}
 					);
 			},
@@ -317,6 +317,7 @@ dontmanage.provide("dontmanage.views");
 				return state.columns;
 			}, make_columns);
 			prepare();
+			make_columns();
 			store.watch((state, getters) => {
 				return state.cur_list;
 			}, setup_restore_columns);
@@ -728,9 +729,11 @@ dontmanage.provide("dontmanage.views");
 			let fields = [];
 			for (let field_name of cur_list.board.fields) {
 				let field =
-					dontmanage.meta.get_docfield(card.doctype, field_name, card.name) ||
+					dontmanage.meta.docfield_map[card.doctype]?.[field_name] ||
 					dontmanage.model.get_std_field(field_name);
-				let label = cur_list.board.show_labels ? `<span>${__(field.label)}: </span>` : "";
+				let label = cur_list.board.show_labels
+					? `<span>${__(field.label, null, field.parent)}: </span>`
+					: "";
 				let value = dontmanage.format(card.doc[field_name], field);
 				fields.push(`
 					<div class="text-muted text-truncate">
@@ -756,7 +759,7 @@ dontmanage.provide("dontmanage.views");
 
 			if (card.comment_count > 0)
 				html += `<span class="list-comment-count small text-muted ">
-					${dontmanage.utils.icon("small-message")}
+					${dontmanage.utils.icon("es-line-chat-alt")}
 					${card.comment_count}
 				</span>`;
 

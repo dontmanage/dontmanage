@@ -1,7 +1,7 @@
 dontmanage.ui.form.on("User", {
 	before_load: function (frm) {
-		var update_tz_select = function (user_language) {
-			frm.set_df_property("time_zone", "options", [""].concat(dontmanage.all_timezones));
+		let update_tz_options = function () {
+			frm.fields_dict.time_zone.set_data(dontmanage.all_timezones);
 		};
 
 		if (!dontmanage.all_timezones) {
@@ -9,11 +9,11 @@ dontmanage.ui.form.on("User", {
 				method: "dontmanage.core.doctype.user.user.get_timezones",
 				callback: function (r) {
 					dontmanage.all_timezones = r.message.timezones;
-					update_tz_select();
+					update_tz_options();
 				},
 			});
 		} else {
-			update_tz_select();
+			update_tz_options();
 		}
 	},
 
@@ -75,7 +75,7 @@ dontmanage.ui.form.on("User", {
 		if (
 			frm.can_edit_roles &&
 			!frm.is_new() &&
-			in_list(["System User", "Website User"], frm.doc.user_type)
+			["System User", "Website User"].includes(frm.doc.user_type)
 		) {
 			if (!frm.roles_editor) {
 				const role_area = $('<div class="role-editor">').appendTo(
@@ -105,7 +105,7 @@ dontmanage.ui.form.on("User", {
 		}
 
 		if (
-			in_list(["System User", "Website User"], frm.doc.user_type) &&
+			["System User", "Website User"].includes(frm.doc.user_type) &&
 			!frm.is_new() &&
 			!frm.roles_editor &&
 			frm.can_edit_roles
@@ -114,18 +114,8 @@ dontmanage.ui.form.on("User", {
 			return;
 		}
 
-		if (
-			doc.name === dontmanage.session.user &&
-			!doc.__unsaved &&
-			dontmanage.all_timezones &&
-			(doc.language || dontmanage.boot.user.language) &&
-			doc.language !== dontmanage.boot.user.language
-		) {
-			dontmanage.msgprint(__("Refreshing..."));
-			window.location.reload();
-		}
-
 		frm.toggle_display(["sb1", "sb3", "modules_access"], false);
+		frm.trigger("setup_impersonation");
 
 		if (!frm.is_new()) {
 			if (has_access_to_edit_user()) {
@@ -215,7 +205,10 @@ dontmanage.ui.form.on("User", {
 				});
 			}
 
-			if (dontmanage.session.user == doc.name || dontmanage.user.has_role("System Manager")) {
+			if (
+				cint(dontmanage.boot.sysdefaults.enable_two_factor_auth) &&
+				(dontmanage.session.user == doc.name || dontmanage.user.has_role("System Manager"))
+			) {
 				frm.add_custom_button(
 					__("Reset OTP Secret"),
 					function () {
@@ -264,7 +257,7 @@ dontmanage.ui.form.on("User", {
 
 		if (dontmanage.route_flags.unsaved === 1) {
 			delete dontmanage.route_flags.unsaved;
-			for (var i = 0; i < frm.doc.user_emails.length; i++) {
+			for (let i = 0; i < frm.doc.user_emails.length; i++) {
 				frm.doc.user_emails[i].idx = frm.doc.user_emails[i].idx + 1;
 			}
 			frm.dirty();
@@ -294,14 +287,14 @@ dontmanage.ui.form.on("User", {
 				email: frm.doc.email,
 			},
 			callback: function (r) {
-				if (!Array.isArray(r.message)) {
+				if (!Array.isArray(r.message) || !r.message.length) {
 					dontmanage.route_options = {
 						email_id: frm.doc.email,
 						awaiting_password: 1,
 						enable_incoming: 1,
 					};
 					dontmanage.model.with_doctype("Email Account", function (doc) {
-						var doc = dontmanage.model.get_new_doc("Email Account");
+						doc = dontmanage.model.get_new_doc("Email Account");
 						dontmanage.route_flags.linked_user = frm.doc.name;
 						dontmanage.route_flags.delete_user_from_locals = true;
 						dontmanage.set_route("Form", "Email Account", doc.name);
@@ -327,10 +320,66 @@ dontmanage.ui.form.on("User", {
 			},
 		});
 	},
-	on_update: function (frm) {
-		if (dontmanage.boot.time_zone && dontmanage.boot.time_zone.user !== frm.doc.time_zone) {
-			// Clear cache after saving to refresh the values of boot.
-			dontmanage.ui.toolbar.clear_cache();
+	after_save: function (frm) {
+		/**
+		 * Checks whether the effective value has changed.
+		 *
+		 * @param {Array.<string>} - Tuple with new override, previous override,
+		 *   and optionally fallback.
+		 * @returns {boolean} - Whether the resulting value has effectively changed
+		 */
+		const has_effectively_changed = ([new_override, prev_override, fallback = undefined]) => {
+			const prev_effective = prev_override || fallback;
+			const new_effective = new_override || fallback;
+			return new_override !== undefined && prev_effective !== new_effective;
+		};
+
+		const doc = frm.doc;
+		const boot = dontmanage.boot;
+		const attr_tuples = [
+			[doc.language, boot.user.language, boot.sysdefaults.language],
+			[doc.time_zone, boot.time_zone.user, boot.time_zone.system],
+			[doc.desk_theme, boot.user.desk_theme], // No system default.
+		];
+
+		if (doc.name === dontmanage.session.user && attr_tuples.some(has_effectively_changed)) {
+			dontmanage.msgprint(__("Refreshing..."));
+			window.location.reload();
+		}
+	},
+	setup_impersonation: function (frm) {
+		if (dontmanage.session.user === "Administrator" && frm.doc.name != "Administrator") {
+			frm.add_custom_button(__("Impersonate"), () => {
+				if (frm.doc.restrict_ip) {
+					dontmanage.msgprint({
+						message:
+							"There's IP restriction for this user, you can not impersonate as this user.",
+						title: "IP restriction is enabled",
+					});
+					return;
+				}
+				dontmanage.prompt(
+					[
+						{
+							fieldname: "reason",
+							fieldtype: "Small Text",
+							label: "Reason for impersonating",
+							description: __("Note: This will be shared with user."),
+							reqd: 1,
+						},
+					],
+					(values) => {
+						dontmanage
+							.xcall("dontmanage.core.doctype.user.user.impersonate", {
+								user: frm.doc.name,
+								reason: values.reason,
+							})
+							.then(() => window.location.reload());
+					},
+					__("Impersonate as {0}", [frm.doc.name]),
+					__("Confirm")
+				);
+			});
 		}
 	},
 });

@@ -12,11 +12,7 @@ def dontmanagecloud_migrator(local_site):
 	request = requests.get(request_url)
 
 	if request.status_code / 100 != 2:
-		print(
-			"Request exitted with Status Code: {}\nPayload: {}".format(
-				request.status_code, html2text(request.text)
-			)
-		)
+		print(f"Request exited with Status Code: {request.status_code}\nPayload: {html2text(request.text)}")
 		click.secho(
 			"Some errors occurred while recovering the migration script. Please contact us @ DontManage Cloud if this issue persists",
 			fg="yellow",

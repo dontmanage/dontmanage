@@ -185,7 +185,6 @@ CREATE TABLE `tabDocType` (
   `app` varchar(255) DEFAULT NULL,
   `autoname` varchar(255) DEFAULT NULL,
   `naming_rule` varchar(40) DEFAULT NULL,
-  `name_case` varchar(255) DEFAULT NULL,
   `title_field` varchar(255) DEFAULT NULL,
   `image_field` varchar(255) DEFAULT NULL,
   `timeline_field` varchar(255) DEFAULT NULL,
@@ -255,7 +254,6 @@ CREATE TABLE `tabSessions` (
   `sessiondata` longtext,
   `ipaddress` varchar(16) DEFAULT NULL,
   `lastupdate` datetime(6) DEFAULT NULL,
-  `device` varchar(255) DEFAULT 'desktop',
   `status` varchar(20) DEFAULT NULL,
   KEY `sid` (`sid`)
 ) ENGINE=InnoDB ROW_FORMAT=DYNAMIC CHARACTER SET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
@@ -269,7 +267,7 @@ DROP TABLE IF EXISTS `tabSingles`;
 CREATE TABLE `tabSingles` (
   `doctype` varchar(255) DEFAULT NULL,
   `field` varchar(255) DEFAULT NULL,
-  `value` text,
+  `value` longtext,
   KEY `singles_doctype_field_index` (`doctype`, `field`)
 ) ENGINE=InnoDB ROW_FORMAT=DYNAMIC CHARACTER SET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 

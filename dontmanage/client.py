@@ -10,7 +10,9 @@ import dontmanage.utils
 from dontmanage import _
 from dontmanage.desk.reportview import validate_args
 from dontmanage.model.db_query import check_parent_permission
+from dontmanage.model.utils import is_virtual_doctype
 from dontmanage.utils import get_safe_filters
+from dontmanage.utils.deprecations import deprecated
 
 if TYPE_CHECKING:
 	from dontmanage.model.document import Document
@@ -27,12 +29,13 @@ def get_list(
 	doctype,
 	fields=None,
 	filters=None,
+	group_by=None,
 	order_by=None,
 	limit_start=None,
 	limit_page_length=20,
 	parent=None,
-	debug=False,
-	as_dict=True,
+	debug: bool = False,
+	as_dict: bool = True,
 	or_filters=None,
 ):
 	"""Returns a list of records by filters, fields, ordering and limit
@@ -52,6 +55,7 @@ def get_list(
 		fields=fields,
 		filters=filters,
 		or_filters=or_filters,
+		group_by=group_by,
 		order_by=order_by,
 		limit_start=limit_start,
 		limit_page_length=limit_page_length,
@@ -86,9 +90,7 @@ def get(doctype, name=None, filters=None, parent=None):
 		doc = dontmanage.get_doc(doctype)  # single
 
 	doc.check_permission()
-
-	if dontmanage.get_system_settings("apply_perm_level_on_api_calls"):
-		doc.apply_fieldlevel_read_permissions()
+	doc.apply_fieldlevel_read_permissions()
 
 	return doc.as_dict()
 
@@ -210,11 +212,7 @@ def insert_many(docs=None):
 	if len(docs) > 200:
 		dontmanage.throw(_("Only 200 inserts allowed in one request"))
 
-	out = []
-	for doc in docs:
-		out.append(insert_doc(doc).name)
-
-	return out
+	return [insert_doc(doc).name for doc in docs]
 
 
 @dontmanage.whitelist(methods=["POST", "PUT"])
@@ -331,6 +329,7 @@ def get_password(doctype, name, fieldname):
 
 
 @dontmanage.whitelist()
+@deprecated
 def get_js(items):
 	"""Load JS code files.  Will also append translations
 	and extend `dontmanage._messages`
@@ -433,6 +432,18 @@ def validate_link(doctype: str, docname: str, fields=None):
 		)
 
 	values = dontmanage._dict()
+
+	if is_virtual_doctype(doctype):
+		try:
+			dontmanage.get_doc(doctype, docname)
+			values.name = docname
+		except dontmanage.DoesNotExistError:
+			dontmanage.clear_last_message()
+			dontmanage.msgprint(
+				_("Document {0} {1} does not exist").format(dontmanage.bold(doctype), dontmanage.bold(docname)),
+			)
+		return values
+
 	values.name = dontmanage.db.get_value(doctype, docname, cache=True)
 
 	fields = dontmanage.parse_json(fields)

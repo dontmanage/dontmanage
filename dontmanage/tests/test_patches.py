@@ -4,7 +4,6 @@ from unittest.mock import mock_open, patch
 import dontmanage
 from dontmanage.modules import patch_handler
 from dontmanage.tests.utils import DontManageTestCase
-from dontmanage.utils import get_bench_path
 
 EMTPY_FILE = ""
 EMTPY_SECTION = """
@@ -165,13 +164,13 @@ def check_patch_files(app):
 			missing_patches.append(module)
 
 	if missing_patches:
-		raise Exception(f"Patches missing in patch.txt: \n" + "\n".join(missing_patches))
+		raise Exception("Patches missing in patch.txt: \n" + "\n".join(missing_patches))
 
 
 def _get_dotted_path(file: Path, app) -> str:
-	app_path = Path(get_bench_path()) / "apps" / app
+	app_path = Path(dontmanage.get_app_path(app))
 
 	*path, filename = file.relative_to(app_path).parts
 	base_filename = Path(filename).stem
 
-	return ".".join(path + [base_filename])
+	return ".".join([app, *path, base_filename])

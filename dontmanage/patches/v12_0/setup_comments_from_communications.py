@@ -7,10 +7,7 @@ def execute():
 	if dontmanage.db.count("Communication", filters=dict(communication_type="Comment")) > 20000:
 		dontmanage.db.auto_commit_on_many_writes = True
 
-	for comment in dontmanage.get_all(
-		"Communication", fields=["*"], filters=dict(communication_type="Comment")
-	):
-
+	for comment in dontmanage.get_all("Communication", fields=["*"], filters=dict(communication_type="Comment")):
 		new_comment = dontmanage.new_doc("Comment")
 		new_comment.comment_type = comment.comment_type
 		new_comment.comment_email = comment.sender

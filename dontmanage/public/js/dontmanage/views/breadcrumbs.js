@@ -18,7 +18,6 @@ dontmanage.breadcrumbs = {
 		Workflow: "Settings",
 		Printing: "Settings",
 		Setup: "Settings",
-		"Event Streaming": "Tools",
 		Automation: "Tools",
 	},
 
@@ -79,29 +78,45 @@ dontmanage.breadcrumbs = {
 	},
 
 	set_custom_breadcrumbs(breadcrumbs) {
-		const html = `<li><a href="${breadcrumbs.route}">${breadcrumbs.label}</a></li>`;
-		this.$breadcrumbs.append(html);
+		this.append_breadcrumb_element(breadcrumbs.route, breadcrumbs.label);
+	},
+
+	append_breadcrumb_element(route, label) {
+		const el = document.createElement("li");
+		const a = document.createElement("a");
+		a.href = route;
+		a.innerText = label;
+		el.appendChild(a);
+		this.$breadcrumbs.append(el);
+	},
+
+	get last_route() {
+		return dontmanage.route_history.slice(-2)[0];
 	},
 
 	set_workspace_breadcrumb(breadcrumbs) {
-		// get preferred module for breadcrumbs, based on sent via module
+		// get preferred module for breadcrumbs, based on history and module
 
 		if (!breadcrumbs.workspace) {
 			this.set_workspace(breadcrumbs);
 		}
 
-		if (breadcrumbs.workspace) {
-			if (
-				!breadcrumbs.module_info.blocked &&
-				dontmanage.visible_modules.includes(breadcrumbs.module_info.module)
-			) {
-				$(
-					`<li><a href="/app/${dontmanage.router.slug(breadcrumbs.workspace)}">${__(
-						breadcrumbs.workspace
-					)}</a></li>`
-				).appendTo(this.$breadcrumbs);
-			}
+		if (!breadcrumbs.workspace) {
+			return;
 		}
+
+		if (
+			breadcrumbs.module_info &&
+			(breadcrumbs.module_info.blocked ||
+				!dontmanage.visible_modules.includes(breadcrumbs.module_info.module))
+		) {
+			return;
+		}
+
+		this.append_breadcrumb_element(
+			`/app/${dontmanage.router.slug(breadcrumbs.workspace)}`,
+			__(breadcrumbs.workspace)
+		);
 	},
 
 	set_workspace(breadcrumbs) {
@@ -118,6 +133,19 @@ dontmanage.breadcrumbs = {
 			breadcrumbs.module = this.preferred[breadcrumbs.doctype];
 		}
 
+		// guess from last route
+		if (this.last_route?.[0] == "Workspaces") {
+			let last_workspace = this.last_route[1];
+
+			if (
+				breadcrumbs.module &&
+				dontmanage.boot.module_wise_workspaces[breadcrumbs.module]?.includes(last_workspace)
+			) {
+				breadcrumbs.workspace = last_workspace;
+				return;
+			}
+		}
+
 		if (breadcrumbs.module) {
 			if (this.module_map[breadcrumbs.module]) {
 				breadcrumbs.module = this.module_map[breadcrumbs.module];
@@ -126,8 +154,11 @@ dontmanage.breadcrumbs = {
 			breadcrumbs.module_info = dontmanage.get_module(breadcrumbs.module);
 
 			// set workspace
-			if (breadcrumbs.module_info && dontmanage.boot.module_page_map[breadcrumbs.module]) {
-				breadcrumbs.workspace = dontmanage.boot.module_page_map[breadcrumbs.module];
+			if (
+				breadcrumbs.module_info &&
+				dontmanage.boot.module_wise_workspaces[breadcrumbs.module]
+			) {
+				breadcrumbs.workspace = dontmanage.boot.module_wise_workspaces[breadcrumbs.module][0];
 			}
 		}
 	},
@@ -149,15 +180,23 @@ dontmanage.breadcrumbs = {
 			} else {
 				route = doctype_route;
 			}
-			$(`<li><a href="/app/${route}">${__(doctype)}</a></li>`).appendTo(this.$breadcrumbs);
+			this.append_breadcrumb_element(`/app/${route}`, __(doctype));
 		}
 	},
 
 	set_form_breadcrumb(breadcrumbs, view) {
 		const doctype = breadcrumbs.doctype;
-		const docname = dontmanage.get_route().slice(2).join("/");
-		let form_route = `/app/${dontmanage.router.slug(doctype)}/${docname}`;
-		$(`<li><a href="${form_route}">${__(docname)}</a></li>`).appendTo(this.$breadcrumbs);
+		let docname = dontmanage.get_route().slice(2).join("/");
+		let docname_title = docname;
+		if (docname.startsWith("new-" + doctype.toLowerCase().replace(/ /g, "-"))) {
+			// using docname instead of doctype to include No like Doctype Name + 1, 2, 3
+			docname_title = docname_title
+				.slice(0, -10)
+				.replace(/-/g, " ")
+				.replace(/\b\w/g, (l) => l.toUpperCase());
+		}
+		let form_route = `/app/${dontmanage.router.slug(doctype)}/${docname_title}`;
+		this.append_breadcrumb_element(form_route, __(docname_title));
 
 		if (view === "form") {
 			let last_crumb = this.$breadcrumbs.find("li").last();

@@ -9,7 +9,6 @@ from dontmanage.tests.utils import DontManageTestCase
 
 class TestActivityLog(DontManageTestCase):
 	def test_activity_log(self):
-
 		# test user login log
 		dontmanage.local.form_dict = dontmanage._dict(
 			{
@@ -20,6 +19,7 @@ class TestActivityLog(DontManageTestCase):
 			}
 		)
 
+		dontmanage.local.request_ip = "127.0.0.1"
 		dontmanage.local.cookie_manager = CookieManager()
 		dontmanage.local.login_manager = LoginManager()
 
@@ -51,8 +51,7 @@ class TestActivityLog(DontManageTestCase):
 		)
 
 		name = names[0]
-		auth_log = dontmanage.get_doc("Activity Log", name)
-		return auth_log
+		return dontmanage.get_doc("Activity Log", name)
 
 	def test_brute_security(self):
 		update_system_settings({"allow_consecutive_login_attempts": 3, "allow_login_after_fail": 5})
@@ -61,6 +60,7 @@ class TestActivityLog(DontManageTestCase):
 			{"cmd": "login", "sid": "Guest", "pwd": "admin", "usr": "Administrator"}
 		)
 
+		dontmanage.local.request_ip = "127.0.0.1"
 		dontmanage.local.cookie_manager = CookieManager()
 		dontmanage.local.login_manager = LoginManager()
 

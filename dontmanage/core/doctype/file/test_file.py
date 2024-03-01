@@ -17,9 +17,11 @@ from dontmanage.core.api.file import (
 	move_file,
 	unzip_file,
 )
+from dontmanage.core.doctype.file.exceptions import FileTypeNotAllowed
+from dontmanage.core.doctype.file.utils import delete_file, get_extension
 from dontmanage.exceptions import ValidationError
-from dontmanage.tests.utils import DontManageTestCase
-from dontmanage.utils import get_files_path
+from dontmanage.tests.utils import DontManageTestCase, change_settings
+from dontmanage.utils import get_files_path, set_request
 
 if TYPE_CHECKING:
 	from dontmanage.core.doctype.file.file import File
@@ -28,22 +30,27 @@ test_content1 = "Hello"
 test_content2 = "Hello World"
 
 
-def make_test_doc():
+def make_test_doc(ignore_permissions=False):
 	d = dontmanage.new_doc("ToDo")
 	d.description = "Test"
 	d.assigned_by = dontmanage.session.user
-	d.save()
+	d.save(ignore_permissions)
 	return d.doctype, d.name
 
 
 @contextmanager
-def make_test_image_file():
+def make_test_image_file(private=False):
 	file_path = dontmanage.get_app_path("dontmanage", "tests/data/sample_image_for_optimization.jpg")
 	with open(file_path, "rb") as f:
 		file_content = f.read()
 
 	test_file = dontmanage.get_doc(
-		{"doctype": "File", "file_name": "sample_image_for_optimization.jpg", "content": file_content}
+		{
+			"doctype": "File",
+			"file_name": "sample_image_for_optimization.jpg",
+			"content": file_content,
+			"is_private": private,
+		}
 	).insert()
 	# remove those flags
 	_test_file: "File" = dontmanage.get_doc("File", test_file.name)
@@ -74,6 +81,29 @@ class TestSimpleFile(DontManageTestCase):
 		_file = dontmanage.get_doc("File", {"file_url": self.saved_file_url})
 		content = _file.get_content()
 		self.assertEqual(content, self.test_content)
+
+
+class TestFSRollbacks(DontManageTestCase):
+	def test_rollback_from_file_system(self):
+		file_name = content = dontmanage.generate_hash()
+		file = dontmanage.new_doc("File", file_name=file_name, content=content).insert()
+		self.assertTrue(file.exists_on_disk())
+
+		dontmanage.db.rollback()
+		self.assertFalse(file.exists_on_disk())
+
+
+class TestExtensionValidations(DontManageTestCase):
+	@change_settings("System Settings", {"allowed_file_extensions": "JPG\nCSV"})
+	def test_allowed_extension(self):
+		set_request(method="POST", path="/")
+		file_name = content = dontmanage.generate_hash()
+		bad_file = dontmanage.new_doc("File", file_name=f"{file_name}.png", content=content)
+		self.assertRaises(FileTypeNotAllowed, bad_file.insert)
+
+		bad_file = dontmanage.new_doc("File", file_name=f"{file_name}.csv", content=content).insert()
+		dontmanage.db.rollback()
+		self.assertFalse(bad_file.exists_on_disk())
 
 
 class TestBase64File(DontManageTestCase):
@@ -197,9 +227,7 @@ class TestSameContent(DontManageTestCase):
 		doctype, docname = make_test_doc()
 		from dontmanage.custom.doctype.property_setter.property_setter import make_property_setter
 
-		limit_property = make_property_setter(
-			"ToDo", None, "max_attachments", 1, "int", for_doctype=True
-		)
+		limit_property = make_property_setter("ToDo", None, "max_attachments", 1, "int", for_doctype=True)
 		file1 = dontmanage.get_doc(
 			{
 				"doctype": "File",
@@ -426,9 +454,7 @@ class TestFile(DontManageTestCase):
 
 		test_file.file_url = None
 		test_file.file_name = "/usr/bin/man"
-		self.assertRaisesRegex(
-			ValidationError, "There is some problem with the file url", test_file.validate
-		)
+		self.assertRaisesRegex(ValidationError, "There is some problem with the file url", test_file.validate)
 
 		test_file.file_url = None
 		test_file.file_name = "_file"
@@ -461,7 +487,7 @@ class TestFile(DontManageTestCase):
 		).insert(ignore_permissions=True)
 
 		test_file.make_thumbnail()
-		self.assertTrue(test_file.thumbnail_url.endswith("_small.jpeg"))
+		self.assertTrue(test_file.thumbnail_url.endswith("_small.jpg"))
 
 		# test local image
 		test_file.db_set("thumbnail_url", None)
@@ -476,7 +502,7 @@ class TestFile(DontManageTestCase):
 		test_file.file_url = dontmanage.utils.get_url("unknown.jpg")
 		test_file.make_thumbnail(suffix="xs")
 		self.assertEqual(
-			json.loads(dontmanage.message_log[0]).get("message"),
+			dontmanage.message_log[0].get("message"),
 			f"File '{dontmanage.utils.get_url('unknown.jpg')}' not found",
 		)
 		self.assertEqual(test_file.thumbnail_url, None)
@@ -600,46 +626,42 @@ class TestAttachmentsAccess(DontManageTestCase):
 	def setUp(self) -> None:
 		dontmanage.db.delete("File", {"is_folder": 0})
 
-	def test_attachments_access(self):
+	def test_list_private_attachments(self):
 		dontmanage.set_user("test4@example.com")
 		self.attached_to_doctype, self.attached_to_docname = make_test_doc()
 
-		dontmanage.get_doc(
-			{
-				"doctype": "File",
-				"file_name": "test_user.txt",
-				"attached_to_doctype": self.attached_to_doctype,
-				"attached_to_name": self.attached_to_docname,
-				"content": "Testing User",
-			}
+		dontmanage.new_doc(
+			"File",
+			file_name="test_user_attachment.txt",
+			attached_to_doctype=self.attached_to_doctype,
+			attached_to_name=self.attached_to_docname,
+			content="Testing User",
+			is_private=1,
 		).insert()
 
-		dontmanage.get_doc(
-			{
-				"doctype": "File",
-				"file_name": "test_user_home.txt",
-				"content": "User Home",
-			}
+		dontmanage.new_doc(
+			"File",
+			file_name="test_user_standalone.txt",
+			content="User Home",
+			is_private=1,
 		).insert()
 
 		dontmanage.set_user("test@example.com")
 
-		dontmanage.get_doc(
-			{
-				"doctype": "File",
-				"file_name": "test_system_manager.txt",
-				"attached_to_doctype": self.attached_to_doctype,
-				"attached_to_name": self.attached_to_docname,
-				"content": "Testing System Manager",
-			}
+		dontmanage.new_doc(
+			"File",
+			file_name="test_sm_attachment.txt",
+			attached_to_doctype=self.attached_to_doctype,
+			attached_to_name=self.attached_to_docname,
+			content="Testing System Manager",
+			is_private=1,
 		).insert()
 
-		dontmanage.get_doc(
-			{
-				"doctype": "File",
-				"file_name": "test_sm_home.txt",
-				"content": "System Manager Home",
-			}
+		dontmanage.new_doc(
+			"File",
+			file_name="test_sm_standalone.txt",
+			content="System Manager Home",
+			is_private=1,
 		).insert()
 
 		system_manager_files = [file.file_name for file in get_files_in_folder("Home")["files"]]
@@ -649,19 +671,49 @@ class TestAttachmentsAccess(DontManageTestCase):
 
 		dontmanage.set_user("test4@example.com")
 		user_files = [file.file_name for file in get_files_in_folder("Home")["files"]]
-		user_attachments_files = [
-			file.file_name for file in get_files_in_folder("Home/Attachments")["files"]
-		]
+		user_attachments_files = [file.file_name for file in get_files_in_folder("Home/Attachments")["files"]]
 
-		self.assertIn("test_sm_home.txt", system_manager_files)
-		self.assertNotIn("test_sm_home.txt", user_files)
-		self.assertIn("test_user_home.txt", system_manager_files)
-		self.assertIn("test_user_home.txt", user_files)
+		self.assertIn("test_sm_standalone.txt", system_manager_files)
+		self.assertNotIn("test_sm_standalone.txt", user_files)
 
-		self.assertIn("test_system_manager.txt", system_manager_attachments_files)
-		self.assertNotIn("test_system_manager.txt", user_attachments_files)
-		self.assertIn("test_user.txt", system_manager_attachments_files)
-		self.assertIn("test_user.txt", user_attachments_files)
+		self.assertIn("test_user_standalone.txt", user_files)
+		self.assertNotIn("test_user_standalone.txt", system_manager_files)
+
+		self.assertIn("test_sm_attachment.txt", system_manager_attachments_files)
+		self.assertIn("test_sm_attachment.txt", user_attachments_files)
+		self.assertIn("test_user_attachment.txt", system_manager_attachments_files)
+		self.assertIn("test_user_attachment.txt", user_attachments_files)
+
+	def test_list_public_single_file(self):
+		"""Ensure that users are able to list public standalone files."""
+		dontmanage.set_user("test@example.com")
+		dontmanage.new_doc(
+			"File",
+			file_name="test_public_single.txt",
+			content="Public single File",
+			is_private=0,
+		).insert()
+
+		dontmanage.set_user("test4@example.com")
+		files = [file.file_name for file in get_files_in_folder("Home")["files"]]
+		self.assertIn("test_public_single.txt", files)
+
+	def test_list_public_attachment(self):
+		"""Ensure that users are able to list public attachments."""
+		dontmanage.set_user("test@example.com")
+		self.attached_to_doctype, self.attached_to_docname = make_test_doc()
+		dontmanage.new_doc(
+			"File",
+			file_name="test_public_attachment.txt",
+			attached_to_doctype=self.attached_to_doctype,
+			attached_to_name=self.attached_to_docname,
+			content="Public Attachment",
+			is_private=0,
+		).insert()
+
+		dontmanage.set_user("test4@example.com")
+		files = [file.file_name for file in get_files_in_folder("Home/Attachments")["files"]]
+		self.assertIn("test_public_attachment.txt", files)
 
 	def tearDown(self) -> None:
 		dontmanage.set_user("Administrator")
@@ -739,3 +791,88 @@ class TestFileOptimization(DontManageTestCase):
 			size_after_rollback = os.stat(image_path).st_size
 
 			self.assertEqual(size_before_optimization, size_after_rollback)
+
+	def test_image_header_guessing(self):
+		file_path = dontmanage.get_app_path("dontmanage", "tests/data/sample_image_for_optimization.jpg")
+		with open(file_path, "rb") as f:
+			file_content = f.read()
+
+		self.assertEqual(get_extension("", None, file_content), "jpg")
+
+
+class TestGuestFileAndAttachments(DontManageTestCase):
+	def setUp(self) -> None:
+		dontmanage.db.delete("File", {"is_folder": 0})
+		dontmanage.get_doc(
+			doctype="DocType",
+			name="Test For Attachment",
+			module="Custom",
+			custom=1,
+			fields=[
+				{"label": "Title", "fieldname": "title", "fieldtype": "Data"},
+				{"label": "Attachment", "fieldname": "attachment", "fieldtype": "Attach"},
+			],
+		).insert(ignore_if_duplicate=True)
+
+	def tearDown(self) -> None:
+		dontmanage.set_user("Administrator")
+		dontmanage.db.rollback()
+		dontmanage.delete_doc("DocType", "Test For Attachment")
+
+	def test_attach_unattached_guest_file(self):
+		"""Ensure that unattached files are attached on doc update."""
+		f = dontmanage.new_doc(
+			"File",
+			file_name="test_private_guest_attachment.txt",
+			content="Guest Home",
+			is_private=1,
+		).insert(ignore_permissions=True)
+
+		d = dontmanage.new_doc("Test For Attachment")
+		d.title = "Test for attachment on update"
+		d.attachment = f.file_url
+		d.assigned_by = dontmanage.session.user
+		d.save()
+
+		self.assertTrue(
+			dontmanage.db.exists(
+				"File",
+				{
+					"file_name": "test_private_guest_attachment.txt",
+					"file_url": f.file_url,
+					"attached_to_doctype": "Test For Attachment",
+					"attached_to_name": d.name,
+					"attached_to_field": "attachment",
+				},
+			)
+		)
+
+	def test_list_private_guest_single_file(self):
+		"""Ensure that guests are not able to read private standalone guest files."""
+		dontmanage.set_user("Guest")
+
+		file = dontmanage.new_doc(
+			"File",
+			file_name="test_private_guest_single_txt",
+			content="Private single File",
+			is_private=1,
+		).insert(ignore_permissions=True)
+
+		self.assertFalse(file.is_downloadable())
+
+	def test_list_private_guest_attachment(self):
+		"""Ensure that guests are not able to read private guest attachments."""
+		dontmanage.set_user("Guest")
+
+		self.attached_to_doctype, self.attached_to_docname = make_test_doc(ignore_permissions=True)
+
+		file = dontmanage.new_doc(
+			"File",
+			file_name="test_private_guest_attachment.txt",
+			attached_to_doctype=self.attached_to_doctype,
+			attached_to_name=self.attached_to_docname,
+			content="Private Attachment",
+			is_private=1,
+		).insert(ignore_permissions=True)
+
+		self.assertFalse(file.is_downloadable())

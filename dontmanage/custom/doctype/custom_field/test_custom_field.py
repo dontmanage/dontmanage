@@ -2,7 +2,11 @@
 # License: MIT. See LICENSE
 
 import dontmanage
-from dontmanage.custom.doctype.custom_field.custom_field import create_custom_fields
+from dontmanage.custom.doctype.custom_field.custom_field import (
+	create_custom_field,
+	create_custom_fields,
+	rename_fieldname,
+)
 from dontmanage.tests.utils import DontManageTestCase
 
 test_records = dontmanage.get_test_records("Custom Field")
@@ -81,3 +85,23 @@ class TestCustomField(DontManageTestCase):
 			# undo changes commited by DDL
 			# nosemgrep
 			dontmanage.db.commit()
+
+	def test_custom_field_renaming(self):
+		def gen_fieldname():
+			return "test_" + dontmanage.generate_hash()
+
+		field = create_custom_field("ToDo", {"label": gen_fieldname()}, is_system_generated=False)
+		old = field.fieldname
+		new = gen_fieldname()
+		data = dontmanage.generate_hash()
+		doc = dontmanage.get_doc({"doctype": "ToDo", old: data, "description": "Something"}).insert()
+
+		rename_fieldname(field.name, new)
+		field.reload()
+		self.assertEqual(field.fieldname, new)
+
+		doc = dontmanage.get_doc("ToDo", doc.name)  # doc.reload doesn't clear old fields.
+		self.assertEqual(doc.get(new), data)
+		self.assertFalse(doc.get(old))
+
+		field.delete()

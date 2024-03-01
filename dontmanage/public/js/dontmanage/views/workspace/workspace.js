@@ -31,6 +31,20 @@ dontmanage.views.Workspace = class Workspace {
 			private: {},
 		};
 		this.sidebar_categories = ["My Workspaces", "Public"];
+		this.indicator_colors = [
+			"green",
+			"cyan",
+			"blue",
+			"orange",
+			"yellow",
+			"gray",
+			"grey",
+			"red",
+			"pink",
+			"darkgrey",
+			"purple",
+			"light-blue",
+		];
 
 		this.prepare_container();
 		this.setup_pages();
@@ -65,7 +79,10 @@ dontmanage.views.Workspace = class Workspace {
 		if (this.all_pages) {
 			dontmanage.workspaces = {};
 			for (let page of this.all_pages) {
-				dontmanage.workspaces[dontmanage.router.slug(page.name)] = { title: page.title };
+				dontmanage.workspaces[dontmanage.router.slug(page.name)] = {
+					title: page.title,
+					public: page.public,
+				};
 			}
 			this.make_sidebar();
 			reload && this.show();
@@ -77,6 +94,9 @@ dontmanage.views.Workspace = class Workspace {
 	}
 
 	sidebar_item_container(item) {
+		item.indicator_color =
+			item.indicator_color || this.indicator_colors[Math.floor(Math.random() * 12)];
+
 		return $(`
 			<div
 				class="sidebar-item-container ${item.is_editable ? "is-draggable" : ""}"
@@ -94,10 +114,13 @@ dontmanage.views.Workspace = class Workspace {
 						}"
 						class="item-anchor ${item.is_editable ? "" : "block-click"}" title="${__(item.title)}"
 					>
-						<span class="sidebar-item-icon" item-icon=${item.icon || "folder-normal"}>${dontmanage.utils.icon(
-			item.icon || "folder-normal",
-			"md"
-		)}</span>
+						<span class="sidebar-item-icon" item-icon=${item.icon || "folder-normal"}>
+							${
+								item.public
+									? dontmanage.utils.icon(item.icon || "folder-normal", "md")
+									: `<span class="indicator ${item.indicator_color}"></span>`
+							}
+						</span>
 						<span class="sidebar-item-label">${__(item.title)}<span>
 					</a>
 					<div class="sidebar-item-control"></div>
@@ -138,27 +161,38 @@ dontmanage.views.Workspace = class Workspace {
 			`<div class="standard-sidebar-section nested-container" data-title="${title}"></div>`
 		);
 
-		let $title = $(`<div class="standard-sidebar-label">
-			<span>${dontmanage.utils.icon("small-down", "xs")}</span>
+		let $title = $(`<button class="btn-reset standard-sidebar-label">
+			<span>${dontmanage.utils.icon("es-line-down", "xs")}</span>
 			<span class="section-title">${__(title)}<span>
 		</div>`).appendTo(sidebar_section);
+		$title.attr({
+			"aria-label": __("{0}: {1}", [__("Toggle Section"), __(title)]),
+			"aria-expanded": "true",
+		});
 		this.prepare_sidebar(root_pages, sidebar_section, this.sidebar);
 
 		$title.on("click", (e) => {
-			let icon =
-				$(e.target).find("span use").attr("href") === "#icon-small-down"
-					? "#icon-right"
-					: "#icon-small-down";
-			$(e.target).find("span use").attr("href", icon);
-			$(e.target).parent().find(".sidebar-item-container").toggleClass("hidden");
+			const $e = $(e.target);
+			const href = $e.find("span use").attr("href");
+			const isCollapsed = href === "#es-line-down";
+			let icon = isCollapsed ? "#es-line-right-chevron" : "#es-line-down";
+			$e.find("span use").attr("href", icon);
+			$e.parent().find(".sidebar-item-container").toggleClass("hidden");
+			$e.attr("aria-expanded", String(!isCollapsed));
 		});
 
 		if (Object.keys(root_pages).length === 0) {
 			sidebar_section.addClass("hidden");
 		}
 
+		$(".item-anchor").on("click", () => {
+			$(".list-sidebar.hidden-xs.hidden-sm").removeClass("opened");
+			$(".close-sidebar").css("display", "none");
+			$("body").css("overflow", "auto");
+		});
+
 		if (
-			sidebar_section.find("sidebar-item-container").length &&
+			sidebar_section.find(".sidebar-item-container").length &&
 			sidebar_section.find("> [item-is-hidden='0']").length == 0
 		) {
 			sidebar_section.addClass("hidden show-in-edit-mode");
@@ -207,15 +241,15 @@ dontmanage.views.Workspace = class Workspace {
 	}
 
 	add_drop_icon(item, sidebar_control, item_container) {
-		let drop_icon = "small-down";
+		let drop_icon = "es-line-down";
 		if (item_container.find(`[item-name="${this.current_page.name}"]`).length) {
 			drop_icon = "small-up";
 		}
 
 		let $child_item_section = item_container.find(".sidebar-child-item");
-		let $drop_icon = $(
-			`<span class="drop-icon hidden">${dontmanage.utils.icon(drop_icon, "sm")}</span>`
-		).appendTo(sidebar_control);
+		let $drop_icon = $(`<button class="btn-reset drop-icon hidden">`)
+			.html(dontmanage.utils.icon(drop_icon, "sm"))
+			.appendTo(sidebar_control);
 		let pages = item.public ? this.public_pages : this.private_pages;
 		if (
 			pages.some(
@@ -226,9 +260,9 @@ dontmanage.views.Workspace = class Workspace {
 		}
 		$drop_icon.on("click", () => {
 			let icon =
-				$drop_icon.find("use").attr("href") === "#icon-small-down"
-					? "#icon-small-up"
-					: "#icon-small-down";
+				$drop_icon.find("use").attr("href") === "#es-line-down"
+					? "#es-line-up"
+					: "#es-line-down";
 			$drop_icon.find("use").attr("href", icon);
 			$child_item_section.toggleClass("hidden");
 		});
@@ -242,11 +276,16 @@ dontmanage.views.Workspace = class Workspace {
 		}
 
 		let page = this.get_page_to_show();
-		this.page.set_title(__(page.name));
 
+		if (!dontmanage.router.current_route[0]) {
+			dontmanage.route_flags.replace_route = true;
+			dontmanage.set_route(dontmanage.router.slug(page.public ? page.name : "private/" + page.name));
+			return;
+		}
+
+		this.page.set_title(__(page.name));
 		this.update_selected_sidebar(this.current_page, false); //remove selected from old page
 		this.update_selected_sidebar(page, true); //add selected on new page
-
 		this.show_page(page);
 	}
 
@@ -318,20 +357,17 @@ dontmanage.views.Workspace = class Workspace {
 		) {
 			default_page = {
 				name: localStorage.current_page,
-				public: localStorage.is_current_page_public == "true",
+				public: localStorage.is_current_page_public != "false",
 			};
 		} else if (Object.keys(this.all_pages).length !== 0) {
-			default_page = { name: this.all_pages[0].title, public: true };
+			default_page = { name: this.all_pages[0].title, public: this.all_pages[0].public };
 		} else {
 			default_page = { name: "Build", public: true };
 		}
 
-		let page =
-			(dontmanage.get_route()[1] == "private" ? dontmanage.get_route()[2] : dontmanage.get_route()[1]) ||
-			default_page.name;
-		let is_public = dontmanage.get_route()[1]
-			? dontmanage.get_route()[1] != "private"
-			: default_page.public;
+		const route = dontmanage.get_route();
+		const page = (route[1] == "private" ? route[2] : route[1]) || default_page.name;
+		const is_public = route[1] ? route[1] != "private" : default_page.public;
 		return { name: page, public: is_public };
 	}
 
@@ -342,14 +378,15 @@ dontmanage.views.Workspace = class Workspace {
 			`).appendTo(this.body);
 		}
 
-		if (this.all_pages) {
+		if (this.all_pages.length) {
 			this.create_page_skeleton();
 
-			let pages = page.public ? this.public_pages : this.private_pages;
+			let pages =
+				page.public && this.public_pages.length ? this.public_pages : this.private_pages;
 			let current_page = pages.filter((p) => p.title == page.name)[0];
 			this.content = current_page && JSON.parse(current_page.content);
 
-			this.add_custom_cards_in_content();
+			this.content && this.add_custom_cards_in_content();
 
 			$(".item-anchor").addClass("disable-click");
 
@@ -394,6 +431,7 @@ dontmanage.views.Workspace = class Workspace {
 				this.editor.configuration.tools.onboarding.config.page_data = this.page_data;
 				this.editor.configuration.tools.quick_list.config.page_data = this.page_data;
 				this.editor.configuration.tools.number_card.config.page_data = this.page_data;
+				this.editor.configuration.tools.custom_block.config.page_data = this.page_data;
 				this.editor.render({ blocks: this.content || [] });
 			});
 		} else {
@@ -412,19 +450,24 @@ dontmanage.views.Workspace = class Workspace {
 
 		this.clear_page_actions();
 
-		this.page.set_secondary_action(__("Edit"), async () => {
-			if (!this.editor || !this.editor.readOnly) return;
-			this.is_read_only = false;
-			this.toggle_hidden_workspaces(true);
-			await this.editor.readOnly.toggle();
-			this.editor.isReady.then(() => {
-				this.initialize_editorjs_undo();
-				this.setup_customization_buttons(current_page);
-				this.show_sidebar_actions();
-				this.make_blocks_sortable();
-			});
-		});
-
+		this.page.set_secondary_action(
+			__("Edit"),
+			async () => {
+				if (!this.editor || !this.editor.readOnly) return;
+				this.is_read_only = false;
+				this.toggle_hidden_workspaces(true);
+				await this.editor.readOnly.toggle();
+				this.editor.isReady.then(() => {
+					this.body.addClass("edit-mode");
+					this.initialize_editorjs_undo();
+					this.setup_customization_buttons(current_page);
+					this.show_sidebar_actions();
+					this.make_blocks_sortable();
+				});
+			},
+			"es-line-edit"
+		);
+		// need to add option for icons in inner buttons as well
 		this.page.add_inner_button(__("Create Workspace"), () => {
 			this.initialize_new_page();
 		});
@@ -450,6 +493,7 @@ dontmanage.views.Workspace = class Workspace {
 				__("Save"),
 				() => {
 					this.clear_page_actions();
+					this.body.removeClass("edit-mode");
 					this.save_page(page).then((saved) => {
 						if (!saved) return;
 						this.undo.readOnly = true;
@@ -462,6 +506,7 @@ dontmanage.views.Workspace = class Workspace {
 			);
 
 		this.page.set_secondary_action(__("Discard"), async () => {
+			this.body.removeClass("edit-mode");
 			this.discard = true;
 			this.clear_page_actions();
 			this.toggle_hidden_workspaces(false);
@@ -502,7 +547,7 @@ dontmanage.views.Workspace = class Workspace {
 			});
 
 			dontmanage.utils.add_custom_button(
-				dontmanage.utils.icon("duplicate", "sm"),
+				dontmanage.utils.icon("es-line-duplicate", "sm"),
 				() => this.duplicate_page(item),
 				"duplicate-page",
 				__("Duplicate Workspace"),
@@ -511,7 +556,7 @@ dontmanage.views.Workspace = class Workspace {
 			);
 		} else if (item.is_hidden) {
 			dontmanage.utils.add_custom_button(
-				dontmanage.utils.icon("unhide", "sm"),
+				dontmanage.utils.icon("es-line-preview", "sm"),
 				(e) => this.unhide_workspace(item, e),
 				"unhide-workspace-btn",
 				__("Unhide Workspace"),
@@ -520,7 +565,7 @@ dontmanage.views.Workspace = class Workspace {
 			);
 		} else {
 			dontmanage.utils.add_custom_button(
-				dontmanage.utils.icon("drag", "xs"),
+				dontmanage.utils.icon("es-line-drag", "xs"),
 				null,
 				"drag-handle",
 				__("Drag"),
@@ -582,6 +627,8 @@ dontmanage.views.Workspace = class Workspace {
 							"options",
 							this.get_value() ? me.public_parent_pages : me.private_parent_pages
 						);
+						d.set_df_property("icon", "hidden", this.get_value() ? 0 : 1);
+						d.set_df_property("indicator_color", "hidden", this.get_value() ? 1 : 0);
 					},
 				},
 				{
@@ -591,13 +638,23 @@ dontmanage.views.Workspace = class Workspace {
 					label: __("Icon"),
 					fieldtype: "Icon",
 					fieldname: "icon",
-					default: item.icon,
+					default: item.public && item.icon,
+					hidden: !item.public,
+				},
+				{
+					label: __("Indicator color"),
+					fieldtype: "Select",
+					fieldname: "indicator_color",
+					options: this.indicator_colors,
+					default: !item.public && item.indicator_color,
+					hidden: item.public,
 				},
 			],
 			primary_action_label: __("Update"),
 			primary_action: (values) => {
+				values.title = strip_html(values.title);
 				let is_title_changed = values.title != old_item.title;
-				let is_section_changed = values.is_public != old_item.public;
+				let is_section_changed = Boolean(values.is_public) != Boolean(old_item.public);
 				if (
 					(is_title_changed || is_section_changed) &&
 					!this.validate_page(values, old_item)
@@ -611,6 +668,7 @@ dontmanage.views.Workspace = class Workspace {
 						name: old_item.name,
 						title: values.title,
 						icon: values.icon || "",
+						indicator_color: values.indicator_color || "",
 						parent: values.parent || "",
 						public: values.is_public || 0,
 					},
@@ -654,6 +712,7 @@ dontmanage.views.Workspace = class Workspace {
 
 		new_updated_item.title = new_item.title;
 		new_updated_item.icon = new_item.icon;
+		new_updated_item.indicator_color = new_item.indicator_color;
 		new_updated_item.parent_page = new_item.parent || "";
 		new_updated_item.public = new_item.is_public;
 
@@ -748,19 +807,19 @@ dontmanage.views.Workspace = class Workspace {
 			{
 				label: __("Edit"),
 				title: __("Edit Workspace"),
-				icon: dontmanage.utils.icon("edit", "sm"),
+				icon: dontmanage.utils.icon("es-line-edit", "sm"),
 				action: () => this.edit_page(item),
 			},
 			{
 				label: __("Duplicate"),
 				title: __("Duplicate Workspace"),
-				icon: dontmanage.utils.icon("duplicate", "sm"),
+				icon: dontmanage.utils.icon("es-line-duplicate", "sm"),
 				action: () => this.duplicate_page(item),
 			},
 			{
 				label: __("Hide"),
 				title: __("Hide Workspace"),
-				icon: dontmanage.utils.icon("hide", "sm"),
+				icon: dontmanage.utils.icon("es-line-hide", "sm"),
 				action: (e) => this.hide_workspace(item, e),
 			},
 		];
@@ -775,8 +834,8 @@ dontmanage.views.Workspace = class Workspace {
 		}
 
 		let $button = $(`
-			<div class="btn btn-secondary btn-xs setting-btn dropdown-btn" title="${__("Setting")}">
-				${dontmanage.utils.icon("dot-horizontal", "xs")}
+			<div class="btn btn-xs setting-btn dropdown-btn" title="${__("Setting")}">
+				${dontmanage.utils.icon("es-line-dot-horizontal", "xs")}
 			</div>
 			<div class="dropdown-list hidden"></div>
 		`);
@@ -896,6 +955,8 @@ dontmanage.views.Workspace = class Workspace {
 							"options",
 							this.get_value() ? me.public_parent_pages : me.private_parent_pages
 						);
+						d.set_df_property("icon", "hidden", this.get_value() ? 0 : 1);
+						d.set_df_property("indicator_color", "hidden", this.get_value() ? 1 : 0);
 					},
 				},
 				{
@@ -905,7 +966,16 @@ dontmanage.views.Workspace = class Workspace {
 					label: __("Icon"),
 					fieldtype: "Icon",
 					fieldname: "icon",
-					default: new_page.icon,
+					default: new_page.public && new_page.icon,
+					hidden: !new_page.public,
+				},
+				{
+					label: __("Indicator color"),
+					fieldtype: "Select",
+					fieldname: "indicator_color",
+					options: this.indicator_colors,
+					hidden: new_page.public,
+					default: !new_page.public && new_page.indicator_color,
 				},
 			],
 			primary_action_label: __("Duplicate"),
@@ -935,6 +1005,7 @@ dontmanage.views.Workspace = class Workspace {
 				new_page.name = values.title + (new_page.public ? "" : "-" + dontmanage.session.user);
 				new_page.label = new_page.name;
 				new_page.icon = values.icon;
+				new_page.indicator_color = values.indicator_color;
 				new_page.parent_page = values.parent || "";
 				new_page.for_user = new_page.public ? "" : dontmanage.session.user;
 				new_page.is_editable = !new_page.public;
@@ -1129,6 +1200,8 @@ dontmanage.views.Workspace = class Workspace {
 							"options",
 							this.get_value() ? me.public_parent_pages : me.private_parent_pages
 						);
+						d.set_df_property("icon", "hidden", this.get_value() ? 0 : 1);
+						d.set_df_property("indicator_color", "hidden", this.get_value() ? 1 : 0);
 					},
 				},
 				{
@@ -1138,10 +1211,18 @@ dontmanage.views.Workspace = class Workspace {
 					label: __("Icon"),
 					fieldtype: "Icon",
 					fieldname: "icon",
+					hidden: 1,
+				},
+				{
+					label: __("Indicator color"),
+					fieldtype: "Select",
+					fieldname: "indicator_color",
+					options: this.indicator_colors,
 				},
 			],
 			primary_action_label: __("Create"),
 			primary_action: (values) => {
+				values.title = strip_html(values.title);
 				if (!this.validate_page(values)) return;
 				d.hide();
 				this.initialize_editorjs_undo();
@@ -1163,6 +1244,7 @@ dontmanage.views.Workspace = class Workspace {
 					public: values.is_public || 0,
 					for_user: values.is_public ? "" : dontmanage.session.user,
 					icon: values.icon,
+					indicator_color: values.indicator_color,
 					parent_page: values.parent || "",
 					is_editable: true,
 					selected: true,
@@ -1204,6 +1286,7 @@ dontmanage.views.Workspace = class Workspace {
 
 						this.make_sidebar();
 						this.show_sidebar_actions();
+						localStorage.setItem("new_workspace", JSON.stringify(new_page));
 					});
 			},
 		});
@@ -1279,7 +1362,7 @@ dontmanage.views.Workspace = class Workspace {
 			$sidebar_item.appendTo($child_section);
 			$child_section.removeClass("hidden");
 			$item_container.find(".drop-icon.hidden").removeClass("hidden");
-			$item_container.find(".drop-icon use").attr("href", "#icon-small-up");
+			$item_container.find(".drop-icon use").attr("href", "#es-line-up");
 		}
 
 		let section = item.is_public ? "public" : "private";
@@ -1340,6 +1423,12 @@ dontmanage.views.Workspace = class Workspace {
 			},
 			number_card: {
 				class: this.blocks["number_card"],
+				config: {
+					page_data: this.page_data || [],
+				},
+			},
+			custom_block: {
+				class: this.blocks["custom_block"],
 				config: {
 					page_data: this.page_data || [],
 				},

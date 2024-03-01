@@ -15,7 +15,7 @@ dontmanage.ui.form.ControlAttach = class ControlAttach extends dontmanage.ui.for
 		this.$value = $(
 			`<div class="attached-file flex justify-between align-center">
 				<div class="ellipsis">
-					<i class="fa fa-paperclip"></i>
+				${dontmanage.utils.icon("es-line-link", "sm")}
 					<a class="attached-file-link" target="_blank"></a>
 				</div>
 				<div>
@@ -63,7 +63,6 @@ dontmanage.ui.form.ControlAttach = class ControlAttach extends dontmanage.ui.for
 	on_attach_doc_image() {
 		this.set_upload_options();
 		this.upload_options.restrictions.allowed_file_types = ["image/*"];
-		this.upload_options.restrictions.crop_image_aspect_ratio = 1;
 		this.file_uploader = new dontmanage.ui.FileUploader(this.upload_options);
 	}
 	set_upload_options() {

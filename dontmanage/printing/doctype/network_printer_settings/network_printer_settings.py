@@ -7,8 +7,21 @@ from dontmanage.model.document import Document
 
 
 class NetworkPrinterSettings(Document):
+	# begin: auto-generated types
+	# This code is auto-generated. Do not modify anything in this block.
+
+	from typing import TYPE_CHECKING
+
+	if TYPE_CHECKING:
+		from dontmanage.types import DF
+
+		port: DF.Int
+		printer_name: DF.Literal
+		server_ip: DF.Data
+
+	# end: auto-generated types
 	@dontmanage.whitelist()
-	def get_printers_list(self, ip="localhost", port=631):
+	def get_printers_list(self, ip="127.0.0.1", port=631):
 		printer_list = []
 		try:
 			import cups
@@ -25,9 +38,10 @@ class NetworkPrinterSettings(Document):
 			cups.setPort(self.port)
 			conn = cups.Connection()
 			printers = conn.getPrinters()
-			for printer_id, printer in printers.items():
-				printer_list.append({"value": printer_id, "label": printer["printer-make-and-model"]})
-
+			printer_list.extend(
+				{"value": printer_id, "label": printer["printer-make-and-model"]}
+				for printer_id, printer in printers.items()
+			)
 		except RuntimeError:
 			dontmanage.throw(_("Failed to connect to server"))
 		except dontmanage.ValidationError:

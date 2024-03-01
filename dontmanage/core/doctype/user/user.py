@@ -1,5 +1,7 @@
 # Copyright (c) 2015, DontManage and Contributors
 # License: MIT. See LICENSE
+
+from collections.abc import Iterable
 from datetime import timedelta
 
 import dontmanage
@@ -7,6 +9,7 @@ import dontmanage.defaults
 import dontmanage.permissions
 import dontmanage.share
 from dontmanage import STANDARD_USERS, _, msgprint, throw
+from dontmanage.auth import MAX_PASSWORD_SIZE
 from dontmanage.core.doctype.user_type.user_type import user_linked_with_permission_on_doctype
 from dontmanage.desk.doctype.notification_settings.notification_settings import (
 	create_notification_settings,
@@ -27,6 +30,8 @@ from dontmanage.utils import (
 	now_datetime,
 	today,
 )
+from dontmanage.utils.data import sha256_hash
+from dontmanage.utils.deprecations import deprecated
 from dontmanage.utils.password import check_password, get_password_reset_limit
 from dontmanage.utils.password import update_password as _update_password
 from dontmanage.utils.user import get_system_managers
@@ -34,6 +39,80 @@ from dontmanage.website.utils import is_signup_disabled
 
 
 class User(Document):
+	# begin: auto-generated types
+	# This code is auto-generated. Do not modify anything in this block.
+
+	from typing import TYPE_CHECKING
+
+	if TYPE_CHECKING:
+		from dontmanage.core.doctype.block_module.block_module import BlockModule
+		from dontmanage.core.doctype.defaultvalue.defaultvalue import DefaultValue
+		from dontmanage.core.doctype.has_role.has_role import HasRole
+		from dontmanage.core.doctype.user_email.user_email import UserEmail
+		from dontmanage.core.doctype.user_social_login.user_social_login import UserSocialLogin
+		from dontmanage.types import DF
+
+		allowed_in_mentions: DF.Check
+		api_key: DF.Data | None
+		api_secret: DF.Password | None
+		banner_image: DF.AttachImage | None
+		bio: DF.SmallText | None
+		birth_date: DF.Date | None
+		block_modules: DF.Table[BlockModule]
+		bypass_restrict_ip_check_if_2fa_enabled: DF.Check
+		defaults: DF.Table[DefaultValue]
+		desk_theme: DF.Literal["Light", "Dark", "Automatic"]
+		document_follow_frequency: DF.Literal["Hourly", "Daily", "Weekly"]
+		document_follow_notify: DF.Check
+		email: DF.Data
+		email_signature: DF.SmallText | None
+		enabled: DF.Check
+		first_name: DF.Data
+		follow_assigned_documents: DF.Check
+		follow_commented_documents: DF.Check
+		follow_created_documents: DF.Check
+		follow_liked_documents: DF.Check
+		follow_shared_documents: DF.Check
+		full_name: DF.Data | None
+		gender: DF.Link | None
+		home_settings: DF.Code | None
+		interest: DF.SmallText | None
+		language: DF.Link | None
+		last_active: DF.Datetime | None
+		last_ip: DF.ReadOnly | None
+		last_known_versions: DF.Text | None
+		last_login: DF.ReadOnly | None
+		last_name: DF.Data | None
+		last_password_reset_date: DF.Date | None
+		last_reset_password_key_generated_on: DF.Datetime | None
+		location: DF.Data | None
+		login_after: DF.Int
+		login_before: DF.Int
+		logout_all_sessions: DF.Check
+		middle_name: DF.Data | None
+		mobile_no: DF.Data | None
+		module_profile: DF.Link | None
+		mute_sounds: DF.Check
+		new_password: DF.Password | None
+		onboarding_status: DF.SmallText | None
+		phone: DF.Data | None
+		redirect_url: DF.SmallText | None
+		reset_password_key: DF.Data | None
+		restrict_ip: DF.SmallText | None
+		role_profile_name: DF.Link | None
+		roles: DF.Table[HasRole]
+		send_me_a_copy: DF.Check
+		send_welcome_email: DF.Check
+		simultaneous_sessions: DF.Int
+		social_logins: DF.Table[UserSocialLogin]
+		thread_notify: DF.Check
+		time_zone: DF.Autocomplete | None
+		unsubscribed: DF.Check
+		user_emails: DF.Table[UserEmail]
+		user_image: DF.AttachImage | None
+		user_type: DF.Link | None
+		username: DF.Data | None
+	# end: auto-generated types
 	__new_password = None
 
 	def __setup__(self):
@@ -51,7 +130,7 @@ class User(Document):
 	def onload(self):
 		from dontmanage.config import get_modules_from_all_apps
 
-		self.set_onload("all_modules", [m.get("module_name") for m in get_modules_from_all_apps()])
+		self.set_onload("all_modules", sorted(m.get("module_name") for m in get_modules_from_all_apps()))
 
 	def before_insert(self):
 		self.flags.in_insert = True
@@ -59,8 +138,8 @@ class User(Document):
 
 	def after_insert(self):
 		create_notification_settings(self.name)
-		dontmanage.cache().delete_key("users_for_mentions")
-		dontmanage.cache().delete_key("enabled_users")
+		dontmanage.cache.delete_key("users_for_mentions")
+		dontmanage.cache.delete_key("enabled_users")
 
 	def validate(self):
 		# clear new password
@@ -74,6 +153,8 @@ class User(Document):
 			self.validate_email_type(self.email)
 			self.validate_email_type(self.name)
 		self.add_system_manager_role()
+		self.populate_role_profile_roles()
+		self.check_roles_added()
 		self.set_system_user()
 		self.set_full_name()
 		self.check_enable_disable()
@@ -83,7 +164,6 @@ class User(Document):
 		self.remove_disabled_roles()
 		self.validate_user_email_inbox()
 		ask_pass_update()
-		self.validate_roles()
 		self.validate_allowed_modules()
 		self.validate_user_image()
 		self.set_time_zone()
@@ -91,16 +171,18 @@ class User(Document):
 		if self.language == "Loading...":
 			self.language = None
 
-		if (self.name not in ["Administrator", "Guest"]) and (
-			not self.get_social_login_userid("dontmanage")
-		):
+		if (self.name not in ["Administrator", "Guest"]) and (not self.get_social_login_userid("dontmanage")):
 			self.set_social_login_userid("dontmanage", dontmanage.generate_hash(length=39))
 
-	def validate_roles(self):
+	def populate_role_profile_roles(self):
 		if self.role_profile_name:
 			role_profile = dontmanage.get_doc("Role Profile", self.role_profile_name)
 			self.set("roles", [])
 			self.append_roles(*[role.role for role in role_profile.roles])
+
+	@deprecated
+	def validate_roles(self):
+		self.populate_role_profile_roles()
 
 	def validate_allowed_modules(self):
 		if self.module_profile:
@@ -141,10 +223,10 @@ class User(Document):
 			dontmanage.defaults.set_default("time_zone", self.time_zone, self.name)
 
 		if self.has_value_changed("enabled"):
-			dontmanage.cache().delete_key("users_for_mentions")
-			dontmanage.cache().delete_key("enabled_users")
+			dontmanage.cache.delete_key("users_for_mentions")
+			dontmanage.cache.delete_key("enabled_users")
 		elif self.has_value_changed("allow_in_mentions") or self.has_value_changed("user_type"):
-			dontmanage.cache().delete_key("users_for_mentions")
+			dontmanage.cache.delete_key("users_for_mentions")
 
 	def has_website_permission(self, ptype, user, verbose=False):
 		"""Returns true if current user is the session user"""
@@ -184,7 +266,6 @@ class User(Document):
 			and not self.get_other_system_managers()
 			and cint(dontmanage.db.get_single_value("System Settings", "setup_complete"))
 		):
-
 			msgprint(_("Adding System Manager to this User as there must be atleast one System Manager"))
 			self.append("roles", {"doctype": "Has Role", "role": "System Manager"})
 
@@ -281,6 +362,10 @@ class User(Document):
 				self.email_new_password(new_password)
 
 		except dontmanage.OutgoingEmailError:
+			dontmanage.clear_last_message()
+			dontmanage.msgprint(
+				_("Please setup default outgoing Email Account from Settings > Email Account"), alert=True
+			)
 			# email server not set, don't send email
 			self.log_error("Unable to send new password notification")
 
@@ -289,10 +374,11 @@ class User(Document):
 		pass
 
 	def reset_password(self, send_email=False, password_expired=False):
-		from dontmanage.utils import get_url, random_string
+		from dontmanage.utils import get_url
 
-		key = random_string(32)
-		self.db_set("reset_password_key", key)
+		key = dontmanage.generate_hash()
+		hashed_key = sha256_hash(key)
+		self.db_set("reset_password_key", hashed_key)
 		self.db_set("last_reset_password_key_generated_on", now_datetime())
 
 		url = "/update-password?key=" + key
@@ -313,12 +399,10 @@ class User(Document):
 			.from_(user_role_doctype)
 			.select(user_doctype.name)
 			.where(user_role_doctype.role == "System Manager")
-			.where(user_doctype.docstatus < 2)
 			.where(user_doctype.enabled == 1)
 			.where(user_role_doctype.parent == user_doctype.name)
 			.where(user_role_doctype.parent.notin(["Administrator", self.name]))
 			.limit(1)
-			.distinct()
 		).run()
 
 	def get_fullname(self):
@@ -326,7 +410,15 @@ class User(Document):
 		return (self.first_name or "") + (self.first_name and " " or "") + (self.last_name or "")
 
 	def password_reset_mail(self, link):
-		self.send_login_mail(_("Password Reset"), "password_reset", {"link": link}, now=True)
+		reset_password_template = dontmanage.db.get_system_setting("reset_password_template")
+
+		self.send_login_mail(
+			_("Password Reset"),
+			"password_reset",
+			{"link": link},
+			now=True,
+			custom_template=reset_password_template,
+		)
 
 	def send_welcome_mail_to_user(self):
 		from dontmanage.utils import get_url
@@ -343,6 +435,8 @@ class User(Document):
 			else:
 				subject = _("Complete Registration")
 
+		welcome_email_template = dontmanage.db.get_system_setting("welcome_email_template")
+
 		self.send_login_mail(
 			subject,
 			"new_user",
@@ -350,9 +444,10 @@ class User(Document):
 				link=link,
 				site_url=get_url(),
 			),
+			custom_template=welcome_email_template,
 		)
 
-	def send_login_mail(self, subject, template, add_args, now=None):
+	def send_login_mail(self, subject, template, add_args, now=None, custom_template=None):
 		"""send mail with login details"""
 		from dontmanage.utils import get_url
 		from dontmanage.utils.user import get_user_fullname
@@ -375,11 +470,19 @@ class User(Document):
 			dontmanage.session.user not in STANDARD_USERS and get_formatted_email(dontmanage.session.user) or None
 		)
 
+		if custom_template:
+			from dontmanage.email.doctype.email_template.email_template import get_email_template
+
+			email_template = get_email_template(custom_template, args)
+			subject = email_template.get("subject")
+			content = email_template.get("message")
+
 		dontmanage.sendmail(
 			recipients=self.email,
 			sender=sender,
 			subject=subject,
-			template=template,
+			template=template if not custom_template else None,
+			content=content if custom_template else None,
 			args=args,
 			header=[subject, "green"],
 			delayed=(not now) if now is not None else self.flags.delay_emails,
@@ -438,12 +541,16 @@ class User(Document):
 		dontmanage.delete_doc("Notification Settings", self.name, ignore_permissions=True)
 
 		if self.get("allow_in_mentions"):
-			dontmanage.cache().delete_key("users_for_mentions")
+			dontmanage.cache.delete_key("users_for_mentions")
 
-		dontmanage.cache().delete_key("enabled_users")
+		dontmanage.cache.delete_key("enabled_users")
 
 		# delete user permissions
 		dontmanage.db.delete("User Permission", {"user": self.name})
+
+		# Delete OAuth data
+		dontmanage.db.delete("OAuth Authorization Code", {"user": self.name})
+		dontmanage.db.delete("Token Cache", {"user": self.name})
 
 	def before_rename(self, old_name, new_name, merge=False):
 		dontmanage.clear_cache(user=old_name)
@@ -465,16 +572,12 @@ class User(Document):
 		tables = dontmanage.db.get_tables()
 		for tab in tables:
 			desc = dontmanage.db.get_table_columns_description(tab)
-			has_fields = []
-			for d in desc:
-				if d.get("name") in ["owner", "modified_by"]:
-					has_fields.append(d.get("name"))
+			has_fields = [d.get("name") for d in desc if d.get("name") in ["owner", "modified_by"]]
 			for field in has_fields:
 				dontmanage.db.sql(
-					"""UPDATE `%s`
-					SET `%s` = %s
-					WHERE `%s` = %s"""
-					% (tab, field, "%s", field, "%s"),
+					"""UPDATE `{}`
+					SET `{}` = {}
+					WHERE `{}` = {}""".format(tab, field, "%s", field, "%s"),
 					(new_name, old_name),
 				)
 
@@ -482,7 +585,7 @@ class User(Document):
 			dontmanage.rename_doc("Notification Settings", old_name, new_name, force=True, show_alert=False)
 
 		# set email
-		dontmanage.db.update("User", new_name, "email", new_name)
+		dontmanage.db.set_value("User", new_name, "email", new_name)
 
 	def append_roles(self, *roles):
 		"""Add roles to user"""
@@ -517,7 +620,7 @@ class User(Document):
 
 	def ensure_unique_roles(self):
 		exists = []
-		for i, d in enumerate(self.get("roles")):
+		for d in self.get("roles"):
 			if (not d.role) or (d.role in exists):
 				self.get("roles").remove(d)
 			else:
@@ -547,7 +650,7 @@ class User(Document):
 
 		if self.__new_password:
 			user_data = (self.first_name, self.middle_name, self.last_name, self.email, self.birth_date)
-			result = test_password_strength(self.__new_password, "", None, user_data)
+			result = test_password_strength(self.__new_password, user_data=user_data)
 			feedback = result.get("feedback", None)
 
 			if feedback and not feedback.get("password_policy_validation_passed", False):
@@ -565,9 +668,7 @@ class User(Document):
 
 		if not username:
 			# @firstname_last_name
-			username = _check_suggestion(
-				dontmanage.scrub("{} {}".format(self.first_name, self.last_name or ""))
-			)
+			username = _check_suggestion(dontmanage.scrub("{} {}".format(self.first_name, self.last_name or "")))
 
 		if username:
 			dontmanage.msgprint(_("Suggested Username: {0}").format(username))
@@ -575,9 +676,7 @@ class User(Document):
 		return username
 
 	def username_exists(self, username=None):
-		return dontmanage.db.get_value(
-			"User", {"username": username or self.username, "name": ("!=", self.name)}
-		)
+		return dontmanage.db.get_value("User", {"username": username or self.username, "name": ("!=", self.name)})
 
 	def get_blocked_modules(self):
 		"""Returns list of modules blocked for that user"""
@@ -650,6 +749,21 @@ class User(Document):
 		if not self.time_zone:
 			self.time_zone = get_system_timezone()
 
+	def check_roles_added(self):
+		if self.user_type != "System User" or self.roles or not self.is_new():
+			return
+
+		dontmanage.msgprint(
+			_("Newly created user {0} has no roles enabled.").format(dontmanage.bold(self.name)),
+			title=_("No Roles Specified"),
+			indicator="orange",
+			primary_action={
+				"label": _("Add Roles"),
+				"client_action": "dontmanage.set_route",
+				"args": ["Form", self.doctype, self.name],
+			},
+		)
+
 
 @dontmanage.whitelist()
 def get_timezones():
@@ -659,18 +773,21 @@ def get_timezones():
 
 
 @dontmanage.whitelist()
-def get_all_roles(arg=None):
+def get_all_roles():
 	"""return all roles"""
 	active_domains = dontmanage.get_active_domains()
 
 	roles = dontmanage.get_all(
 		"Role",
-		filters={"name": ("not in", "Administrator,Guest,All"), "disabled": 0},
+		filters={
+			"name": ("not in", dontmanage.permissions.AUTOMATIC_ROLES),
+			"disabled": 0,
+		},
 		or_filters={"ifnull(restrict_to_domain, '')": "", "restrict_to_domain": ("in", active_domains)},
 		order_by="name",
 	)
 
-	return [role.get("name") for role in roles]
+	return sorted([role.get("name") for role in roles])
 
 
 @dontmanage.whitelist()
@@ -687,13 +804,23 @@ def get_perm_info(role):
 	return get_all_perms(role)
 
 
-@dontmanage.whitelist(allow_guest=True)
-def update_password(new_password, logout_all_sessions=0, key=None, old_password=None):
-	# validate key to avoid key input like ['like', '%'], '', ['in', ['']]
-	if key and not isinstance(key, str):
-		dontmanage.throw(_("Invalid key type"))
+@dontmanage.whitelist(allow_guest=True, methods=["POST"])
+def update_password(
+	new_password: str, logout_all_sessions: int = 0, key: str | None = None, old_password: str | None = None
+):
+	"""Update password for the current user.
 
-	result = test_password_strength(new_password, key, old_password)
+	Args:
+	        new_password (str): New password.
+	        logout_all_sessions (int, optional): If set to 1, all other sessions will be logged out. Defaults to 0.
+	        key (str, optional): Password reset key. Defaults to None.
+	        old_password (str, optional): Old password. Defaults to None.
+	"""
+
+	if len(new_password) > MAX_PASSWORD_SIZE:
+		dontmanage.throw(_("Password size exceeded the maximum allowed size."))
+
+	result = test_password_strength(new_password)
 	feedback = result.get("feedback", None)
 
 	if feedback and not feedback.get("password_policy_validation_passed", False):
@@ -714,10 +841,10 @@ def update_password(new_password, logout_all_sessions=0, key=None, old_password=
 	user_doc, redirect_url = reset_user_data(user)
 
 	# get redirect url from cache
-	redirect_to = dontmanage.cache().hget("redirect_after_login", user)
+	redirect_to = dontmanage.cache.hget("redirect_after_login", user)
 	if redirect_to:
 		redirect_url = redirect_to
-		dontmanage.cache().hdel("redirect_after_login", user)
+		dontmanage.cache.hdel("redirect_after_login", user)
 
 	dontmanage.local.login_manager.login_as(user)
 
@@ -727,22 +854,20 @@ def update_password(new_password, logout_all_sessions=0, key=None, old_password=
 	if user_doc.user_type == "System User":
 		return "/app"
 	else:
-		return redirect_url if redirect_url else "/"
+		return redirect_url or "/"
 
 
 @dontmanage.whitelist(allow_guest=True)
-def test_password_strength(new_password, key=None, old_password=None, user_data=None):
+def test_password_strength(new_password: str, key=None, old_password=None, user_data: tuple | None = None):
+	from dontmanage.utils.deprecations import deprecation_warning
 	from dontmanage.utils.password_strength import test_password_strength as _test_password_strength
 
-	password_policy = (
-		dontmanage.db.get_value(
-			"System Settings", None, ["enable_password_policy", "minimum_password_score"], as_dict=True
+	if key is not None or old_password is not None:
+		deprecation_warning(
+			"Arguments `key` and `old_password` are deprecated in function `test_password_strength`."
 		)
-		or {}
-	)
 
-	enable_password_policy = cint(password_policy.get("enable_password_policy", 0))
-	minimum_password_score = cint(password_policy.get("minimum_password_score", 0))
+	enable_password_policy = dontmanage.get_system_settings("enable_password_policy") or 0
 
 	if not enable_password_policy:
 		return {}
@@ -755,18 +880,19 @@ def test_password_strength(new_password, key=None, old_password=None, user_data=
 	if new_password:
 		result = _test_password_strength(new_password, user_inputs=user_data)
 		password_policy_validation_passed = False
+		minimum_password_score = cint(dontmanage.get_system_settings("minimum_password_score")) or 0
 
 		# score should be greater than 0 and minimum_password_score
 		if result.get("score") and result.get("score") >= minimum_password_score:
 			password_policy_validation_passed = True
 
 		result["feedback"]["password_policy_validation_passed"] = password_policy_validation_passed
+		result.pop("password", None)
 		return result
 
 
-# for login
 @dontmanage.whitelist()
-def has_email_account(email):
+def has_email_account(email: str):
 	return dontmanage.get_list("Email Account", filters={"email_id": email})
 
 
@@ -793,8 +919,9 @@ def _get_user_for_update_password(key, old_password):
 	# verify old password
 	result = dontmanage._dict()
 	if key:
+		hashed_key = sha256_hash(key)
 		user = dontmanage.db.get_value(
-			"User", {"reset_password_key": key}, ["name", "last_reset_password_key_generated_on"]
+			"User", {"reset_password_key": hashed_key}, ["name", "last_reset_password_key_generated_on"]
 		)
 		result.user, last_reset_password_key_generated_on = user or (None, None)
 		if result.user:
@@ -827,13 +954,13 @@ def reset_user_data(user):
 	return user_doc, redirect_url
 
 
-@dontmanage.whitelist()
+@dontmanage.whitelist(methods=["POST"])
 def verify_password(password):
 	dontmanage.local.login_manager.check_password(dontmanage.session.user, password)
 
 
 @dontmanage.whitelist(allow_guest=True)
-def sign_up(email, full_name, redirect_to):
+def sign_up(email: str, full_name: str, redirect_to: str) -> tuple[int, str]:
 	if is_signup_disabled():
 		dontmanage.throw(_("Sign Up is disabled"), title=_("Not Allowed"))
 
@@ -875,7 +1002,7 @@ def sign_up(email, full_name, redirect_to):
 			user.add_roles(default_role)
 
 		if redirect_to:
-			dontmanage.cache().hset("redirect_after_login", user.name, redirect_to)
+			dontmanage.cache.hset("redirect_after_login", user.name, redirect_to)
 
 		if user.flags.email_sent:
 			return 1, _("Please check your email for verification")
@@ -883,14 +1010,13 @@ def sign_up(email, full_name, redirect_to):
 			return 2, _("Please ask your administrator to verify your sign-up")
 
 
-@dontmanage.whitelist(allow_guest=True)
-@rate_limit(limit=get_password_reset_limit, seconds=24 * 60 * 60, methods=["POST"])
-def reset_password(user):
-	if user == "Administrator":
-		return "not allowed"
-
+@dontmanage.whitelist(allow_guest=True, methods=["POST"])
+@rate_limit(limit=get_password_reset_limit, seconds=60 * 60)
+def reset_password(user: str) -> str:
 	try:
-		user = dontmanage.get_doc("User", user)
+		user: User = dontmanage.get_doc("User", user)
+		if user.name == "Administrator":
+			return "not allowed"
 		if not user.enabled:
 			return "disabled"
 
@@ -916,9 +1042,9 @@ def user_query(doctype, txt, searchfield, start, page_len, filters):
 	conditions = []
 
 	user_type_condition = "and user_type != 'Website User'"
-	if filters and filters.get("ignore_user_type"):
+	if filters and filters.get("ignore_user_type") and dontmanage.session.data.user_type == "System User":
 		user_type_condition = ""
-		filters.pop("ignore_user_type")
+	filters and filters.pop("ignore_user_type", None)
 
 	txt = f"%{txt}%"
 	return dontmanage.db.sql(
@@ -956,36 +1082,29 @@ def get_total_users():
 		FROM `tabUser`
 		WHERE `enabled` = 1
 		AND `user_type` = 'System User'
-		AND `name` NOT IN ({})""".format(
-				", ".join(["%s"] * len(STANDARD_USERS))
-			),
+		AND `name` NOT IN ({})""".format(", ".join(["%s"] * len(STANDARD_USERS))),
 			STANDARD_USERS,
 		)[0][0]
 	)
 
 
-def get_system_users(exclude_users=None, limit=None):
-	if not exclude_users:
-		exclude_users = []
-	elif not isinstance(exclude_users, (list, tuple)):
-		exclude_users = [exclude_users]
+def get_system_users(exclude_users: Iterable[str] | str | None = None, limit: int | None = None):
+	_excluded_users = list(STANDARD_USERS)
+	if isinstance(exclude_users, str):
+		_excluded_users.append(exclude_users)
+	elif isinstance(exclude_users, Iterable):
+		_excluded_users.extend(exclude_users)
 
-	limit_cond = ""
-	if limit:
-		limit_cond = f"limit {limit}"
-
-	exclude_users += list(STANDARD_USERS)
-
-	system_users = dontmanage.db.sql_list(
-		"""select name from `tabUser`
-		where enabled=1 and user_type != 'Website User'
-		and name not in ({}) {}""".format(
-			", ".join(["%s"] * len(exclude_users)), limit_cond
-		),
-		exclude_users,
+	return dontmanage.get_all(
+		"User",
+		filters={
+			"enabled": 1,
+			"user_type": ("!=", "Website User"),
+			"name": ("not in", _excluded_users),
+		},
+		pluck="name",
+		limit=limit,
 	)
-
-	return system_users
 
 
 def get_active_users():
@@ -994,9 +1113,7 @@ def get_active_users():
 		"""select count(*) from `tabUser`
 		where enabled = 1 and user_type != 'Website User'
 		and name not in ({})
-		and hour(timediff(now(), last_active)) < 72""".format(
-			", ".join(["%s"] * len(STANDARD_USERS))
-		),
+		and hour(timediff(now(), last_active)) < 72""".format(", ".join(["%s"] * len(STANDARD_USERS))),
 		STANDARD_USERS,
 	)[0][0]
 
@@ -1036,7 +1153,6 @@ def notify_admin_access_to_system_manager(login_manager=None):
 		and login_manager.user == "Administrator"
 		and dontmanage.local.conf.notify_admin_access_to_system_manager
 	):
-
 		site = '<a href="{0}" target="_blank">{0}</a>'.format(dontmanage.local.request.host_url)
 		date_and_time = "<b>{}</b>".format(format_datetime(now_datetime(), format_string="medium"))
 		ip_address = dontmanage.local.request_ip
@@ -1062,7 +1178,7 @@ def handle_password_test_fail(feedback: dict):
 	suggestions = feedback.get("suggestions", [])
 	warning = feedback.get("warning", "")
 
-	dontmanage.throw(msg=" ".join([warning] + suggestions), title=_("Invalid Password"))
+	dontmanage.throw(msg=" ".join([warning, *suggestions]), title=_("Invalid Password"))
 
 
 def update_gravatar(name):
@@ -1080,13 +1196,12 @@ def throttle_user_creation():
 
 
 @dontmanage.whitelist()
-def get_role_profile(role_profile):
-	roles = dontmanage.get_doc("Role Profile", {"role_profile": role_profile})
-	return roles.roles
+def get_role_profile(role_profile: str):
+	return dontmanage.get_doc("Role Profile", {"role_profile": role_profile}).roles
 
 
 @dontmanage.whitelist()
-def get_module_profile(module_profile):
+def get_module_profile(module_profile: str):
 	module_profile = dontmanage.get_doc("Module Profile", {"module_profile_name": module_profile})
 	return module_profile.get("block_modules")
 
@@ -1099,56 +1214,63 @@ def create_contact(user, ignore_links=False, ignore_mandatory=False):
 
 	contact_name = get_contact_name(user.email)
 	if not contact_name:
-		contact = dontmanage.get_doc(
-			{
-				"doctype": "Contact",
-				"first_name": user.first_name,
-				"last_name": user.last_name,
-				"user": user.name,
-				"gender": user.gender,
-			}
-		)
+		try:
+			contact = dontmanage.get_doc(
+				{
+					"doctype": "Contact",
+					"first_name": user.first_name,
+					"last_name": user.last_name,
+					"user": user.name,
+					"gender": user.gender,
+				}
+			)
 
-		if user.email:
-			contact.add_email(user.email, is_primary=True)
+			if user.email:
+				contact.add_email(user.email, is_primary=True)
 
-		if user.phone:
-			contact.add_phone(user.phone, is_primary_phone=True)
+			if user.phone:
+				contact.add_phone(user.phone, is_primary_phone=True)
 
-		if user.mobile_no:
-			contact.add_phone(user.mobile_no, is_primary_mobile_no=True)
-		contact.insert(
-			ignore_permissions=True, ignore_links=ignore_links, ignore_mandatory=ignore_mandatory
-		)
+			if user.mobile_no:
+				contact.add_phone(user.mobile_no, is_primary_mobile_no=True)
+
+			contact.insert(
+				ignore_permissions=True, ignore_links=ignore_links, ignore_mandatory=ignore_mandatory
+			)
+		except dontmanage.DuplicateEntryError:
+			pass
 	else:
-		contact = dontmanage.get_doc("Contact", contact_name)
-		contact.first_name = user.first_name
-		contact.last_name = user.last_name
-		contact.gender = user.gender
+		try:
+			contact = dontmanage.get_doc("Contact", contact_name)
+			contact.first_name = user.first_name
+			contact.last_name = user.last_name
+			contact.gender = user.gender
 
-		# Add mobile number if phone does not exists in contact
-		if user.phone and not any(new_contact.phone == user.phone for new_contact in contact.phone_nos):
-			# Set primary phone if there is no primary phone number
-			contact.add_phone(
-				user.phone,
-				is_primary_phone=not any(
-					new_contact.is_primary_phone == 1 for new_contact in contact.phone_nos
-				),
-			)
+			# Add mobile number if phone does not exists in contact
+			if user.phone and not any(new_contact.phone == user.phone for new_contact in contact.phone_nos):
+				# Set primary phone if there is no primary phone number
+				contact.add_phone(
+					user.phone,
+					is_primary_phone=not any(
+						new_contact.is_primary_phone == 1 for new_contact in contact.phone_nos
+					),
+				)
 
-		# Add mobile number if mobile does not exists in contact
-		if user.mobile_no and not any(
-			new_contact.phone == user.mobile_no for new_contact in contact.phone_nos
-		):
-			# Set primary mobile if there is no primary mobile number
-			contact.add_phone(
-				user.mobile_no,
-				is_primary_mobile_no=not any(
-					new_contact.is_primary_mobile_no == 1 for new_contact in contact.phone_nos
-				),
-			)
+			# Add mobile number if mobile does not exists in contact
+			if user.mobile_no and not any(
+				new_contact.phone == user.mobile_no for new_contact in contact.phone_nos
+			):
+				# Set primary mobile if there is no primary mobile number
+				contact.add_phone(
+					user.mobile_no,
+					is_primary_mobile_no=not any(
+						new_contact.is_primary_mobile_no == 1 for new_contact in contact.phone_nos
+					),
+				)
 
-		contact.save(ignore_permissions=True)
+			contact.save(ignore_permissions=True)
+		except dontmanage.TimestampMismatchError:
+			raise dontmanage.RetryBackgroundJobError
 
 
 def get_restricted_ip_list(user):
@@ -1158,15 +1280,15 @@ def get_restricted_ip_list(user):
 	return [i.strip() for i in user.restrict_ip.split(",")]
 
 
-@dontmanage.whitelist()
-def generate_keys(user):
+@dontmanage.whitelist(methods=["POST"])
+def generate_keys(user: str):
 	"""
 	generate api key and api secret
 
 	:param user: str
 	"""
 	dontmanage.only_for("System Manager")
-	user_details = dontmanage.get_doc("User", user)
+	user_details: User = dontmanage.get_doc("User", user)
 	api_secret = dontmanage.generate_hash(length=15)
 	# if api key is not set generate api key
 	if not user_details.api_key:
@@ -1189,4 +1311,32 @@ def get_enabled_users():
 		enabled_users = dontmanage.get_all("User", filters={"enabled": "1"}, pluck="name")
 		return enabled_users
 
-	return dontmanage.cache().get_value("enabled_users", _get_enabled_users)
+	return dontmanage.cache.get_value("enabled_users", _get_enabled_users)
+
+
+@dontmanage.whitelist(methods=["POST"])
+def impersonate(user: str, reason: str):
+	# Note: For now we only allow admins, we MIGHT allow system manager in future.
+	# All the impersonation code doesn't assume anything about user.
+	dontmanage.only_for("Administrator")
+
+	impersonator = dontmanage.session.user
+	dontmanage.get_doc(
+		{
+			"doctype": "Activity Log",
+			"user": user,
+			"status": "Success",
+			"subject": _("User {0} impersonated as {1}").format(impersonator, user),
+			"operation": "Impersonate",
+		}
+	).insert(ignore_permissions=True, ignore_links=True)
+
+	notification = dontmanage.new_doc(
+		"Notification Log",
+		for_user=user,
+		from_user=dontmanage.session.user,
+		subject=_("{0} just impersonated as you. They gave this reason: {1}").format(impersonator, reason),
+	)
+	notification.set("type", "Alert")
+	notification.insert(ignore_permissions=True)
+	dontmanage.local.login_manager.impersonate(user)

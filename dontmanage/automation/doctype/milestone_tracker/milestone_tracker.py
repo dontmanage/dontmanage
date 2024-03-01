@@ -8,6 +8,19 @@ from dontmanage.model.document import Document
 
 
 class MilestoneTracker(Document):
+	# begin: auto-generated types
+	# This code is auto-generated. Do not modify anything in this block.
+
+	from typing import TYPE_CHECKING
+
+	if TYPE_CHECKING:
+		from dontmanage.types import DF
+
+		disabled: DF.Check
+		document_type: DF.Link
+		track_field: DF.Literal
+
+	# end: auto-generated types
 	def on_update(self):
 		dontmanage.cache_manager.clear_doctype_map("Milestone Tracker", self.document_type)
 

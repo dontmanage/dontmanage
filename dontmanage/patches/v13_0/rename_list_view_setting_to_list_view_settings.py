@@ -12,9 +12,7 @@ def execute():
 
 	dontmanage.reload_doc("desk", "doctype", "List View Settings")
 
-	existing_list_view_settings = dontmanage.get_all(
-		"List View Settings", as_list=True, order_by="modified"
-	)
+	existing_list_view_settings = dontmanage.get_all("List View Settings", as_list=True, order_by="modified")
 	for list_view_setting in dontmanage.get_all(
 		"List View Setting",
 		fields=["disable_count", "disable_sidebar_stats", "disable_auto_refresh", "name"],

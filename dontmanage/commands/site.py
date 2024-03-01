@@ -9,7 +9,6 @@ import click
 # imports - module imports
 import dontmanage
 from dontmanage.commands import get_site, pass_context
-from dontmanage.core.doctype.log_settings.log_settings import LOG_DOCTYPES
 from dontmanage.exceptions import SiteNotSpecifiedError
 
 
@@ -30,9 +29,7 @@ from dontmanage.exceptions import SiteNotSpecifiedError
 	"--mariadb-root-username",
 	help='Root username for MariaDB or PostgreSQL, Default is "root"',
 )
-@click.option(
-	"--db-root-password", "--mariadb-root-password", help="Root password for MariaDB or PostgreSQL"
-)
+@click.option("--db-root-password", "--mariadb-root-password", help="Root password for MariaDB or PostgreSQL")
 @click.option(
 	"--no-mariadb-socket",
 	is_flag=True,
@@ -41,14 +38,10 @@ from dontmanage.exceptions import SiteNotSpecifiedError
 )
 @click.option("--admin-password", help="Administrator password for new site", default=None)
 @click.option("--verbose", is_flag=True, default=False, help="Verbose")
-@click.option(
-	"--force", help="Force restore if site/database already exists", is_flag=True, default=False
-)
+@click.option("--force", help="Force restore if site/database already exists", is_flag=True, default=False)
 @click.option("--source-sql", "--source_sql", help="Initiate database with a SQL file")
 @click.option("--install-app", multiple=True, help="Install app after installation")
-@click.option(
-	"--set-default", is_flag=True, default=False, help="Set the new site as default site"
-)
+@click.option("--set-default", is_flag=True, default=False, help="Set the new site as default site")
 def new_site(
 	site,
 	db_root_username=None,
@@ -102,17 +95,14 @@ def new_site(
 	"--mariadb-root-username",
 	help='Root username for MariaDB or PostgreSQL, Default is "root"',
 )
-@click.option(
-	"--db-root-password", "--mariadb-root-password", help="Root password for MariaDB or PostgreSQL"
-)
+@click.option("--db-root-password", "--mariadb-root-password", help="Root password for MariaDB or PostgreSQL")
 @click.option("--db-name", help="Database name for site in case it is a new one")
 @click.option("--admin-password", help="Administrator password for new site")
 @click.option("--install-app", multiple=True, help="Install app after installation")
+@click.option("--with-public-files", help="Restores the public files of the site, given path to its tar file")
 @click.option(
-	"--with-public-files", help="Restores the public files of the site, given path to its tar file"
-)
-@click.option(
-	"--with-private-files", help="Restores the private files of the site, given path to its tar file"
+	"--with-private-files",
+	help="Restores the private files of the site, given path to its tar file",
 )
 @click.option(
 	"--force",
@@ -137,6 +127,42 @@ def restore(
 	with_private_files=None,
 ):
 	"Restore site database from an sql file"
+
+	from dontmanage.utils.synchronization import filelock
+
+	site = get_site(context)
+	dontmanage.init(site=site)
+
+	with filelock("site_restore", timeout=1):
+		_restore(
+			site=site,
+			sql_file_path=sql_file_path,
+			encryption_key=encryption_key,
+			db_root_username=db_root_username,
+			db_root_password=db_root_password,
+			verbose=context.verbose or verbose,
+			install_app=install_app,
+			admin_password=admin_password,
+			force=context.force or force,
+			with_public_files=with_public_files,
+			with_private_files=with_private_files,
+		)
+
+
+def _restore(
+	*,
+	site=None,
+	sql_file_path=None,
+	encryption_key=None,
+	db_root_username=None,
+	db_root_password=None,
+	verbose=None,
+	install_app=None,
+	admin_password=None,
+	force=None,
+	with_public_files=None,
+	with_private_files=None,
+):
 	from dontmanage.installer import (
 		_new_site,
 		extract_files,
@@ -149,10 +175,6 @@ def restore(
 
 	_backup = Backup(sql_file_path)
 
-	site = get_site(context)
-	dontmanage.init(site=site)
-	force = context.force or force
-
 	try:
 		decompressed_file_name = extract_sql_from_archive(sql_file_path)
 		if is_partial(decompressed_file_name):
@@ -161,7 +183,8 @@ def restore(
 				fg="red",
 			)
 			click.secho(
-				"Use `bench partial-restore` to restore a partial backup to an existing site.", fg="yellow"
+				"Use `bench partial-restore` to restore a partial backup to an existing site.",
+				fg="yellow",
 			)
 			_backup.decryption_rollback()
 			sys.exit(1)
@@ -192,7 +215,8 @@ def restore(
 				fg="red",
 			)
 			click.secho(
-				"Use `bench partial-restore` to restore a partial backup to an existing site.", fg="yellow"
+				"Use `bench partial-restore` to restore a partial backup to an existing site.",
+				fg="yellow",
 			)
 			_backup.decryption_rollback()
 			sys.exit(1)
@@ -202,8 +226,7 @@ def restore(
 	# dont allow downgrading to older versions of dontmanage without force
 	if not force and is_downgrade(decompressed_file_name, verbose=True):
 		warn_message = (
-			"This is not recommended and may lead to unexpected behaviour. "
-			"Do you want to continue anyway?"
+			"This is not recommended and may lead to unexpected behaviour. " "Do you want to continue anyway?"
 		)
 		click.confirm(warn_message, abort=True)
 
@@ -214,7 +237,7 @@ def restore(
 			db_root_username=db_root_username,
 			db_root_password=db_root_password,
 			admin_password=admin_password,
-			verbose=context.verbose,
+			verbose=verbose,
 			install_apps=install_app,
 			source_sql=decompressed_file_name,
 			force=True,
@@ -294,7 +317,8 @@ def partial_restore(context, sql_file_path, verbose, encryption_key=None):
 			# Check for full backup file
 			if "Partial Backup" not in header:
 				click.secho(
-					"Full backup file detected.Use `bench restore` to restore a DontManage Site.", fg="red"
+					"Full backup file detected.Use `bench restore` to restore a DontManage Site.",
+					fg="red",
 				)
 				_backup.decryption_rollback()
 				sys.exit(1)
@@ -325,7 +349,8 @@ def partial_restore(context, sql_file_path, verbose, encryption_key=None):
 			# Check for Full backup file.
 			if "Partial Backup" not in header:
 				click.secho(
-					"Full Backup file detected.Use `bench restore` to restore a DontManage Site.", fg="red"
+					"Full Backup file detected.Use `bench restore` to restore a DontManage Site.",
+					fg="red",
 				)
 				_backup.decryption_rollback()
 				sys.exit(1)
@@ -347,23 +372,25 @@ def partial_restore(context, sql_file_path, verbose, encryption_key=None):
 	"--mariadb-root-username",
 	help='Root username for MariaDB or PostgreSQL, Default is "root"',
 )
-@click.option(
-	"--db-root-password", "--mariadb-root-password", help="Root password for MariaDB or PostgreSQL"
-)
+@click.option("--db-root-password", "--mariadb-root-password", help="Root password for MariaDB or PostgreSQL")
 @click.option("--yes", is_flag=True, default=False, help="Pass --yes to skip confirmation")
 @pass_context
-def reinstall(
-	context, admin_password=None, db_root_username=None, db_root_password=None, yes=False
-):
+def reinstall(context, admin_password=None, db_root_username=None, db_root_password=None, yes=False):
 	"Reinstall site ie. wipe all data and start over"
 	site = get_site(context)
 	_reinstall(site, admin_password, db_root_username, db_root_password, yes, verbose=context.verbose)
 
 
 def _reinstall(
-	site, admin_password=None, db_root_username=None, db_root_password=None, yes=False, verbose=False
+	site,
+	admin_password=None,
+	db_root_username=None,
+	db_root_password=None,
+	yes=False,
+	verbose=False,
 ):
 	from dontmanage.installer import _new_site
+	from dontmanage.utils.synchronization import filelock
 
 	if not yes:
 		click.confirm("This will wipe your database. Are you sure you want to reinstall?", abort=True)
@@ -381,6 +408,7 @@ def _reinstall(
 		dontmanage.destroy()
 
 	dontmanage.init(site=site)
+
 	_new_site(
 		dontmanage.conf.db_name,
 		site,
@@ -401,6 +429,7 @@ def _reinstall(
 def install_app(context, apps, force=False):
 	"Install a new app to site, supports multiple apps"
 	from dontmanage.installer import install_app as _install_app
+	from dontmanage.utils.synchronization import filelock
 
 	exit_code = 0
 
@@ -411,20 +440,21 @@ def install_app(context, apps, force=False):
 		dontmanage.init(site=site)
 		dontmanage.connect()
 
-		for app in apps:
-			try:
-				_install_app(app, verbose=context.verbose, force=force)
-			except dontmanage.IncompatibleApp as err:
-				err_msg = f":\n{err}" if str(err) else ""
-				print(f"App {app} is Incompatible with Site {site}{err_msg}")
-				exit_code = 1
-			except Exception as err:
-				err_msg = f": {str(err)}\n{dontmanage.get_traceback()}"
-				print(f"An error occurred while installing {app}{err_msg}")
-				exit_code = 1
+		with filelock("install_app", timeout=1):
+			for app in apps:
+				try:
+					_install_app(app, verbose=context.verbose, force=force)
+				except dontmanage.IncompatibleApp as err:
+					err_msg = f":\n{err}" if str(err) else ""
+					print(f"App {app} is Incompatible with Site {site}{err_msg}")
+					exit_code = 1
+				except Exception as err:
+					err_msg = f": {err!s}\n{dontmanage.get_traceback(with_context=True)}"
+					print(f"An error occurred while installing {app}{err_msg}")
+					exit_code = 1
 
-		if not exit_code:
-			dontmanage.db.commit()
+			if not exit_code:
+				dontmanage.db.commit()
 
 		dontmanage.destroy()
 
@@ -435,49 +465,171 @@ def install_app(context, apps, force=False):
 @click.option("--format", "-f", type=click.Choice(["text", "json"]), default="text")
 @pass_context
 def list_apps(context, format):
-	"List apps in site"
+	"""
+	List apps in site.
+	"""
 
 	summary_dict = {}
 
-	def fix_whitespaces(text):
-		if site == context.sites[-1]:
-			text = text.rstrip()
-		if len(context.sites) == 1:
-			text = text.lstrip()
-		return text
+	def format_app(app):
+		name_len = max(len(app.app_name) for app in apps)
+		ver_len = max(len(app.app_version) for app in apps)
+		template = f"{{0:{name_len}}} {{1:{ver_len}}} {{2}}"
+		return template.format(app.app_name, app.app_version, app.git_branch)
 
 	for site in context.sites:
 		dontmanage.init(site=site)
 		dontmanage.connect()
 		site_title = click.style(f"{site}", fg="green") if len(context.sites) > 1 else ""
+		installed_apps_info = []
+
 		apps = dontmanage.get_single("Installed Applications").installed_applications
-
 		if apps:
-			name_len, ver_len = (max(len(x.get(y)) for x in apps) for y in ["app_name", "app_version"])
-			template = f"{{0:{name_len}}} {{1:{ver_len}}} {{2}}"
-
-			installed_applications = [
-				template.format(app.app_name, app.app_version, app.git_branch) for app in apps
-			]
-			applications_summary = "\n".join(installed_applications)
-			summary = f"{site_title}\n{applications_summary}\n"
-			summary_dict[site] = [app.app_name for app in apps]
-
+			installed_apps_info.extend(format_app(app) for app in apps)
 		else:
-			installed_applications = dontmanage.get_installed_apps()
-			applications_summary = "\n".join(installed_applications)
-			summary = f"{site_title}\n{applications_summary}\n"
-			summary_dict[site] = installed_applications
+			installed_apps_info.extend(dontmanage.get_installed_apps())
 
-		summary = fix_whitespaces(summary)
+		installed_apps_info_str = "\n".join(installed_apps_info)
+		summary = f"{site_title}\n{installed_apps_info_str}\n"
+		summary_dict[site] = [app.app_name for app in apps]
 
-		if format == "text" and applications_summary and summary:
+		if format == "text" and installed_apps_info and summary:
 			print(summary)
 
 		dontmanage.destroy()
 
 	if format == "json":
 		click.echo(dontmanage.as_json(summary_dict))
+
+
+@click.command("add-database-index")
+@click.option("--doctype", help="DocType on which index needs to be added")
+@click.option(
+	"--column",
+	multiple=True,
+	help="Column to index. Multiple columns will create multi-column index in given order. To create a multiple, single column index, execute the command multiple times.",
+)
+@pass_context
+def add_db_index(context, doctype, column):
+	"Adds a new DB index and creates a property setter to persist it."
+	from dontmanage.custom.doctype.property_setter.property_setter import make_property_setter
+
+	columns = column  # correct naming
+	for site in context.sites:
+		dontmanage.connect(site=site)
+		try:
+			dontmanage.db.add_index(doctype, columns)
+			if len(columns) == 1:
+				make_property_setter(
+					doctype,
+					columns[0],
+					property="search_index",
+					value="1",
+					property_type="Check",
+					for_doctype=False,  # Applied on docfield
+				)
+			dontmanage.db.commit()
+		finally:
+			dontmanage.destroy()
+
+	if not context.sites:
+		raise SiteNotSpecifiedError
+
+
+@click.command("describe-database-table")
+@click.option("--doctype", help="DocType to describe")
+@click.option(
+	"--column",
+	multiple=True,
+	help="Explicitly fetch accurate cardinality from table data. This can be quite slow on large tables.",
+)
+@pass_context
+def describe_database_table(context, doctype, column):
+	"""Describes various statistics about the table.
+
+	This is useful to build integration like
+	This includes:
+	1. Schema
+	2. Indexes
+	3. stats - total count of records
+	4. if column is specified then extra stats are generated for column:
+	        Distinct values count in column
+	"""
+	import json
+
+	for site in context.sites:
+		dontmanage.connect(site=site)
+		try:
+			data = _extract_table_stats(doctype, column)
+			# NOTE: Do not print anything else in this to avoid clobbering the output.
+			print(json.dumps(data, indent=2))
+		finally:
+			dontmanage.destroy()
+
+	if not context.sites:
+		raise SiteNotSpecifiedError
+
+
+def _extract_table_stats(doctype: str, columns: list[str]) -> dict:
+	from dontmanage.utils import cint, cstr, get_table_name
+
+	def sql_bool(val):
+		return cstr(val).lower() in ("yes", "1", "true")
+
+	table = get_table_name(doctype, wrap_in_backticks=True)
+
+	schema = []
+	for field in dontmanage.db.sql(f"describe {table}", as_dict=True):
+		schema.append(
+			{
+				"column": field["Field"],
+				"type": field["Type"],
+				"is_nullable": sql_bool(field["Null"]),
+				"default": field["Default"],
+			}
+		)
+
+	def update_cardinality(column, value):
+		for col in schema:
+			if col["column"] == column:
+				col["cardinality"] = value
+				break
+
+	indexes = []
+	for idx in dontmanage.db.sql(f"show index from {table}", as_dict=True):
+		indexes.append(
+			{
+				"unique": not sql_bool(idx["Non_unique"]),
+				"cardinality": idx["Cardinality"],
+				"name": idx["Key_name"],
+				"sequence": idx["Seq_in_index"],
+				"nullable": sql_bool(idx["Null"]),
+				"column": idx["Column_name"],
+				"type": idx["Index_type"],
+			}
+		)
+		if idx["Seq_in_index"] == 1:
+			update_cardinality(idx["Column_name"], idx["Cardinality"])
+
+	total_rows = cint(
+		dontmanage.db.sql(
+			f"""select table_rows
+			   from  information_schema.tables
+			   where table_name = 'tab{doctype}'"""
+		)[0][0]
+	)
+
+	# fetch accurate cardinality for columns by query. WARN: This can take a lot of time.
+	for column in columns:
+		cardinality = dontmanage.db.sql(f"select count(distinct {column}) from {table}")[0][0]
+		update_cardinality(column, cardinality)
+
+	return {
+		"table_name": table.strip("`"),
+		"total_rows": total_rows,
+		"schema": schema,
+		"indexes": indexes,
+	}
 
 
 @click.command("add-system-manager")
@@ -532,6 +684,7 @@ def add_user_for_sites(
 @click.argument("email")
 @pass_context
 def disable_user(context, email):
+	"""Disable a user account on site."""
 	site = get_site(context)
 	with dontmanage.init_site(site):
 		dontmanage.connect()
@@ -653,9 +806,12 @@ def _use(site, sites_path="."):
 
 
 def use(site, sites_path="."):
+	from dontmanage.installer import update_site_config
+
 	if os.path.exists(os.path.join(sites_path, site)):
-		with open(os.path.join(sites_path, "currentsite.txt"), "w") as sitefile:
-			sitefile.write(site)
+		sites_path = os.getcwd()
+		conifg = os.path.join(sites_path, "common_site_config.json")
+		update_site_config("default_site", site, validate=False, site_config_path=conifg)
 		print(f"Current Site set to {site}")
 	else:
 		print(f"Site {site} does not exist")
@@ -678,15 +834,16 @@ def use(site, sites_path="."):
 	type=str,
 	help="Specify the DocTypes to not backup seperated by commas",
 )
-@click.option(
-	"--backup-path", default=None, help="Set path for saving all the files in this operation"
-)
+@click.option("--backup-path", default=None, help="Set path for saving all the files in this operation")
 @click.option("--backup-path-db", default=None, help="Set path for saving database file")
 @click.option("--backup-path-files", default=None, help="Set path for saving public file")
 @click.option("--backup-path-private-files", default=None, help="Set path for saving private file")
 @click.option("--backup-path-conf", default=None, help="Set path for saving config file")
 @click.option(
-	"--ignore-backup-conf", default=False, is_flag=True, help="Ignore excludes/includes set in config"
+	"--ignore-backup-conf",
+	default=False,
+	is_flag=True,
+	help="Ignore excludes/includes set in config",
 )
 @click.option("--verbose", default=False, is_flag=True, help="Add verbosity")
 @click.option("--compress", default=False, is_flag=True, help="Compress private and public files")
@@ -736,12 +893,13 @@ def backup(
 				fg="red",
 			)
 			if verbose:
-				print(dontmanage.get_traceback())
+				print(dontmanage.get_traceback(with_context=True))
 			exit_code = 1
 			continue
 		if dontmanage.get_system_settings("encrypt_backup") and dontmanage.get_site_config().encryption_key:
 			click.secho(
-				"Backup encryption is turned on. Please note the backup encryption key.", fg="yellow"
+				"Backup encryption is turned on. Please note the backup encryption key.",
+				fg="yellow",
 			)
 
 		odb.print_summary()
@@ -786,21 +944,21 @@ def remove_from_installed_apps(context, app):
 	is_flag=True,
 	default=False,
 )
-@click.option(
-	"--dry-run", help="List all doctypes that will be deleted", is_flag=True, default=False
-)
+@click.option("--dry-run", help="List all doctypes that will be deleted", is_flag=True, default=False)
 @click.option("--no-backup", help="Do not backup the site", is_flag=True, default=False)
 @click.option("--force", help="Force remove app from site", is_flag=True, default=False)
 @pass_context
 def uninstall(context, app, dry_run, yes, no_backup, force):
 	"Remove app and linked modules from site"
 	from dontmanage.installer import remove_app
+	from dontmanage.utils.synchronization import filelock
 
 	for site in context.sites:
 		try:
 			dontmanage.init(site=site)
 			dontmanage.connect()
-			remove_app(app_name=app, dry_run=dry_run, yes=yes, no_backup=no_backup, force=force)
+			with filelock("uninstall_app"):
+				remove_app(app_name=app, dry_run=dry_run, yes=yes, no_backup=no_backup, force=force)
 		finally:
 			dontmanage.destroy()
 	if not context.sites:
@@ -823,9 +981,7 @@ def uninstall(context, app, dry_run, yes, no_backup, force):
 )
 @click.option("--archived-sites-path")
 @click.option("--no-backup", is_flag=True, default=False)
-@click.option(
-	"--force", help="Force drop-site even if an error is encountered", is_flag=True, default=False
-)
+@click.option("--force", help="Force drop-site even if an error is encountered", is_flag=True, default=False)
 def drop_site(
 	site,
 	db_root_username="root",
@@ -834,6 +990,7 @@ def drop_site(
 	force=False,
 	no_backup=False,
 ):
+	"""Remove a site from database and filesystem."""
 	_drop_site(site, db_root_username, db_root_password, archived_sites_path, force, no_backup)
 
 
@@ -845,7 +1002,6 @@ def _drop_site(
 	force=False,
 	no_backup=False,
 ):
-	"Remove site from database and filesystem"
 	from dontmanage.database import drop_user_and_database
 	from dontmanage.utils.backups import scheduled_backup
 
@@ -864,9 +1020,9 @@ def _drop_site(
 			messages = [
 				"=" * 80,
 				f"Error: The operation has stopped because backup of {site}'s database failed.",
-				f"Reason: {str(err)}\n",
+				f"Reason: {err!s}\n",
 				"Fix the issue and try again.",
-				"Hint: Use 'bench drop-site {0} --force' to force the removal of {0}".format(site),
+				f"Hint: Use 'bench drop-site {site} --force' to force the removal of {site}",
 			]
 			click.echo("\n".join(messages))
 			sys.exit(1)
@@ -875,7 +1031,7 @@ def _drop_site(
 	drop_user_and_database(dontmanage.conf.db_name, db_root_username, db_root_password)
 
 	archived_sites_path = archived_sites_path or os.path.join(
-		dontmanage.get_app_path("dontmanage"), "..", "..", "..", "archived", "sites"
+		dontmanage.utils.get_bench_path(), "archived", "sites"
 	)
 	archived_sites_path = os.path.realpath(archived_sites_path)
 
@@ -908,9 +1064,7 @@ def move(dest_dir, site):
 @click.command("set-password")
 @click.argument("user")
 @click.argument("password", required=False)
-@click.option(
-	"--logout-all-sessions", help="Log out from all sessions", is_flag=True, default=False
-)
+@click.option("--logout-all-sessions", help="Log out from all sessions", is_flag=True, default=False)
 @pass_context
 def set_password(context, user, password=None, logout_all_sessions=False):
 	"Set password for a user on a site"
@@ -923,9 +1077,7 @@ def set_password(context, user, password=None, logout_all_sessions=False):
 
 @click.command("set-admin-password")
 @click.argument("admin-password", required=False)
-@click.option(
-	"--logout-all-sessions", help="Log out from all sessions", is_flag=True, default=False
-)
+@click.option("--logout-all-sessions", help="Log out from all sessions", is_flag=True, default=False)
 @pass_context
 def set_admin_password(context, admin_password=None, logout_all_sessions=False):
 	"Set Administrator password for a site"
@@ -1056,6 +1208,7 @@ def browse(context, site, user=None):
 @click.command("start-recording")
 @pass_context
 def start_recording(context):
+	"""Start DontManage Recorder."""
 	import dontmanage.recorder
 
 	for site in context.sites:
@@ -1069,6 +1222,7 @@ def start_recording(context):
 @click.command("stop-recording")
 @pass_context
 def stop_recording(context):
+	"""Stop DontManage Recorder."""
 	import dontmanage.recorder
 
 	for site in context.sites:
@@ -1080,20 +1234,36 @@ def stop_recording(context):
 
 
 @click.command("ngrok")
+@click.option("--bind-tls", is_flag=True, default=False, help="Returns a reference to the https tunnel.")
 @click.option(
-	"--bind-tls", is_flag=True, default=False, help="Returns a reference to the https tunnel."
+	"--use-default-authtoken",
+	is_flag=True,
+	default=False,
+	help="Use the auth token present in ngrok's config.",
 )
 @pass_context
-def start_ngrok(context, bind_tls):
+def start_ngrok(context, bind_tls, use_default_authtoken):
+	"""Start a ngrok tunnel to your local development server."""
 	from pyngrok import ngrok
 
 	site = get_site(context)
 	dontmanage.init(site=site)
 
+	ngrok_authtoken = dontmanage.conf.ngrok_authtoken
+	if not use_default_authtoken:
+		if not ngrok_authtoken:
+			click.echo(
+				f"\n{click.style('ngrok_authtoken', fg='yellow')} not found in site config.\n"
+				"Please register for a free ngrok account at: https://dashboard.ngrok.com/signup and place the obtained authtoken in the site config.",
+			)
+			sys.exit(1)
+
+		ngrok.set_auth_token(ngrok_authtoken)
+
 	port = dontmanage.conf.http_port or dontmanage.conf.webserver_port
 	tunnel = ngrok.connect(addr=str(port), host_header=site, bind_tls=bind_tls)
 	print(f"Public URL: {tunnel.public_url}")
-	print("Inspect logs at http://localhost:4040")
+	print("Inspect logs at http://127.0.0.1:4040")
 
 	ngrok_process = ngrok.get_ngrok_process()
 	try:
@@ -1108,6 +1278,7 @@ def start_ngrok(context, bind_tls):
 @click.command("build-search-index")
 @pass_context
 def build_search_index(context):
+	"""Rebuild search index used by global search."""
 	from dontmanage.search.website_search import build_index_for_all_routes
 
 	site = get_site(context)
@@ -1124,7 +1295,7 @@ def build_search_index(context):
 
 
 @click.command("clear-log-table")
-@click.option("--doctype", required=True, type=click.Choice(LOG_DOCTYPES), help="Log DocType")
+@click.option("--doctype", required=True, type=str, help="Log DocType")
 @click.option("--days", type=int, help="Keep records for days")
 @click.option("--no-backup", is_flag=True, default=False, help="Do not backup the table")
 @pass_context
@@ -1136,6 +1307,7 @@ def clear_log_table(context, doctype, days, no_backup):
 
 	ref: https://mariadb.com/kb/en/big-deletes/#deleting-more-than-half-a-table
 	"""
+	from dontmanage.core.doctype.log_settings.log_settings import LOG_DOCTYPES
 	from dontmanage.core.doctype.log_settings.log_settings import clear_log_table as clear_logs
 	from dontmanage.utils.backups import scheduled_backup
 
@@ -1170,9 +1342,7 @@ def clear_log_table(context, doctype, days, no_backup):
 
 @click.command("trim-database")
 @click.option("--dry-run", is_flag=True, default=False, help="Show what would be deleted")
-@click.option(
-	"--format", "-f", default="text", type=click.Choice(["json", "text"]), help="Output format"
-)
+@click.option("--format", "-f", default="text", type=click.Choice(["json", "text"]), help="Output format")
 @click.option("--no-backup", is_flag=True, default=False, help="Do not backup the site")
 @click.option(
 	"--yes",
@@ -1184,7 +1354,6 @@ def clear_log_table(context, doctype, days, no_backup):
 @pass_context
 def trim_database(context, dry_run, format, no_backup, yes=False):
 	"""Remove database tables for deleted DocTypes."""
-
 	if not context.sites:
 		raise SiteNotSpecifiedError
 
@@ -1201,34 +1370,36 @@ def trim_database(context, dry_run, format, no_backup, yes=False):
 		information_schema = dontmanage.qb.Schema("information_schema")
 		table_name = dontmanage.qb.Field("table_name").as_("name")
 
-		queried_result = (
+		database_tables: list[str] = (
 			dontmanage.qb.from_(information_schema.tables)
 			.select(table_name)
 			.where(information_schema.tables.table_schema == dontmanage.conf.db_name)
 			.where(information_schema.tables.table_type == "BASE TABLE")
-			.run()
+			.run(pluck=True)
 		)
-
-		database_tables = [x[0] for x in queried_result]
 		doctype_tables = dontmanage.get_all("DocType", pluck="name")
 
-		for x in database_tables:
-			if not x.startswith("tab"):
+		for table_name in database_tables:
+			if not table_name.startswith("tab"):
 				continue
-			doctype = x.replace("tab", "", 1)
-			if not (doctype in doctype_tables or x.startswith("__") or x in STANDARD_TABLES):
-				TABLES_TO_DROP.append(x)
+			if not (table_name.replace("tab", "", 1) in doctype_tables or table_name in STANDARD_TABLES):
+				TABLES_TO_DROP.append(table_name)
 
 		if not TABLES_TO_DROP:
 			if format == "text":
-				click.secho(f"No ghost tables found in {dontmanage.local.site}...Great!", fg="green")
+				click.secho(f"{site}: No ghost tables", fg="green")
 		else:
-			if not yes:
-				print("Following tables will be dropped:")
+			if format == "text":
+				print(f"{site}: Following tables will be dropped:")
 				print("\n".join(f"* {dt}" for dt in TABLES_TO_DROP))
+
+			if dry_run:
+				continue
+
+			if not yes:
 				click.confirm("Do you want to continue?", abort=True)
 
-			if not (no_backup or dry_run):
+			if not no_backup:
 				if format == "text":
 					print(f"Backing Up Tables: {', '.join(TABLES_TO_DROP)}")
 
@@ -1245,8 +1416,7 @@ def trim_database(context, dry_run, format, no_backup, yes=False):
 			for table in TABLES_TO_DROP:
 				if format == "text":
 					print(f"* Dropping Table '{table}'...")
-				if not dry_run:
-					dontmanage.db.sql_ddl(f"drop table `{table}`")
+				dontmanage.db.sql_ddl(f"drop table `{table}`")
 
 			ALL_DATA[dontmanage.local.site] = TABLES_TO_DROP
 		dontmanage.destroy()
@@ -1282,12 +1452,11 @@ def get_standard_tables():
 
 @click.command("trim-tables")
 @click.option("--dry-run", is_flag=True, default=False, help="Show what would be deleted")
-@click.option(
-	"--format", "-f", default="table", type=click.Choice(["json", "table"]), help="Output format"
-)
+@click.option("--format", "-f", default="table", type=click.Choice(["json", "table"]), help="Output format")
 @click.option("--no-backup", is_flag=True, default=False, help="Do not backup the site")
 @pass_context
 def trim_tables(context, dry_run, format, no_backup):
+	"""Remove columns from tables where fields are deleted from doctypes."""
 	if not context.sites:
 		raise SiteNotSpecifiedError
 
@@ -1358,6 +1527,8 @@ def add_new_user(
 commands = [
 	add_system_manager,
 	add_user_for_sites,
+	add_db_index,
+	describe_database_table,
 	backup,
 	drop_site,
 	install_app,

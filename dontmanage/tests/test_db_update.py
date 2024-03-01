@@ -128,6 +128,14 @@ class TestDBUpdate(DontManageTestCase):
 		doctype.save()
 		self.check_unique_indexes(doctype.name, field)
 
+		# New column with a unique index
+		# This works because index name is same as fieldname.
+		new_field = dontmanage.copy_doc(doctype.fields[0])
+		new_field.fieldname = "duplicate_field"
+		doctype.append("fields", new_field)
+		doctype.save()
+		self.check_unique_indexes(doctype.name, new_field.fieldname)
+
 		doctype.delete()
 		dontmanage.db.commit()
 
@@ -168,12 +176,10 @@ def get_other_fields_meta(meta):
 
 	optional_fields_map = {field: ("Text", 0) for field in optional_fields}
 	fields = dict(default_fields_map, **optional_fields_map, **child_table_fields_map)
-	field_map = [
+	return [
 		dontmanage._dict({"fieldname": field, "fieldtype": _type, "length": _length})
 		for field, (_type, _length) in fields.items()
 	]
-
-	return field_map
 
 
 def get_table_column(doctype, fieldname):
