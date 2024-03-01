@@ -1,6 +1,6 @@
 // Copyright (c) 2018, DontManage and Contributors
 // MIT License. See license.txt
-import DataTable from "dontmanage-datatable";
+import DataTable from "frappe-datatable";
 
 // Expose DataTable globally to allow customizations.
 window.DataTable = DataTable;

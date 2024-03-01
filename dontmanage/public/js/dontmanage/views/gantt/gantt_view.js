@@ -225,8 +225,8 @@ dontmanage.views.GanttView = class GanttView extends dontmanage.views.ListView {
 
 	get required_libs() {
 		return [
-			"assets/dontmanage/node_modules/dontmanage-gantt/dist/dontmanage-gantt.css",
-			"assets/dontmanage/node_modules/dontmanage-gantt/dist/dontmanage-gantt.min.js",
+			"assets/dontmanage/node_modules/frappe-gantt/dist/frappe-gantt.css",
+			"assets/dontmanage/node_modules/frappe-gantt/dist/frappe-gantt.min.js",
 		];
 	}
 };
