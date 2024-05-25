@@ -97,6 +97,8 @@ def delete_contact_and_address(doctype: str, docname: str) -> None:
 			pluck="parent",
 		):
 			doc = dontmanage.get_doc(parenttype, name)
+			if not doc:
+				continue
 			if len(doc.links) == 1:
 				doc.delete()
 			else:

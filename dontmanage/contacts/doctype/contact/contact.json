@@ -189,6 +189,7 @@
   {
    "fieldname": "address",
    "fieldtype": "Link",
+   "hidden": 1,
    "label": "Address",
    "options": "Address"
   },
@@ -242,6 +243,7 @@
   {
    "fieldname": "company_name",
    "fieldtype": "Data",
+   "hidden": 1,
    "label": "Company Name"
   },
   {
@@ -257,7 +259,7 @@
  "image_field": "image",
  "index_web_pages_for_search": 1,
  "links": [],
- "modified": "2023-12-08 15:52:37.525003",
+ "modified": "2024-03-02 16:41:43.492118",
  "modified_by": "Administrator",
  "module": "Contacts",
  "name": "Contact",

@@ -161,25 +161,27 @@ dontmanage.views.Workspace = class Workspace {
 			`<div class="standard-sidebar-section nested-container" data-title="${title}"></div>`
 		);
 
-		let $title = $(`<button class="btn-reset standard-sidebar-label">
-			<span>${dontmanage.utils.icon("es-line-down", "xs")}</span>
-			<span class="section-title">${__(title)}<span>
-		</div>`).appendTo(sidebar_section);
-		$title.attr({
-			"aria-label": __("{0}: {1}", [__("Toggle Section"), __(title)]),
-			"aria-expanded": "true",
-		});
+		// Commented to hide the title like "public", "Private", etc.
+
+		// let $title = $(`<button class="btn-reset standard-sidebar-label">
+		// 	<span>${dontmanage.utils.icon("es-line-down", "xs")}</span>
+		// 	<span class="section-title">${__(title)}<span>
+		// </div>`).appendTo(sidebar_section);
+		// $title.attr({
+		// 	"aria-label": __("{0}: {1}", [__("Toggle Section"), __(title)]),
+		// 	"aria-expanded": "true",
+		// });
 		this.prepare_sidebar(root_pages, sidebar_section, this.sidebar);
 
-		$title.on("click", (e) => {
-			const $e = $(e.target);
-			const href = $e.find("span use").attr("href");
-			const isCollapsed = href === "#es-line-down";
-			let icon = isCollapsed ? "#es-line-right-chevron" : "#es-line-down";
-			$e.find("span use").attr("href", icon);
-			$e.parent().find(".sidebar-item-container").toggleClass("hidden");
-			$e.attr("aria-expanded", String(!isCollapsed));
-		});
+		// $title.on("click", (e) => {
+		// 	const $e = $(e.target);
+		// 	const href = $e.find("span use").attr("href");
+		// 	const isCollapsed = href === "#es-line-down";
+		// 	let icon = isCollapsed ? "#es-line-right-chevron" : "#es-line-down";
+		// 	$e.find("span use").attr("href", icon);
+		// 	$e.parent().find(".sidebar-item-container").toggleClass("hidden");
+		// 	$e.attr("aria-expanded", String(!isCollapsed));
+		// });
 
 		if (Object.keys(root_pages).length === 0) {
 			sidebar_section.addClass("hidden");
@@ -390,7 +392,7 @@ dontmanage.views.Workspace = class Workspace {
 
 			$(".item-anchor").addClass("disable-click");
 
-			if (this.pages && this.pages[current_page.name]) {
+			if (current_page && this.pages && this.pages[current_page.name]) {
 				this.page_data = this.pages[current_page.name];
 			} else {
 				await dontmanage.after_ajax(() => this.get_data(current_page));
@@ -449,6 +451,12 @@ dontmanage.views.Workspace = class Workspace {
 		}
 
 		this.clear_page_actions();
+
+		// Get user roles and check if user has access to edit the page
+		if (!this.has_access) {
+			return;
+		}
+		
 
 		this.page.set_secondary_action(
 			__("Edit"),

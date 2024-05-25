@@ -232,9 +232,10 @@ def get_doc_permissions(doc, user=None, ptype=None, debug=False):
 	if not has_user_permission(doc, user, debug=debug):
 		if is_user_owner():
 			# replace with owner permissions
+			create_perm = permissions.get("create")
 			permissions = permissions.get("if_owner", {})
 			# if_owner does not come with create rights...
-			permissions["create"] = 0
+			permissions["create"] = create_perm
 			debug and _debug_log("User has only 'If owner' permissions because of User Permissions")
 		else:
 			debug and _debug_log("User has no permissions because of User Permissions")

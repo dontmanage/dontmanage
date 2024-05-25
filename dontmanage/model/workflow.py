@@ -8,6 +8,7 @@ import dontmanage
 from dontmanage import _
 from dontmanage.model.docstatus import DocStatus
 from dontmanage.utils import cint
+from veepee_erp.hooks import WORKFLOW_VALIDATION_FUNCS
 
 if TYPE_CHECKING:
 	from dontmanage.model.document import Document
@@ -92,7 +93,13 @@ def is_transition_condition_satisfied(transition, doc) -> bool:
 	if not transition.condition:
 		return True
 	else:
-		return dontmanage.safe_eval(transition.condition, get_workflow_safe_globals(), dict(doc=doc.as_dict()))
+		local_vars = {
+			func.__name__: func
+			for func in WORKFLOW_VALIDATION_FUNCS
+		}
+		local_vars["doc"] = doc.as_dict()
+
+		return dontmanage.safe_eval(transition.condition, get_workflow_safe_globals(), local_vars)
 
 
 @dontmanage.whitelist()

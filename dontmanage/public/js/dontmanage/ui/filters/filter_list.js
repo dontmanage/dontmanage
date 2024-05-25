@@ -195,6 +195,18 @@ dontmanage.ui.FilterGroup = class {
 			!dontmanage.meta.has_field(doctype, fieldname) &&
 			dontmanage.model.is_non_std_field(fieldname)
 		) {
+			var presentInChildTable = false;
+			dontmanage.meta.get_table_fields(doctype).every((df) => {
+				console.log(df);
+				if (dontmanage.meta.has_field(df.options, fieldname)) {
+					presentInChildTable = true;
+					return false;
+				}
+				return true;
+			});
+			if (presentInChildTable) {
+				return true;
+			}
 			dontmanage.msgprint({
 				message: __("Invalid filter: {0}", [fieldname.bold()]),
 				indicator: "red",

@@ -47,6 +47,8 @@ ORDER_GROUP_PATTERN = re.compile(r".*[^a-z0-9-_ ,`'\"\.\(\)].*")
 FN_PARAMS_PATTERN = re.compile(r".*?\((.*)\).*")
 SPECIAL_FIELD_CHARS = frozenset(("(", "`", ".", "'", '"', "*"))
 
+EVAL_EXPRESSION_CHARS = r"\$\$(.*?)\$\$"
+
 
 class DatabaseQuery:
 	def __init__(self, doctype, user=None):
@@ -735,6 +737,15 @@ class DatabaseQuery:
 
 		# primary key is never nullable, modified is usually indexed by default and always present
 		can_be_null = f.fieldname not in ("name", "modified")
+		def evaluate_double_dollars(match):
+			expression = match.group(1)
+			try:
+				result = eval(expression)
+				return str(result)
+			except Exception as e:
+				return expression
+		if isinstance(f.value, str):
+			f.value = re.sub(EVAL_EXPRESSION_CHARS, evaluate_double_dollars, f.value)
 
 		# prepare in condition
 		if f.operator.lower() in NestedSetHierarchy:
