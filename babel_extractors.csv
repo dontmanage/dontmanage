@@ -1,0 +1,14 @@
+**/hooks.py,dontmanage.gettext.extractors.navbar.extract
+**/doctype/*/*.json,dontmanage.gettext.extractors.doctype.extract
+**/workspace/*/*.json,dontmanage.gettext.extractors.workspace.extract
+**/web_form/*/*.json,dontmanage.gettext.extractors.web_form.extract
+**/onboarding_step/*/*.json,dontmanage.gettext.extractors.onboarding_step.extract
+**/module_onboarding/*/*.json,dontmanage.gettext.extractors.module_onboarding.extract
+**/report/*/*.json,dontmanage.gettext.extractors.report.extract
+**.py,dontmanage.gettext.extractors.python.extract
+**/templates/**.js,dontmanage.gettext.extractors.html_template.extract
+**.js,dontmanage.gettext.extractors.javascript.extract
+**.html,dontmanage.gettext.extractors.html_template.extract
+**.vue,dontmanage.gettext.extractors.html_template.extract
+**/custom/*.json,dontmanage.gettext.extractors.customization.extract
+**/fixtures/custom_field.json,dontmanage.gettext.extractors.custom_field.extract

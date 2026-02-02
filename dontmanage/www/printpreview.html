@@ -1,0 +1,10 @@
+---
+no_cache: 1
+---
+
+<!-- </body> -->
+{{
+    dontmanage
+        .get_doc('Print Format', dontmanage.form_dict.print_format)
+        .get_html(dontmanage.form_dict.name, dontmanage.form_dict.letterhead)
+}}

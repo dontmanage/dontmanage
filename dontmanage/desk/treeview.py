@@ -1,0 +1,89 @@
+# Copyright (c) 2015, DontManage and Contributors
+# License: MIT. See LICENSE
+
+import dontmanage
+from dontmanage import _
+from dontmanage.query_builder import Field, functions
+
+
+@dontmanage.whitelist()
+def get_all_nodes(doctype, label, parent, tree_method, **filters):
+	"""Recursively gets all data from tree nodes"""
+
+	filters.pop("cmd", None)
+	filters.pop("data", None)
+
+	tree_method = dontmanage.get_attr(tree_method)
+
+	dontmanage.is_whitelisted(tree_method)
+
+	data = tree_method(doctype, parent, **filters)
+	out = [dict(parent=label, data=data)]
+
+	filters.pop("is_root", None)
+	to_check = [d.get("value") for d in data if d.get("expandable")]
+
+	while to_check:
+		parent = to_check.pop()
+		data = tree_method(doctype, parent, is_root=False, **filters)
+		out.append(dict(parent=parent, data=data))
+		for d in data:
+			if d.get("expandable"):
+				to_check.append(d.get("value"))
+
+	return out
+
+
+@dontmanage.whitelist()
+def get_children(doctype, parent="", include_disabled=False, **filters):
+	if isinstance(include_disabled, str):
+		include_disabled = dontmanage.sbool(include_disabled)
+	return _get_children(doctype, parent, include_disabled=include_disabled)
+
+
+def _get_children(doctype, parent="", ignore_permissions=False, include_disabled=False):
+	meta = dontmanage.get_meta(doctype)
+	parent_field = meta.get("nsm_parent_field") or "parent_" + dontmanage.scrub(doctype)
+
+	qb = (
+		dontmanage.qb.from_(doctype)
+		.select(
+			Field("name").as_("value"),
+			Field(meta.get("title_field") or "name").as_("title"),
+			Field("is_group").as_("expandable"),
+		)
+		.where(functions.IfNull(Field(parent_field), "").eq(parent))
+		.where(Field("docstatus") < 2)
+	)
+
+	if dontmanage.db.has_column(doctype, "disabled") and not include_disabled:
+		# used 0 instead of `false` since type of check in postgres is smallint
+		qb = qb.where(Field("disabled").eq(0))
+	# Order by name and execute
+	return qb.orderby("name").run(as_dict=True)
+
+
+@dontmanage.whitelist()
+def add_node():
+	args = make_tree_args(**dontmanage.form_dict)
+	doc = dontmanage.get_doc(args)
+
+	doc.save()
+
+
+def make_tree_args(**kwarg):
+	kwarg.pop("cmd", None)
+
+	doctype = kwarg["doctype"]
+	parent_field = "parent_" + dontmanage.scrub(doctype)
+
+	if kwarg["is_root"] == "false":
+		kwarg["is_root"] = False
+	if kwarg["is_root"] == "true":
+		kwarg["is_root"] = True
+
+	parent = kwarg.get("parent") or kwarg.get(parent_field)
+	if doctype != parent:
+		kwarg.update({parent_field: parent})
+
+	return dontmanage._dict(kwarg)
