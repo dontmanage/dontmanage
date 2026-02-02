@@ -1,3 +1,3 @@
-import DataTable from "dontmanage-datatable";
+import DataTable from "frappe-datatable";
 
 dontmanage.DataTable = DataTable;

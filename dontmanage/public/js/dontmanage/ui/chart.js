@@ -1,4 +1,4 @@
-import { Chart } from "dontmanage-charts/dist/dontmanage-charts.esm";
+import { Chart } from "frappe-charts/dist/frappe-charts.esm";
 
 dontmanage.provide("dontmanage.ui");
 dontmanage.Chart = Chart;
